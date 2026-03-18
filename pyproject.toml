@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian_intake_agent"
+version = "0.1.0"
+description = "Obsidian intake processing agent."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pyyaml",
+  "watchdog",
+  "python-docx",
+  "webvtt-py",
+]
+
+[project.scripts]
+obsidian-agent = "obsidian_intake_agent.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

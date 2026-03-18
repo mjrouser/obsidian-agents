@@ -1,0 +1,4 @@
+pyyaml
+watchdog
+python-docx
+webvtt-py

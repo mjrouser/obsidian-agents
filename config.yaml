@@ -1,0 +1,20 @@
+vault_path: "/Users/matthew.rouser/Documents/Work Second Brain (Obsidian)"
+intake_dir: "00_Intake"
+meetings_dir: "01_Meetings"
+actions_dir: "07_Actions"
+archive_intake_dir: "_Archive/Intake"
+templates_dir: "Templates"
+owner_filter: "Matthew"
+dry_run: false
+include_unassigned: false
+llm_provider: "codex_cli"
+codex_model: null
+codex_exec_cmd: ["codex", "exec"]
+extraction_mode: "draft"
+action_owner_aliases:
+  Matthew Rouser:
+    - "Matthew Rouser"
+    - "Matthew"
+    - "Matt Rouser"
+    - "Matt"
+    - "matthew.rouser"

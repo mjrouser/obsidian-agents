@@ -1,0 +1,2 @@
+[console_scripts]
+obsidian-agent = obsidian_intake_agent.main:main

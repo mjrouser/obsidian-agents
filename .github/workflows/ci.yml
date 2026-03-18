@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup make
+        run: make --version
+
+      - name: Check
+        run: make check
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make build

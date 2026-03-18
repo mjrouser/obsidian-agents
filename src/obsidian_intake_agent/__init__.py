@@ -1,0 +1,1 @@
+"""Obsidian intake agent package."""
