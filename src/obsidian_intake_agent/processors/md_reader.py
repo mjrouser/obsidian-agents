@@ -75,6 +75,12 @@ def extract_markdown_action_items(text: str) -> list[ActionItem]:
             action_text = line[len("- [ ]") :].strip()
             items.append(parse_action_text(action_text))
             continue
+        if line.startswith("- "):
+            action_text = line[len("- ") :].strip()
+            parsed_bullet = parse_action_text(action_text)
+            if parsed_bullet.owner is not None:
+                items.append(parsed_bullet)
+                continue
         parsed_standalone = parse_action_text(line)
         if parsed_standalone.owner is not None and not line.startswith("-"):
             items.append(parsed_standalone)

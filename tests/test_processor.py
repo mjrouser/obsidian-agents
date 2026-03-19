@@ -575,6 +575,15 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[2].owner, "Matthew")
         self.assertEqual(items[2].text, "draft the SOW")
 
+    def test_extracts_explicit_non_checkbox_bullet_outside_action_section(self) -> None:
+        items = extract_markdown_action_items(
+            "- Matt to review changes Raymond made to the staffing model\n"
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].owner, "Matt")
+        self.assertEqual(items[0].text, "review changes Raymond made to the staffing model")
+
     def test_extracts_coordinated_owner_to_action_lines(self) -> None:
         items = extract_markdown_action_items(
             "Jeremy and Bruno to confirm Afreen’s assignment to Resi and update notes accordingly.\n"
@@ -638,6 +647,15 @@ class MeetingProcessorTests(unittest.TestCase):
             "Jeremy and Bruno discussed staffing.\n"
             "Jeremy and Bruno should confirm staffing.\n"
             "Jeremy and Bruno were on the call.\n"
+        )
+
+        self.assertEqual(items, [])
+
+    def test_does_not_extract_vague_non_checkbox_bullets(self) -> None:
+        items = extract_markdown_action_items(
+            "- Matt should review changes\n"
+            "- Notes about staffing model\n"
+            "- Discussion of Raymond’s edits\n"
         )
 
         self.assertEqual(items, [])
@@ -738,6 +756,29 @@ class MeetingProcessorTests(unittest.TestCase):
             processor.process_file(source, force=True)
             actions_text_again = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertEqual(actions_text_again, actions_text)
+
+    def test_non_checkbox_bullet_outside_action_section_routes_matthew_owned_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-03-16 - Teams - TDA CRM and GMS SOW Check-in.md"
+            source.write_text(
+                "### Meeting Recap\n\n"
+                "- Matt to review changes Raymond made to the staffing model\n",
+                encoding="utf-8",
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "- [ ] review changes Raymond made to the staffing model (Owner: Matthew Rouser) — Source: 2026-03-16 [[2026-03-16 - Teams - TDA CRM and GMS SOW Check-in.md]]",
+                actions_text,
+            )
 
     def test_vtt_heuristic_extracts_owner_will_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
