@@ -18,3 +18,7 @@ action_owner_aliases:
     - "Matt Rouser"
     - "Matt"
     - "matthew.rouser"
+git_auto_commit_vault: true
+git_auto_commit_project: true
+git_vault_repo_path: "/Users/matthew.rouser/Documents/Work Second Brain (Obsidian)"
+git_project_repo_path: "/Users/matthew.rouser/repos/obsidian-agents"

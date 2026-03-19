@@ -20,7 +20,11 @@ def watch_intake(processor: MeetingProcessor) -> None:
             path = Path(getattr(event, "src_path"))
             if self.processor.should_process_intake_file(path):
                 print(f"Processing {path}")
-                self.processor.process_file(path)
+                result = self.processor.process_file(path)
+                if result.processed and not self.processor.config.dry_run:
+                    from .main import _maybe_auto_commit
+
+                    _maybe_auto_commit(self.processor.config, vault_source_name=path.name)
 
     observer = Observer()
     handler = IntakeEventHandler(processor)

@@ -146,7 +146,7 @@ Transcript:
 [PASTE PATH]
 
 Command:
-[PASTE COMMAND]
+obsidian-agent --config config.yaml process --dry-run [PASTE PATH]
 
 Return:
 - PASS/FAIL

@@ -13,7 +13,7 @@ from obsidian_intake_agent.processors.meeting_processor import (
     MeetingProcessor,
     normalize_meeting_metadata,
 )
-from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items
+from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
 
 
 class MeetingProcessorTests(unittest.TestCase):
@@ -470,6 +470,37 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[1].owner, "Alex")
         self.assertEqual(items[1].text, "send the notes.")
 
+    def test_extracts_owner_to_action_lines(self) -> None:
+        items = extract_markdown_action_items(
+            "Action: Matthew to draft the SOW\n"
+            "Action: Matt to send the deck by Friday\n"
+            "Action: Daniel to share links\n"
+        )
+
+        self.assertEqual(items[0].owner, "Matthew")
+        self.assertEqual(items[0].text, "draft the SOW")
+        self.assertEqual(items[1].owner, "Matt")
+        self.assertEqual(items[1].text, "send the deck by Friday")
+        self.assertEqual(items[2].owner, "Daniel")
+        self.assertEqual(items[2].text, "share links")
+
+    def test_extracts_owner_label_action_lines(self) -> None:
+        items = extract_markdown_action_items(
+            "Action: Matthew: draft SOW for Louisiana Pacific\n"
+            "Action: Matt - follow up with Brian\n"
+            "Action: Assigned to Matthew: draft SOW\n"
+            "Action: Owner: Matthew - follow up with legal\n"
+        )
+
+        self.assertEqual(items[0].owner, "Matthew")
+        self.assertEqual(items[0].text, "draft SOW for Louisiana Pacific")
+        self.assertEqual(items[1].owner, "Matt")
+        self.assertEqual(items[1].text, "follow up with Brian")
+        self.assertEqual(items[2].owner, "Matthew")
+        self.assertEqual(items[2].text, "draft SOW")
+        self.assertEqual(items[3].owner, "Matthew")
+        self.assertEqual(items[3].text, "follow up with legal")
+
     def test_extracts_checkbox_actions_as_unassigned(self) -> None:
         items = extract_markdown_action_items(
             "- [ ] Share rollout notes\n"
@@ -494,6 +525,122 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[0].owner, "Davis")
         self.assertEqual(items[1].owner, "Matthew")
         self.assertEqual(items[1].text, "focus on the model section.")
+
+    def test_extracts_parenthetical_owner_task_in_action_section(self) -> None:
+        items = extract_markdown_action_items(
+            "### Action Items and Next Steps\n\n"
+            "- Draft SOW for Louisiana Pacific (Matthew)\n"
+            "- Send revised proposal (Matt)\n"
+        )
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].owner, "Matthew")
+        self.assertEqual(items[0].text, "Draft SOW for Louisiana Pacific")
+        self.assertEqual(items[1].owner, "Matt")
+        self.assertEqual(items[1].text, "Send revised proposal")
+
+    def test_action_section_bullet_parenthetical_owner_does_not_keep_leading_dash(self) -> None:
+        items = extract_markdown_action_items(
+            "### Action Items and Next Steps\n\n"
+            "- Draft SOW (Matthew)\n"
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].owner, "Matthew")
+        self.assertEqual(items[0].text, "Draft SOW")
+        self.assertFalse(items[0].text.startswith("-"))
+
+    def test_extracts_standalone_parenthetical_owner_line(self) -> None:
+        parsed = parse_action_text("Draft SOW (Matthew)")
+        self.assertEqual(parsed.owner, "Matthew")
+        self.assertEqual(parsed.text, "Draft SOW")
+
+        items = extract_markdown_action_items("Draft SOW (Matthew)\n")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].owner, "Matthew")
+        self.assertEqual(items[0].text, "Draft SOW")
+
+    def test_extracts_standalone_explicit_assignment_formats(self) -> None:
+        items = extract_markdown_action_items(
+            "Matthew to draft the SOW\n"
+            "Matthew: draft the SOW\n"
+            "Assigned to Matthew: draft the SOW\n"
+        )
+
+        self.assertEqual(len(items), 3)
+        self.assertEqual(items[0].owner, "Matthew")
+        self.assertEqual(items[0].text, "draft the SOW")
+        self.assertEqual(items[1].owner, "Matthew")
+        self.assertEqual(items[1].text, "draft the SOW")
+        self.assertEqual(items[2].owner, "Matthew")
+        self.assertEqual(items[2].text, "draft the SOW")
+
+    def test_extracts_coordinated_owner_to_action_lines(self) -> None:
+        items = extract_markdown_action_items(
+            "Jeremy and Bruno to confirm Afreen’s assignment to Resi and update notes accordingly.\n"
+            "Julie and Jeremy to discuss Senski’s resource needs and possible halftime arrangement.\n"
+        )
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].owner, "Jeremy and Bruno")
+        self.assertEqual(items[0].text, "confirm Afreen’s assignment to Resi and update notes accordingly.")
+        self.assertEqual(items[1].owner, "Julie and Jeremy")
+        self.assertEqual(items[1].text, "discuss Senski’s resource needs and possible halftime arrangement.")
+
+    def test_extracts_trailing_owner_will_clause_without_false_owner(self) -> None:
+        items = extract_markdown_action_items(
+            "### Action Items and Next Steps\n\n"
+            "- Daniel requested all people leaders to encourage their teams to complete Workday training and the AI survey by the required date; Daniel will share links.\n"
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].owner, "Daniel")
+        self.assertEqual(items[0].text, "share links.")
+
+    def test_does_not_extract_ambiguous_or_non_owner_formats(self) -> None:
+        items = extract_markdown_action_items(
+            "Action: Draft SOW (v2)\n"
+            "Action: Pricing review (high priority)\n"
+            "Action: Notes: Louisiana Pacific discussion\n"
+            "Action: Context: Matthew mentioned the deck\n"
+            "Action: Matthew should draft the SOW\n"
+            "Action: We need Matthew to draft the SOW\n"
+            "Action: Please send the deck, Matthew\n"
+            "Ordinary prose sentence that should not become an action.\n"
+        )
+
+        self.assertIsNone(items[0].owner)
+        self.assertEqual(items[0].text, "Draft SOW (v2)")
+        self.assertIsNone(items[1].owner)
+        self.assertEqual(items[1].text, "Pricing review (high priority)")
+        self.assertIsNone(items[2].owner)
+        self.assertEqual(items[2].text, "Notes: Louisiana Pacific discussion")
+        self.assertIsNone(items[3].owner)
+        self.assertEqual(items[3].text, "Context: Matthew mentioned the deck")
+        self.assertIsNone(items[4].owner)
+        self.assertEqual(items[4].text, "Matthew should draft the SOW")
+        self.assertIsNone(items[5].owner)
+        self.assertEqual(items[5].text, "We need Matthew to draft the SOW")
+        self.assertIsNone(items[6].owner)
+        self.assertEqual(items[6].text, "Please send the deck, Matthew")
+
+    def test_does_not_extract_ambiguous_standalone_formats(self) -> None:
+        items = extract_markdown_action_items(
+            "Draft SOW (v2)\n"
+            "Notes: Louisiana Pacific discussion\n"
+            "Matthew should draft the SOW\n"
+        )
+
+        self.assertEqual(items, [])
+
+    def test_does_not_extract_non_action_coordinated_owner_lines(self) -> None:
+        items = extract_markdown_action_items(
+            "Jeremy and Bruno discussed staffing.\n"
+            "Jeremy and Bruno should confirm staffing.\n"
+            "Jeremy and Bruno were on the call.\n"
+        )
+
+        self.assertEqual(items, [])
 
     def test_includes_unassigned_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -537,6 +684,60 @@ class MeetingProcessorTests(unittest.TestCase):
                 "- [ ] focus on the model section. (Owner: Matthew Rouser) — Source: 2026-03-18 [[2026-03-18 - Teams - Slalom Lower Cost Delivery Model.md]]",
                 actions_text,
             )
+
+    def test_markdown_parenthetical_owner_routes_matthew_owned_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-03-16 - Teams - E&O Weekly Practice Sync.md"
+            source.write_text(
+                "### Action Items and Next Steps\n\n"
+                "- Draft SOW for Louisiana Pacific (Matthew)\n",
+                encoding="utf-8",
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "- [ ] Draft SOW for Louisiana Pacific (Owner: Matthew Rouser) — Source: 2026-03-16 [[2026-03-16 - Teams - E&O Weekly Practice Sync.md]]",
+                actions_text,
+            )
+
+    def test_markdown_coordinated_and_parenthetical_actions_only_route_matthew(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-03-16 - Teams - E&O Weekly Practice Sync.md"
+            source.write_text(
+                "### Action Items and Next Steps\n\n"
+                "- Jeremy and Bruno to confirm Afreen’s assignment to Resi and update notes accordingly.\n"
+                "- Julie and Jeremy to discuss Senski’s resource needs and possible halftime arrangement.\n"
+                "- Draft SOW for Louisiana Pacific (Matthew)\n",
+                encoding="utf-8",
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "- [ ] Draft SOW for Louisiana Pacific (Owner: Matthew Rouser) — Source: 2026-03-16 [[2026-03-16 - Teams - E&O Weekly Practice Sync.md]]",
+                actions_text,
+            )
+            self.assertNotIn("Afreen’s assignment to Resi", actions_text)
+            self.assertNotIn("Senski’s resource needs", actions_text)
+
+            processor.process_file(source, force=True)
+            actions_text_again = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
+            self.assertEqual(actions_text_again, actions_text)
 
     def test_vtt_heuristic_extracts_owner_will_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

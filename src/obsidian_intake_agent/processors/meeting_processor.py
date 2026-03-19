@@ -47,6 +47,7 @@ class ProcessingSummary:
     skipped_ignored_basename: int = 0
     skipped_already_processed: int = 0
     skipped_unsupported_ext: int = 0
+    processed_sources: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -73,12 +74,17 @@ class Config:
     codex_exec_cmd: list[str] | None = None
     extraction_mode: str = "draft"
     action_owner_aliases: dict[str, list[str]] | None = None
+    git_auto_commit_vault: bool = False
+    git_auto_commit_project: bool = False
+    git_vault_repo_path: Path | None = None
+    git_project_repo_path: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> "Config":
         data = _load_config_data(path)
+        vault_path = Path(data["vault_path"]).expanduser()
         return cls(
-            vault_path=Path(data["vault_path"]).expanduser(),
+            vault_path=vault_path,
             intake_dir=data["intake_dir"],
             meetings_dir=data["meetings_dir"],
             actions_dir=data["actions_dir"],
@@ -92,6 +98,10 @@ class Config:
             codex_exec_cmd=_string_list(data.get("codex_exec_cmd", ["codex", "exec"])),
             extraction_mode=str(data.get("extraction_mode", "draft")),
             action_owner_aliases=_string_list_map(data.get("action_owner_aliases", {})),
+            git_auto_commit_vault=bool(data.get("git_auto_commit_vault", False)),
+            git_auto_commit_project=bool(data.get("git_auto_commit_project", False)),
+            git_vault_repo_path=_optional_path(data.get("git_vault_repo_path")) or vault_path,
+            git_project_repo_path=_optional_path(data.get("git_project_repo_path")) or path.resolve().parent,
         )
 
 
@@ -105,7 +115,7 @@ class MeetingProcessor:
         self.action_owner_aliases = config.action_owner_aliases or {}
 
     def process_all_unprocessed(self) -> ProcessingSummary:
-        summary = ProcessingSummary()
+        summary = ProcessingSummary(processed_sources=[])
         for path in sorted(self.intake_path.iterdir()):
             if not path.is_file():
                 continue
@@ -114,6 +124,7 @@ class MeetingProcessor:
                 result = self.process_file(path)
                 if result.processed:
                     summary.processed_files += 1
+                    summary.processed_sources.append(path.name)
                     if result.canonical_note_path is not None:
                         summary.meeting_notes_written += 1
                     if result.actions_file_path is not None:
@@ -530,6 +541,13 @@ def _optional_string(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_path(value: object) -> Path | None:
+    text = _optional_string(value)
+    if text is None:
+        return None
+    return Path(text).expanduser()
 
 
 def _string_list(value: object) -> list[str]:
