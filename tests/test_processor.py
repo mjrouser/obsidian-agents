@@ -115,7 +115,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
             processor.process_file(processed_note, force=True)
 
-            updated_text = processed_note.read_text(encoding="utf-8")
+            updated_text = (vault / "_Archive" / "Intake" / "weekly-sync.md").read_text(encoding="utf-8")
             self.assertEqual(updated_text.count("STATUS: PROCESSED"), 1)
             self.assertIn(
                 "STATUS: PROCESSED — see [[01_Meetings/2026-03-12 - Unknown - weekly-sync.md]]",
@@ -142,15 +142,18 @@ class MeetingProcessorTests(unittest.TestCase):
 
             meeting_path = vault / "01_Meetings" / "2026-03-11 - Unknown - weekly-sync.md"
             actions_path = vault / "07_Actions" / "2026-03-09.md"
+            archived_path = vault / "_Archive" / "Intake" / "weekly-sync.md"
             self.assertTrue(meeting_path.exists())
             self.assertTrue(actions_path.exists())
+            self.assertFalse(source.exists())
+            self.assertTrue(archived_path.exists())
             self.assertIn(
                 "STATUS: PROCESSED — see [[01_Meetings/2026-03-11 - Unknown - weekly-sync.md]]",
-                source.read_text(encoding="utf-8"),
+                archived_path.read_text(encoding="utf-8"),
             )
             meeting_text = meeting_path.read_text(encoding="utf-8")
             self.assertIn("# 2026-03-11 - Unknown - weekly-sync", meeting_text)
-            self.assertIn("- Intake File: [[00_Intake/weekly-sync.md]]", meeting_text)
+            self.assertIn("- Intake File: [[_Archive/Intake/weekly-sync.md]]", meeting_text)
             actions_text = actions_path.read_text(encoding="utf-8")
             self.assertIn("# Actions — Week of 2026-03-09", actions_text)
             self.assertIn(
@@ -213,7 +216,7 @@ class MeetingProcessorTests(unittest.TestCase):
             processor.process_file(source)
             actions_path = vault / "07_Actions" / "2026-02-23.md"
             first = actions_path.read_text(encoding="utf-8")
-            processor.process_file(source, force=True)
+            processor.process_file(vault / "_Archive" / "Intake" / source.name, force=True)
             second = actions_path.read_text(encoding="utf-8")
 
             self.assertEqual(first, second)
@@ -269,9 +272,10 @@ class MeetingProcessorTests(unittest.TestCase):
             processor = MeetingProcessor(_config(vault, dry_run=False, llm_provider="none"))
 
             summary = processor.process_all_unprocessed()
+            archived_vtt_path = vault / "_Archive" / "Intake" / "2026-03-12 - Teams - Platform Sync.vtt"
 
             self.assertEqual(summary.processed_files, 1)
-            self.assertEqual(source.read_text(encoding="utf-8"), raw_vtt)
+            self.assertEqual(archived_vtt_path.read_text(encoding="utf-8"), raw_vtt)
 
             meeting_path = vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md"
             actions_path = vault / "07_Actions" / "2026-03-09.md"
@@ -280,10 +284,15 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(meeting_path.exists())
             self.assertTrue(actions_path.exists())
             self.assertTrue(sidecar_path.exists())
+            self.assertFalse(source.exists())
+            self.assertTrue(archived_vtt_path.exists())
 
             meeting_text = meeting_path.read_text(encoding="utf-8")
             self.assertIn("# 2026-03-12 - Teams - Platform Sync", meeting_text)
-            self.assertIn("- Intake File: [[00_Intake/2026-03-12 - Teams - Platform Sync.vtt]]", meeting_text)
+            self.assertIn(
+                "- Intake File: [[_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt]]",
+                meeting_text,
+            )
             self.assertIn("## Decisions", meeting_text)
             self.assertIn("Move forward with rollout", meeting_text)
             self.assertIn("## Risks", meeting_text)
@@ -293,7 +302,11 @@ class MeetingProcessorTests(unittest.TestCase):
 
             sidecar_text = sidecar_path.read_text(encoding="utf-8")
             self.assertIn("STATUS: PROCESSED — see [[2026-03-12 - Teams - Platform Sync.md]]", sidecar_text)
-            self.assertIn("[2026-03-12 - Teams - Platform Sync.vtt](2026-03-12 - Teams - Platform Sync.vtt)", sidecar_text)
+            self.assertIn(
+                "[../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt]"
+                "(../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt)",
+                sidecar_text,
+            )
 
             actions_text = actions_path.read_text(encoding="utf-8")
             self.assertIn(
@@ -318,7 +331,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
             self.assertEqual(first_summary.processed_files, 1)
             self.assertEqual(second_summary.processed_files, 0)
-            self.assertEqual(second_summary.skipped_files, 2)
+            self.assertEqual(second_summary.skipped_files, 1)
 
     def test_meeting_date_2026_03_12_rolls_to_monday_2026_03_09(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -449,13 +462,13 @@ class MeetingProcessorTests(unittest.TestCase):
             processor = MeetingProcessor(_config(vault, dry_run=False))
 
             processor.process_file(source)
-            processor.process_file(source, force=True)
+            processor.process_file(vault / "_Archive" / "Intake" / "Raw Transcripts" / source.name, force=True)
 
             meeting_text = (
                 vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md"
             ).read_text(encoding="utf-8")
             self.assertEqual(
-                meeting_text.count("[[00_Intake/Raw Transcripts/2026-03-12 - Teams - Platform Sync.md]]"),
+                meeting_text.count("[[_Archive/Intake/Raw Transcripts/2026-03-12 - Teams - Platform Sync.md]]"),
                 1,
             )
 
@@ -753,7 +766,7 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertNotIn("Afreen’s assignment to Resi", actions_text)
             self.assertNotIn("Senski’s resource needs", actions_text)
 
-            processor.process_file(source, force=True)
+            processor.process_file(vault / "_Archive" / "Intake" / source.name, force=True)
             actions_text_again = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertEqual(actions_text_again, actions_text)
 

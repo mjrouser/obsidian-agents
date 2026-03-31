@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 from .processors.meeting_processor import Config, MeetingProcessor
 from .utils.git import auto_commit_repo
+from .weekly import generate_weekly_snapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,10 +44,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Simulate processing without writing meeting notes, action files, or intake markers.",
     )
 
+    weekly_parser = subparsers.add_parser("weekly", help="Generate or update a weekly review note.")
+    weekly_parser.add_argument(
+        "mode",
+        choices=["briefing", "wrap"],
+        help="Which weekly review section to generate.",
+    )
+    weekly_parser.add_argument(
+        "--date",
+        dest="target_date",
+        default=None,
+        help="Target run date in YYYY-MM-DD format. Defaults to today.",
+    )
+    weekly_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Render the weekly note update without writing the weekly review file.",
+    )
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    _warn_if_not_using_repo_venv()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -83,6 +105,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"canonical_output_file: {result.canonical_note_path}")
         if result.processed and not args.dry_run:
             _maybe_auto_commit(config, vault_source_name=Path(args.path).name)
+        return 0
+
+    if args.command == "weekly":
+        target_date = None
+        if args.target_date:
+            target_date = __import__("datetime").date.fromisoformat(args.target_date)
+        result = generate_weekly_snapshot(
+            config,
+            mode=args.mode,
+            target_date=target_date,
+            dry_run=args.dry_run,
+        )
+        action = "would_update" if args.dry_run else ("updated" if result.changed else "unchanged")
+        print(f"weekly_review_{action}: {result.review_path}")
+        if result.changed and not args.dry_run:
+            _maybe_auto_commit(config, vault_source_name=result.review_path.name)
         return 0
 
     parser.error("Unknown command.")
@@ -124,6 +162,23 @@ def _vault_commit_source_label(processed_sources: list[str]) -> str:
     if len(processed_sources) == 1:
         return processed_sources[0]
     return "multiple intake files"
+
+
+def _warn_if_not_using_repo_venv() -> None:
+    executable = Path(sys.executable)
+    repo_root = Path(__file__).resolve().parents[2]
+    expected = repo_root / ".venv" / "bin" / "python"
+    prefix = Path(sys.prefix)
+    try:
+        prefix.relative_to((repo_root / ".venv").resolve())
+        return
+    except ValueError:
+        pass
+    print(
+        f"WARNING: expected repo virtualenv interpreter at {expected}, "
+        f"but running with {executable}",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

@@ -35,3 +35,10 @@ def replace_status_marker(path: Path, status_text: str) -> None:
 
     updated = f"{marker}\n{remainder}" if remainder else f"{marker}\n"
     safe_write_text(path, updated)
+
+
+def safe_move_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise FileExistsError(f"Archive destination already exists: {destination}")
+    source.replace(destination)

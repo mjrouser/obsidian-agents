@@ -17,7 +17,7 @@ from ..rendering.meeting_renderer import (
     render_vtt_intake_sidecar,
 )
 from ..utils.dates import monday_of_week
-from ..utils.fs import prepend_status_marker, replace_status_marker, safe_write_text
+from ..utils.fs import prepend_status_marker, replace_status_marker, safe_move_file, safe_write_text
 from ..utils.normalization import normalize_owner
 from ..utils.text import normalize_whitespace
 from .docx_reader import read_docx
@@ -78,6 +78,10 @@ class Config:
     git_auto_commit_project: bool = False
     git_vault_repo_path: Path | None = None
     git_project_repo_path: Path | None = None
+    weekly_reviews_dir: str = "09_Weekly Reviews"
+    watcher_settle_seconds: int = 5
+    watcher_stable_seconds: int = 2
+    automation_log_dir: str = "logs"
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -102,6 +106,14 @@ class Config:
             git_auto_commit_project=bool(data.get("git_auto_commit_project", False)),
             git_vault_repo_path=_optional_path(data.get("git_vault_repo_path")) or vault_path,
             git_project_repo_path=_optional_path(data.get("git_project_repo_path")) or path.resolve().parent,
+            weekly_reviews_dir=str(
+                data.get("weekly_reviews_dir")
+                or data.get("snapshots_dir")
+                or "09_Weekly Reviews"
+            ),
+            watcher_settle_seconds=int(data.get("watcher_settle_seconds", 5)),
+            watcher_stable_seconds=int(data.get("watcher_stable_seconds", 2)),
+            automation_log_dir=str(data.get("automation_log_dir", "logs")),
         )
 
 
@@ -112,6 +124,7 @@ class MeetingProcessor:
         self.intake_path = self.vault_path / config.intake_dir
         self.meetings_path = self.vault_path / config.meetings_dir
         self.actions_path = self.vault_path / config.actions_dir
+        self.archive_path = self.vault_path / config.archive_intake_dir
         self.action_owner_aliases = config.action_owner_aliases or {}
 
     def process_all_unprocessed(self) -> ProcessingSummary:
@@ -143,7 +156,8 @@ class MeetingProcessor:
         source_path = path if path.is_absolute() else self.vault_path / path
         if not source_path.exists() or source_path.is_dir():
             raise FileNotFoundError(source_path)
-        reason = self.skip_reason(source_path) if self._is_under_intake(source_path) else None
+        source_in_intake = self._is_under_intake(source_path)
+        reason = self.skip_reason(source_path) if source_in_intake else None
         if reason is not None and not (force and reason == "already processed"):
             print(f"Skipping {reason} intake file: {source_path}")
             return ProcessResult(processed=False, skip_reason=reason)
@@ -151,17 +165,23 @@ class MeetingProcessor:
             print(f"Reprocessing (forced) {source_path}")
 
         effective_dry_run = self.config.dry_run if dry_run is None else dry_run
-        body = normalize_whitespace(self._read_source(source_path))
+        body = _strip_leading_status_marker(normalize_whitespace(self._read_source(source_path)))
         if source_path.suffix.lower() == ".vtt":
-            return self._process_vtt_file(source_path, body, dry_run=effective_dry_run)
+            return self._process_vtt_file(
+                source_path,
+                body,
+                dry_run=effective_dry_run,
+                source_in_intake=source_in_intake,
+            )
         action_items = self._extract_action_items(source_path, body)
         metadata = normalize_meeting_metadata(source_path)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         meeting_link = f"{self.config.meetings_dir}/{metadata.canonical_basename}".replace("\\", "/")
+        archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
 
         meeting_note = render_meeting_note(
             heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
-            intake_file=self._vault_relative_path(source_path),
+            intake_file=self._vault_relative_path(archived_source_path),
             owner_filter=self.config.owner_filter,
             normalized_body=body,
             meeting_date=metadata.date,
@@ -193,6 +213,8 @@ class MeetingProcessor:
             if actions_changed:
                 print(f"DRY RUN — would update: {actions_note_path}")
             print(f"DRY RUN — would prepend processed marker: {source_path} -> {status_text}")
+            if source_in_intake:
+                print(f"DRY RUN — would archive: {source_path} -> {archived_source_path}")
             return ProcessResult(
                 processed=True,
                 canonical_note_path=meeting_note_path,
@@ -202,25 +224,36 @@ class MeetingProcessor:
         safe_write_text(meeting_note_path, meeting_note)
         if actions_changed:
             safe_write_text(actions_note_path, actions_note)
-        if force:
-            replace_status_marker(source_path, status_text)
-        else:
-            prepend_status_marker(source_path, status_text)
+        if source_in_intake and source_path.suffix.lower() == ".md":
+            if force:
+                replace_status_marker(source_path, status_text)
+            else:
+                prepend_status_marker(source_path, status_text)
+        if source_in_intake:
+            self._archive_processed_source(source_path)
         return ProcessResult(
             processed=True,
             canonical_note_path=meeting_note_path,
             actions_file_path=actions_note_path if actions_changed else None,
         )
 
-    def _process_vtt_file(self, source_path: Path, transcript_text: str, *, dry_run: bool) -> ProcessResult:
+    def _process_vtt_file(
+        self,
+        source_path: Path,
+        transcript_text: str,
+        *,
+        dry_run: bool,
+        source_in_intake: bool,
+    ) -> ProcessResult:
         metadata = normalize_meeting_metadata(source_path)
         extracted = self._extract_vtt_meeting_data(transcript_text, metadata)
         extracted = self._normalize_extracted_meeting_data(extracted, metadata)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         canonical_note_name = metadata.canonical_basename
+        archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
         meeting_note = render_extracted_meeting_note(
             heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
-            intake_file=self._vault_relative_path(source_path),
+            intake_file=self._vault_relative_path(archived_source_path),
             extracted=extracted,
         )
 
@@ -241,7 +274,7 @@ class MeetingProcessor:
         actions_changed = bool(actions_note) and actions_note != existing_actions
 
         sidecar_path = self.intake_path / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
-        raw_relative_path = relpath(source_path, sidecar_path.parent)
+        raw_relative_path = relpath(archived_source_path, sidecar_path.parent)
         sidecar_note = render_vtt_intake_sidecar(
             raw_relative_path=raw_relative_path,
             canonical_note_name=canonical_note_name,
@@ -253,6 +286,8 @@ class MeetingProcessor:
             if actions_changed:
                 print(f"DRY RUN — would update: {actions_note_path}")
             print(f"DRY RUN — would write: {sidecar_path}")
+            if source_in_intake:
+                print(f"DRY RUN — would archive: {source_path} -> {archived_source_path}")
             return ProcessResult(
                 processed=True,
                 canonical_note_path=meeting_note_path,
@@ -263,6 +298,8 @@ class MeetingProcessor:
         if actions_changed:
             safe_write_text(actions_note_path, actions_note)
         safe_write_text(sidecar_path, sidecar_note)
+        if source_in_intake:
+            self._archive_processed_source(source_path)
         return ProcessResult(
             processed=True,
             canonical_note_path=meeting_note_path,
@@ -362,7 +399,11 @@ class MeetingProcessor:
                 source=metadata.source,
                 title=metadata.title,
             )
-            return run_codex_json(prompt, self.config.codex_model)
+            return run_codex_json(
+                prompt,
+                self.config.codex_model,
+                exec_cmd=self.config.codex_exec_cmd,
+            )
         return self._heuristic_extract_meeting_data(transcript_text, metadata)
 
     def _heuristic_extract_meeting_data(self, transcript_text: str, metadata: MeetingMetadata) -> dict:
@@ -470,6 +511,15 @@ class MeetingProcessor:
         except ValueError:
             return Path(path.name)
 
+    def _archive_destination(self, source_path: Path) -> Path:
+        relative_source = source_path.resolve().relative_to(self.intake_path.resolve())
+        return self.archive_path / relative_source
+
+    def _archive_processed_source(self, source_path: Path) -> Path:
+        destination = self._archive_destination(source_path)
+        safe_move_file(source_path, destination)
+        return destination
+
 
 def normalize_meeting_metadata(intake_path: Path) -> MeetingMetadata:
     basename = intake_path.stem
@@ -575,3 +625,10 @@ def _parse_heuristic_action(text: str) -> dict[str, str | None]:
             "due": None,
         }
     return {"text": text.strip(), "owner": None, "due": None}
+
+
+def _strip_leading_status_marker(text: str) -> str:
+    lines = text.splitlines()
+    while lines and lines[0].startswith("STATUS: PROCESSED"):
+        lines.pop(0)
+    return "\n".join(lines).strip()

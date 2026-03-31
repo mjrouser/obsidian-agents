@@ -4,8 +4,8 @@ import json
 import subprocess
 
 
-def run_codex_json(prompt: str, model: str | None) -> dict:
-    command = ["codex", "exec"]
+def run_codex_json(prompt: str, model: str | None, exec_cmd: list[str] | None = None) -> dict:
+    command = list(exec_cmd or ["codex", "exec"])
     if model:
         command.extend(["--model", model])
     command.append("--skip-git-repo-check")

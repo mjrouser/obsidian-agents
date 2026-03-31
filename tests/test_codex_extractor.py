@@ -27,6 +27,24 @@ class CodexExtractorTests(unittest.TestCase):
             text=True,
         )
 
+    def test_uses_configured_exec_command_when_provided(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["custom-codex", "exec", "prompt"],
+            returncode=0,
+            stdout='{"title": "Weekly Sync", "actions": []}',
+        )
+
+        with patch("subprocess.run", return_value=completed) as run_mock:
+            run_codex_json("prompt", None, exec_cmd=["custom-codex", "exec"])
+
+        run_mock.assert_called_once_with(
+            ["custom-codex", "exec", "--skip-git-repo-check", "prompt"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+        )
+
     def test_raises_clear_error_on_invalid_json(self) -> None:
         completed = subprocess.CompletedProcess(
             args=["codex", "exec", "prompt"],

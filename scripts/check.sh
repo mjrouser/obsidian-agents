@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+
 if command -v git >/dev/null 2>&1; then
   echo "[OK] git: $(git --version)"
 else
@@ -14,10 +17,10 @@ else
   echo "[WARN] rg missing"
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-  echo "[OK] python3: $(python3 --version)"
+if [ -x "$PYTHON_BIN" ]; then
+  echo "[OK] .venv python: $("$PYTHON_BIN" --version)"
 else
-  echo "[FAIL] python3 is missing"
+  echo "[FAIL] expected virtualenv interpreter missing: $PYTHON_BIN"
   exit 1
 fi
 

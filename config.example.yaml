@@ -1,4 +1,4 @@
-vault_path: "/Users/matthew.rouser/Documents/Work Second Brain (Obsidian)"
+vault_path: "/Users/yourname/Documents/MyVault"
 intake_dir: "00_Intake"
 meetings_dir: "01_Meetings"
 actions_dir: "07_Actions"
@@ -6,7 +6,7 @@ archive_intake_dir: "z_Archive/Intake"
 weekly_reviews_dir: "09_Weekly Reviews"
 templates_dir: "Templates"
 owner_filter: "Matthew"
-dry_run: false
+dry_run: true
 include_unassigned: false
 llm_provider: "codex_cli"
 codex_model: null
@@ -19,10 +19,10 @@ action_owner_aliases:
     - "Matt Rouser"
     - "Matt"
     - "matthew.rouser"
-git_auto_commit_vault: true
-git_auto_commit_project: true
-git_vault_repo_path: "/Users/matthew.rouser/Documents/Work Second Brain (Obsidian)"
-git_project_repo_path: "/Users/matthew.rouser/repos/obsidian-agents"
+git_auto_commit_vault: false
+git_auto_commit_project: false
+git_vault_repo_path: null
+git_project_repo_path: null
 watcher_settle_seconds: 5
 watcher_stable_seconds: 2
-automation_log_dir: "/Users/matthew.rouser/repos/obsidian-agents/logs"
+automation_log_dir: "logs"

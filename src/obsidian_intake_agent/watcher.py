@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from .automation import IntakeAutomationWatcher, append_log
 from .processors.meeting_processor import MeetingProcessor
 
 
@@ -13,27 +14,32 @@ def watch_intake(processor: MeetingProcessor) -> None:
     class IntakeEventHandler(FileSystemEventHandler):
         def __init__(self, inner_processor: MeetingProcessor) -> None:
             self.processor = inner_processor
+            self.watcher = IntakeAutomationWatcher(inner_processor)
 
-        def on_created(self, event: object) -> None:
+        def _queue_event(self, event: object) -> None:
             if getattr(event, "is_directory", False):
                 return
             path = Path(getattr(event, "src_path"))
-            if self.processor.should_process_intake_file(path):
-                print(f"Processing {path}")
-                result = self.processor.process_file(path)
-                if result.processed and not self.processor.config.dry_run:
-                    from .main import _maybe_auto_commit
+            if not self.processor._is_under_intake(path):
+                return
+            self.watcher.mark_pending(path)
 
-                    _maybe_auto_commit(self.processor.config, vault_source_name=path.name)
+        def on_created(self, event: object) -> None:
+            self._queue_event(event)
+
+        def on_modified(self, event: object) -> None:
+            self._queue_event(event)
 
     observer = Observer()
     handler = IntakeEventHandler(processor)
     observer.schedule(handler, str(processor.intake_path), recursive=False)
     observer.start()
     print(f"Watching {processor.intake_path}")
+    append_log(handler.watcher.log_path, f"watching {processor.intake_path}")
 
     try:
         while True:
+            handler.watcher.flush_ready()
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
