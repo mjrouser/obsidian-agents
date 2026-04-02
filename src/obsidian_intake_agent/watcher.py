@@ -30,6 +30,17 @@ def watch_intake(processor: MeetingProcessor) -> None:
         def on_modified(self, event: object) -> None:
             self._queue_event(event)
 
+        def on_moved(self, event: object) -> None:
+            if getattr(event, "is_directory", False):
+                return
+            destination = getattr(event, "dest_path", None)
+            if destination is None:
+                return
+            path = Path(destination)
+            if not self.processor._is_under_intake(path):
+                return
+            self.watcher.mark_pending(path)
+
     observer = Observer()
     handler = IntakeEventHandler(processor)
     observer.schedule(handler, str(processor.intake_path), recursive=False)
