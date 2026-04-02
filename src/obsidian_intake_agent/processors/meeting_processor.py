@@ -25,7 +25,12 @@ from .md_reader import ActionItem, OWNER_WILL_PATTERN, extract_markdown_action_i
 from .vtt_reader import read_vtt
 
 ALLOWED_EXTENSIONS = {".md", ".docx", ".vtt"}
-DISALLOWED_BASENAMES = {"INBOX.md", "YYYY-MM-DD - Teams - <meeting title>.md"}
+DISALLOWED_BASENAMES = {
+    "INBOX.md",
+    "Untitled.md",
+    "YYYY-MM-DD - Teams - <meeting title>.md",
+}
+DISALLOWED_BASENAME_PREFIXES = ("Untitled ",)
 DISALLOWED_PLACEHOLDER_PATTERNS = ("<meeting title>", "YYYY-MM-DD")
 LEADING_DATE_PATTERN = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})(?: - )?(?P<rest>.*)$")
 
@@ -375,6 +380,8 @@ class MeetingProcessor:
         if path.suffix.lower() not in ALLOWED_EXTENSIONS:
             return "unsupported ext"
         if path.name in DISALLOWED_BASENAMES:
+            return "ignored basename"
+        if any(path.stem.startswith(prefix) for prefix in DISALLOWED_BASENAME_PREFIXES):
             return "ignored basename"
         if any(pattern in path.name for pattern in DISALLOWED_PLACEHOLDER_PATTERNS):
             return "ignored basename"

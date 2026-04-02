@@ -152,6 +152,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Weekly actions only include items owned by `owner_filter`, plus `Unassigned` items when `include_unassigned: true`.
 - The intake file is prepended with `STATUS: PROCESSED — see [[...]]`.
 - The watcher listens for both create and modify events, waits for the file to stop changing, and uses a per-file lock to avoid duplicate processing attempts.
+- Draft intake basenames such as `Untitled.md` and `Untitled 2.md` are ignored until you rename them.
 - `obsidian-agent run` currently requires `--once`.
 - In dry-run mode, planned writes are printed and no files are changed.
 

@@ -51,6 +51,26 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertFalse((vault / "01_Meetings").exists())
             self.assertFalse((vault / "07_Actions").exists())
 
+    def test_skips_draft_untitled_notes_until_renamed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+
+            for basename in ("Untitled.md", "Untitled 2.md"):
+                draft_note = intake_dir / basename
+                draft_note.write_text("Pasted summary\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            summary = processor.process_all_unprocessed()
+
+            self.assertEqual(summary.processed_files, 0)
+            self.assertEqual(summary.skipped_files, 2)
+            self.assertEqual(summary.skipped_ignored_basename, 2)
+            self.assertFalse((vault / "01_Meetings").exists())
+            self.assertFalse((vault / "07_Actions").exists())
+
     def test_skips_already_processed_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
