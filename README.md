@@ -184,6 +184,12 @@ launchctl load ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist
 ```
 
+Quick health check after a restart:
+
+```bash
+./scripts/check_launch_agents.sh
+```
+
 Default schedule:
 
 - Monday `09:00`: weekly briefing
