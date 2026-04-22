@@ -146,6 +146,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
 - For `launchd` jobs, prefer an absolute `codex_exec_cmd` path in `config.yaml` because `launchd` does not reliably inherit your interactive shell `PATH`.
 - The Monday actions note is created or updated in `vault_path/07_Actions`.
+- Weekly action notes use `## This Week` and `## Longer-Term / In Progress`; automated inserts always go under `This Week`.
 - Weekly reviews are written to `vault_path/09_Weekly Reviews` as separate files:
 - `YYYY-MM-DD Weekly Briefing.md`
 - `YYYY-MM-DD Weekly Wrap.md`

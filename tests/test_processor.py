@@ -268,6 +268,64 @@ class MeetingProcessorTests(unittest.TestCase):
             actions_text = (actions_dir / "2026-02-23.md").read_text(encoding="utf-8")
             self.assertEqual(actions_text.casefold().count("complete codex setup by friday"), 1)
 
+    def test_new_actions_file_uses_this_week_and_longer_term_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-03-12 - Teams - Platform Sync.md"
+            source.write_text("Action: Matthew will ship the update by Friday.\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            processor.process_all_unprocessed()
+
+            actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
+            self.assertIn("# Actions — Week of 2026-03-09", actions_text)
+            self.assertIn("## This Week", actions_text)
+            self.assertIn("## Longer-Term / In Progress", actions_text)
+            self.assertIn(
+                "## This Week\n\n"
+                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Teams - Platform Sync.md]]\n\n"
+                "## Longer-Term / In Progress",
+                actions_text,
+            )
+
+    def test_existing_longer_term_section_is_preserved_when_adding_new_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            actions_dir = vault / "07_Actions"
+            actions_dir.mkdir(parents=True)
+            (actions_dir / "2026-03-09.md").write_text(
+                "# Actions — Week of 2026-03-09\n\n"
+                "## This Week\n\n"
+                "- [ ] Existing item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n\n"
+                "## Longer-Term / In Progress\n\n"
+                "- [ ] Preserve this longer-term item (Owner: Matthew Rouser) — Source: 2026-03-08 [[long.md]]\n",
+                encoding="utf-8",
+            )
+            source = intake_dir / "2026-03-12 - Teams - Platform Sync.md"
+            source.write_text("Action: Matthew will ship the update by Friday.\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            processor.process_all_unprocessed()
+
+            actions_text = (actions_dir / "2026-03-09.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "## This Week\n\n"
+                "- [ ] Existing item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n"
+                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Teams - Platform Sync.md]]\n\n"
+                "## Longer-Term / In Progress",
+                actions_text,
+            )
+            self.assertIn(
+                "- [ ] Preserve this longer-term item (Owner: Matthew Rouser) — Source: 2026-03-08 [[long.md]]",
+                actions_text,
+            )
+
     def test_processes_vtt_without_modifying_raw_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
