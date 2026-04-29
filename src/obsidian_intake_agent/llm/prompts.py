@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+STRICT_JSON_INSTRUCTION = (
+    "Return STRICT JSON only. Do not output markdown. Do not wrap the JSON in code fences. "
+    "Do not add explanation or extra text."
+)
+
 
 def build_meeting_extraction_prompt(
     transcript_text: str,
@@ -9,7 +14,7 @@ def build_meeting_extraction_prompt(
 ) -> str:
     return f"""You are extracting structured meeting data from a transcript.
 
-Return STRICT JSON only. Do not output markdown. Do not wrap the JSON in code fences. Do not add explanation or extra text.
+{STRICT_JSON_INSTRUCTION}
 
 Use exactly this schema:
 {{

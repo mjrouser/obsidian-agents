@@ -4,6 +4,7 @@ import hashlib
 import os
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,12 +36,10 @@ class FileLock:
         if self._fd is not None:
             os.close(self._fd)
             self._fd = None
-        try:
+        with suppress(FileNotFoundError):
             self.path.unlink()
-        except FileNotFoundError:
-            pass
 
-    def __enter__(self) -> "FileLock":
+    def __enter__(self) -> FileLock:
         if not self.acquire():
             raise RuntimeError(f"Lock already held: {self.path}")
         return self

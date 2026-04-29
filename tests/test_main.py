@@ -167,9 +167,11 @@ class MainCliTests(unittest.TestCase):
             intake_file.write_text("Action: Matthew will complete Codex setup by Friday.\n", encoding="utf-8")
             config_path = _write_config(repo, vault)
 
-            with patch("obsidian_intake_agent.main.auto_commit_repo") as commit_mock:
-                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
-                    exit_code = main(["--config", str(config_path), "process", str(intake_file)])
+            with (
+                patch("obsidian_intake_agent.main.auto_commit_repo") as commit_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(["--config", str(config_path), "process", str(intake_file)])
 
             self.assertEqual(exit_code, 0)
             commit_mock.assert_not_called()
@@ -186,12 +188,14 @@ class MainCliTests(unittest.TestCase):
             intake_file.write_text("Action: Matthew will complete Codex setup by Friday.\n", encoding="utf-8")
             config_path = _write_config(repo, vault, git_auto_commit_vault=True, git_auto_commit_project=True)
 
-            with patch(
-                "obsidian_intake_agent.main.auto_commit_repo",
-                return_value=GitCommitStatus(state="committed", repo_path=vault),
-            ) as commit_mock:
-                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
-                    exit_code = main(["--config", str(config_path), "process", str(intake_file)])
+            with (
+                patch(
+                    "obsidian_intake_agent.main.auto_commit_repo",
+                    return_value=GitCommitStatus(state="committed", repo_path=vault),
+                ) as commit_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(["--config", str(config_path), "process", str(intake_file)])
 
             self.assertEqual(exit_code, 0)
             commit_mock.assert_called_once()
@@ -209,12 +213,14 @@ class MainCliTests(unittest.TestCase):
             intake_file.write_text("Action: Matthew will complete Codex setup by Friday.\n", encoding="utf-8")
             config_path = _write_config(repo, vault, git_auto_commit_vault=True)
 
-            with patch(
-                "obsidian_intake_agent.main.auto_commit_repo",
-                return_value=GitCommitStatus(state="not_git_repo", repo_path=vault),
-            ) as commit_mock:
-                with patch("sys.stdout", new_callable=io.StringIO) as stdout:
-                    exit_code = main(["--config", str(config_path), "process", str(intake_file)])
+            with (
+                patch(
+                    "obsidian_intake_agent.main.auto_commit_repo",
+                    return_value=GitCommitStatus(state="not_git_repo", repo_path=vault),
+                ) as commit_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(["--config", str(config_path), "process", str(intake_file)])
 
             self.assertEqual(exit_code, 0)
             commit_mock.assert_called_once()
@@ -230,12 +236,12 @@ class MainCliTests(unittest.TestCase):
             intake_file.write_text("Action: Matthew will complete Codex setup by Friday.\n", encoding="utf-8")
             config_path = _write_config(repo, vault, git_auto_commit_vault=True, git_auto_commit_project=True)
 
-            with patch("obsidian_intake_agent.main.auto_commit_repo") as commit_mock:
-                with patch(
-                    "obsidian_intake_agent.main.MeetingProcessor.process_file", side_effect=RuntimeError("boom")
-                ):
-                    with self.assertRaises(RuntimeError):
-                        main(["--config", str(config_path), "process", str(intake_file)])
+            with (
+                patch("obsidian_intake_agent.main.auto_commit_repo") as commit_mock,
+                patch("obsidian_intake_agent.main.MeetingProcessor.process_file", side_effect=RuntimeError("boom")),
+                self.assertRaises(RuntimeError),
+            ):
+                main(["--config", str(config_path), "process", str(intake_file)])
 
             commit_mock.assert_not_called()
 

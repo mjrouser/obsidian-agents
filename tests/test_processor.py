@@ -113,7 +113,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue((vault / "01_Meetings" / "2026-03-12 - Unknown - weekly-sync.md").exists())
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Unknown - weekly-sync.md]]",
+                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
+                "[[2026-03-12 - Unknown - weekly-sync.md]]",
                 actions_text,
             )
 
@@ -177,7 +178,8 @@ class MeetingProcessorTests(unittest.TestCase):
             actions_text = actions_path.read_text(encoding="utf-8")
             self.assertIn("# Actions — Week of 2026-03-09", actions_text)
             self.assertIn(
-                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-11 [[2026-03-11 - Unknown - weekly-sync.md]]",
+                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-11 "
+                "[[2026-03-11 - Unknown - weekly-sync.md]]",
                 actions_text,
             )
             self.assertNotIn("Review action items", actions_text)
@@ -216,7 +218,8 @@ class MeetingProcessorTests(unittest.TestCase):
 
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Unknown - weekly-sync.md]]",
+                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
+                "[[2026-03-12 - Unknown - weekly-sync.md]]",
                 actions_text,
             )
 
@@ -286,7 +289,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertIn("## Longer-Term / In Progress", actions_text)
             self.assertIn(
                 "## This Week\n\n"
-                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Teams - Platform Sync.md]]\n\n"
+                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
+                "[[2026-03-12 - Teams - Platform Sync.md]]\n\n"
                 "## Longer-Term / In Progress",
                 actions_text,
             )
@@ -317,7 +321,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertIn(
                 "## This Week\n\n"
                 "- [ ] Existing item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n"
-                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Teams - Platform Sync.md]]\n\n"
+                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
+                "[[2026-03-12 - Teams - Platform Sync.md]]\n\n"
                 "## Longer-Term / In Progress",
                 actions_text,
             )
@@ -388,7 +393,8 @@ class MeetingProcessorTests(unittest.TestCase):
 
             actions_text = actions_path.read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Teams - Platform Sync.md]]",
+                "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
+                "[[2026-03-12 - Teams - Platform Sync.md]]",
                 actions_text,
             )
 
@@ -675,7 +681,8 @@ class MeetingProcessorTests(unittest.TestCase):
     def test_extracts_trailing_owner_will_clause_without_false_owner(self) -> None:
         items = extract_markdown_action_items(
             "### Action Items and Next Steps\n\n"
-            "- Daniel requested all people leaders to encourage their teams to complete Workday training and the AI survey by the required date; Daniel will share links.\n"
+            "- Daniel requested all people leaders to encourage their teams to complete Workday training "
+            "and the AI survey by the required date; Daniel will share links.\n"
         )
 
         self.assertEqual(len(items), 1)
@@ -770,7 +777,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(result.processed)
             actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] focus on the model section. (Owner: Matthew Rouser) — Source: 2026-03-18 [[2026-03-18 - Teams - Slalom Lower Cost Delivery Model.md]]",
+                "- [ ] focus on the model section. (Owner: Matthew Rouser) — Source: 2026-03-18 "
+                "[[2026-03-18 - Teams - Slalom Lower Cost Delivery Model.md]]",
                 actions_text,
             )
 
@@ -792,7 +800,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(result.processed)
             actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] Draft SOW for Louisiana Pacific (Owner: Matthew Rouser) — Source: 2026-03-16 [[2026-03-16 - Teams - E&O Weekly Practice Sync.md]]",
+                "- [ ] Draft SOW for Louisiana Pacific (Owner: Matthew Rouser) — Source: 2026-03-16 "
+                "[[2026-03-16 - Teams - E&O Weekly Practice Sync.md]]",
                 actions_text,
             )
 
@@ -817,7 +826,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(result.processed)
             actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] Draft SOW for Louisiana Pacific (Owner: Matthew Rouser) — Source: 2026-03-16 [[2026-03-16 - Teams - E&O Weekly Practice Sync.md]]",
+                "- [ ] Draft SOW for Louisiana Pacific (Owner: Matthew Rouser) — Source: 2026-03-16 "
+                "[[2026-03-16 - Teams - E&O Weekly Practice Sync.md]]",
                 actions_text,
             )
             self.assertNotIn("Afreen’s assignment to Resi", actions_text)
@@ -845,7 +855,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(result.processed)
             actions_text = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] review changes Raymond made to the staffing model (Owner: Matthew Rouser) — Source: 2026-03-16 [[2026-03-16 - Teams - TDA CRM and GMS SOW Check-in.md]]",
+                "- [ ] review changes Raymond made to the staffing model (Owner: Matthew Rouser) — Source: "
+                "2026-03-16 [[2026-03-16 - Teams - TDA CRM and GMS SOW Check-in.md]]",
                 actions_text,
             )
 
@@ -867,7 +878,8 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(result.processed)
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn(
-                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 [[2026-03-12 - Teams - Platform Sync.md]]",
+                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
+                "[[2026-03-12 - Teams - Platform Sync.md]]",
                 actions_text,
             )
 

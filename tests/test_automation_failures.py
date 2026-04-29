@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from obsidian_intake_agent.automation_failures import write_automation_failure_note
@@ -22,7 +22,7 @@ class AutomationFailureNoteTests(unittest.TestCase):
                 job_name="weekly-wrap",
                 exit_code=1,
                 stderr_log_path=log,
-                occurred_at=datetime(2026, 4, 29, 12, 15, tzinfo=timezone.utc),
+                occurred_at=datetime(2026, 4, 29, 12, 15, tzinfo=UTC),
             )
 
             self.assertEqual(note.path.parent, vault / "_System" / "Agent Errors")
@@ -43,7 +43,7 @@ class AutomationFailureNoteTests(unittest.TestCase):
                 job_name="intake watcher",
                 exit_code=2,
                 stderr_log_path=missing_log,
-                occurred_at=datetime(2026, 4, 29, 9, 0, tzinfo=timezone.utc),
+                occurred_at=datetime(2026, 4, 29, 9, 0, tzinfo=UTC),
             )
 
             text = note.path.read_text(encoding="utf-8")
@@ -56,7 +56,7 @@ class AutomationFailureNoteTests(unittest.TestCase):
             log = Path(tmp_dir) / "weekly-wrap.stderr.log"
             log.write_text("failure\n", encoding="utf-8")
             config = _config(vault)
-            occurred_at = datetime(2026, 4, 29, 12, 15, tzinfo=timezone.utc)
+            occurred_at = datetime(2026, 4, 29, 12, 15, tzinfo=UTC)
 
             first = write_automation_failure_note(
                 config,

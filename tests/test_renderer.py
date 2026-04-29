@@ -85,7 +85,8 @@ class MeetingRendererTests(unittest.TestCase):
         self.assertIn(
             "## This Week\n\n"
             "- [ ] Existing this week item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n"
-            "- [ ] New this week item (Owner: Matthew Rouser) — Source: 2026-03-11 [[2026-03-11 - Teams - Weekly Sync.md]]\n\n"
+            "- [ ] New this week item (Owner: Matthew Rouser) — Source: 2026-03-11 "
+            "[[2026-03-11 - Teams - Weekly Sync.md]]\n\n"
             "## Longer-Term / In Progress",
             rendered,
         )
@@ -118,7 +119,8 @@ class MeetingRendererTests(unittest.TestCase):
         self.assertIn(
             "## This Week\n\n"
             "- [ ] Existing item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n"
-            "- [ ] New migrated item (Owner: Matthew Rouser) — Source: 2026-03-11 [[2026-03-11 - Teams - Weekly Sync.md]]\n\n"
+            "- [ ] New migrated item (Owner: Matthew Rouser) — Source: 2026-03-11 "
+            "[[2026-03-11 - Teams - Weekly Sync.md]]\n\n"
             "## Longer-Term / In Progress\n",
             rendered,
         )

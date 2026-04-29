@@ -54,17 +54,19 @@ class WatcherTests(unittest.TestCase):
             _is_under_intake=lambda path: Path(path).parent == intake_path,
         )
 
-        with patch.dict(
-            sys.modules,
-            {
-                "watchdog.events": fake_watchdog_events,
-                "watchdog.observers": fake_watchdog_observers,
-            },
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "watchdog.events": fake_watchdog_events,
+                    "watchdog.observers": fake_watchdog_observers,
+                },
+            ),
+            patch("obsidian_intake_agent.watcher.IntakeAutomationWatcher", FakeAutomationWatcher),
+            patch("obsidian_intake_agent.watcher.append_log"),
+            patch("builtins.print"),
         ):
-            with patch("obsidian_intake_agent.watcher.IntakeAutomationWatcher", FakeAutomationWatcher):
-                with patch("obsidian_intake_agent.watcher.append_log"):
-                    with patch("builtins.print"):
-                        watch_intake(processor)
+            watch_intake(processor)
 
         self.assertEqual(
             queued_paths,

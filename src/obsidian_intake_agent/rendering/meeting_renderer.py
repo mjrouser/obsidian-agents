@@ -29,10 +29,7 @@ class ActionRecord:
 
 
 def format_obsidian_link(path: Path | str) -> str:
-    if isinstance(path, Path):
-        target = path.as_posix()
-    else:
-        target = str(path).strip().replace("\\", "/")
+    target = path.as_posix() if isinstance(path, Path) else str(path).strip().replace("\\", "/")
     if target.startswith("[[") and target.endswith("]]"):
         return target
     return f"[[{target}]]"

@@ -110,12 +110,17 @@ class WeeklyCodexTests(unittest.TestCase):
         )
 
     def test_run_codex_markdown_raises_clear_error_on_timeout(self) -> None:
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["codex"], timeout=30)):
-            with self.assertRaisesRegex(
+        with (
+            patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["codex"], timeout=30),
+            ),
+            self.assertRaisesRegex(
                 TimeoutError,
                 "Codex CLI timed out after 30 seconds while returning markdown",
-            ):
-                run_codex_markdown("prompt", model=None, exec_cmd=["codex", "exec"], timeout_seconds=30)
+            ),
+        ):
+            run_codex_markdown("prompt", model=None, exec_cmd=["codex", "exec"], timeout_seconds=30)
 
 
 class ConfigCompatibilityTests(unittest.TestCase):

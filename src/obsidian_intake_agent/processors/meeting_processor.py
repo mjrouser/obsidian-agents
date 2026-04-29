@@ -91,7 +91,7 @@ class Config:
     automation_error_dir: str = "_System/Agent Errors"
 
     @classmethod
-    def load(cls, path: Path) -> "Config":
+    def load(cls, path: Path) -> Config:
         data = _load_config_data(path)
         vault_path = Path(data["vault_path"]).expanduser()
         return cls(
@@ -353,9 +353,7 @@ class MeetingProcessor:
         normalized_filter = self._normalize_owner(self.config.owner_filter) or self.config.owner_filter
         if normalized_owner is None:
             return self.config.include_unassigned
-        if normalized_owner.casefold() == normalized_filter.casefold():
-            return True
-        return False
+        return normalized_owner.casefold() == normalized_filter.casefold()
 
     def _is_processed(self, path: Path) -> bool:
         if not path.exists():
