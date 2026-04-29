@@ -13,23 +13,15 @@ from ..rendering.meeting_renderer import (
     render_vtt_intake_sidecar,
 )
 from ..utils.dates import monday_of_week
-from ..utils.fs import prepend_status_marker, replace_status_marker, safe_move_file, safe_write_text
+from ..utils.fs import prepend_status_marker, replace_status_marker, safe_write_text
 from ..utils.normalization import normalize_owner
 from ..utils.text import normalize_whitespace
 from .docx_reader import read_docx
+from .intake_state import IntakeState, strip_leading_status_marker
 from .md_reader import ActionItem, extract_markdown_action_items, read_markdown
 from .meeting_metadata import normalize_meeting_metadata
 from .vtt_extractor import action_items_from_extracted, extract_vtt_meeting_data, normalize_extracted_meeting_data
 from .vtt_reader import read_vtt
-
-ALLOWED_EXTENSIONS = {".md", ".docx", ".vtt"}
-DISALLOWED_BASENAMES = {
-    "INBOX.md",
-    "Untitled.md",
-    "YYYY-MM-DD - Teams - <meeting title>.md",
-}
-DISALLOWED_BASENAME_PREFIXES = ("Untitled ",)
-DISALLOWED_PLACEHOLDER_PATTERNS = ("<meeting title>", "YYYY-MM-DD")
 
 
 @dataclass(slots=True)
@@ -61,6 +53,7 @@ class MeetingProcessor:
         self.actions_path = self.vault_path / config.actions_dir
         self.archive_path = self.vault_path / config.archive_intake_dir
         self.action_owner_aliases = config.action_owner_aliases or {}
+        self.intake_state = IntakeState(intake_path=self.intake_path, archive_path=self.archive_path)
 
     def process_all_unprocessed(self) -> ProcessingSummary:
         summary = ProcessingSummary(processed_sources=[])
@@ -100,7 +93,7 @@ class MeetingProcessor:
             print(f"Reprocessing (forced) {source_path}")
 
         effective_dry_run = self.config.dry_run if dry_run is None else dry_run
-        body = _strip_leading_status_marker(normalize_whitespace(self._read_source(source_path)))
+        body = strip_leading_status_marker(normalize_whitespace(self._read_source(source_path)))
         if source_path.suffix.lower() == ".vtt":
             return self._process_vtt_file(
                 source_path,
@@ -286,50 +279,19 @@ class MeetingProcessor:
         return normalized_owner.casefold() == normalized_filter.casefold()
 
     def _is_processed(self, path: Path) -> bool:
-        if not path.exists():
-            return False
-        with path.open("r", encoding="utf-8") as handle:
-            for _ in range(3):
-                line = handle.readline()
-                if not line:
-                    return False
-                if line.startswith("STATUS: PROCESSED"):
-                    return True
-        return False
+        return self.intake_state.is_processed(path)
 
     def should_process_intake_file(self, path: Path) -> bool:
-        return self.skip_reason(path) is None
+        return self.intake_state.should_process(path)
 
     def skip_reason(self, path: Path) -> str | None:
-        if not path.exists() or not path.is_file():
-            return "ignored basename"
-        if not self._is_under_intake(path):
-            return "ignored basename"
-        if path.suffix.lower() not in ALLOWED_EXTENSIONS:
-            return "unsupported ext"
-        if path.name in DISALLOWED_BASENAMES:
-            return "ignored basename"
-        if any(path.stem.startswith(prefix) for prefix in DISALLOWED_BASENAME_PREFIXES):
-            return "ignored basename"
-        if any(pattern in path.name for pattern in DISALLOWED_PLACEHOLDER_PATTERNS):
-            return "ignored basename"
-        if path.suffix.lower() == ".vtt" and self._vtt_has_processed_sidecar(path):
-            return "already processed"
-        if self._is_processed(path):
-            return "already processed"
-        return None
+        return self.intake_state.skip_reason(path)
 
     def _is_under_intake(self, path: Path) -> bool:
-        try:
-            path.resolve().relative_to(self.intake_path.resolve())
-            return True
-        except ValueError:
-            return False
+        return self.intake_state.is_under_intake(path)
 
     def _vtt_has_processed_sidecar(self, path: Path) -> bool:
-        metadata = normalize_meeting_metadata(path)
-        sidecar = self.intake_path / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
-        return self._is_processed(sidecar)
+        return self.intake_state.vtt_has_processed_sidecar(path)
 
     def _normalize_owner(self, owner: str | None) -> str | None:
         return normalize_owner(owner, self.action_owner_aliases)
@@ -341,17 +303,7 @@ class MeetingProcessor:
             return Path(path.name)
 
     def _archive_destination(self, source_path: Path) -> Path:
-        relative_source = source_path.resolve().relative_to(self.intake_path.resolve())
-        return self.archive_path / relative_source
+        return self.intake_state.archive_destination(source_path)
 
     def _archive_processed_source(self, source_path: Path) -> Path:
-        destination = self._archive_destination(source_path)
-        safe_move_file(source_path, destination)
-        return destination
-
-
-def _strip_leading_status_marker(text: str) -> str:
-    lines = text.splitlines()
-    while lines and lines[0].startswith("STATUS: PROCESSED"):
-        lines.pop(0)
-    return "\n".join(lines).strip()
+        return self.intake_state.archive_processed_source(source_path)

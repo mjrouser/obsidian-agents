@@ -27,6 +27,8 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
   and validation.
 - `src/obsidian_intake_agent/processors/meeting_metadata.py` owns meeting
   filename metadata normalization.
+- `src/obsidian_intake_agent/processors/intake_state.py` owns intake
+  eligibility, processed-state detection, and archive destination rules.
 - `src/obsidian_intake_agent/processors/meeting_processor.py` owns intake file
   processing and meeting/action output orchestration.
 - `src/obsidian_intake_agent/processors/vtt_extractor.py` owns VTT transcript

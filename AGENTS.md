@@ -119,6 +119,9 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   purpose-specific modules.
 - `src/obsidian_intake_agent/processors/meeting_metadata.py`: canonical meeting
   date/source/title normalization from intake filenames.
+- `src/obsidian_intake_agent/processors/intake_state.py`: intake eligibility,
+  processed-state detection, VTT sidecar detection, and archive destination
+  rules.
 - `src/obsidian_intake_agent/processors/vtt_extractor.py`: VTT transcript
   extraction, heuristic fallback, and extracted-data normalization.
 - `src/obsidian_intake_agent/processors/*_reader.py`: source-format readers for
