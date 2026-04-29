@@ -31,7 +31,8 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
 
    ```bash
    source .venv/bin/activate
-   ./.venv/bin/python -m pip install -e .
+   ./.venv/bin/python -m pip install -r requirements.lock
+   ./.venv/bin/python -m pip install -e . --no-deps
    ```
 
 4. Copy [`config.example.yaml`](/Users/matthew.rouser/repos/obsidian-agents/config.example.yaml) to [`config.yaml`](/Users/matthew.rouser/repos/obsidian-agents/config.yaml) if needed, then review and edit it.
@@ -205,6 +206,7 @@ Run:
 make check
 make test
 make build
+make audit
 ```
 
 Current behavior:
@@ -212,5 +214,14 @@ Current behavior:
 - `make check` verifies `git`, `rg` when present, and `./.venv/bin/python`.
 - `make test` runs the unit test suite.
 - `make build` byte-compiles the source and tests.
-- CI creates `.venv`, installs the project in editable mode, then runs the same
-  `make check`, `make test`, and `make build` commands.
+- `make audit` scans locked dependencies with `pip-audit`.
+- CI creates `.venv`, installs locked dependencies from `requirements.lock`,
+  installs the project in editable mode without re-resolving dependencies, then
+  runs the same `make check`, `make test`, `make build`, and `make audit`
+  commands.
+
+Update the dependency lockfile after changing `pyproject.toml`:
+
+```bash
+uv pip compile pyproject.toml --extra audit --output-file requirements.lock
+```

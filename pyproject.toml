@@ -15,6 +15,11 @@ dependencies = [
   "webvtt-py",
 ]
 
+[project.optional-dependencies]
+audit = [
+  "pip-audit>=2.9,<3",
+]
+
 [project.scripts]
 obsidian-agent = "obsidian_intake_agent.main:main"
 

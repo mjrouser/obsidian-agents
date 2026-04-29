@@ -29,5 +29,6 @@ __pycache__/
 *.pyc
 
 # Misc
+.cache/
 .tmp/
 tmp/

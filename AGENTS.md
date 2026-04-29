@@ -72,6 +72,7 @@ Use these commands first when validating changes:
 - `make check`
 - `make test`
 - `make build`
+- `make audit`
 
 If one of these commands is unavailable in the repo, fall back to the nearest project-specific equivalent and say so explicitly.
 
@@ -84,6 +85,9 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - Prefer small, reviewable commits.
 - Keep CLI behavior explicit and discoverable.
 - Preserve dry-run safety for file-writing operations.
+- Keep dependency changes reflected in both `pyproject.toml` and
+  `requirements.lock`.
+- Run `make audit` after dependency changes.
 
 ## Safety rules
 
@@ -107,6 +111,7 @@ A task is done when:
 1. `make check` passes, or an explicitly documented equivalent passes.
 2. `make test` passes, or an explicitly documented equivalent passes.
 3. `make build` passes, or an explicitly documented equivalent passes.
-4. Relevant docs are updated.
-5. Behavior changes include tests where practical.
-6. Transcript-processing changes are verified with dry-run output when applicable.
+4. `make audit` passes when dependencies or packaging change.
+5. Relevant docs are updated.
+6. Behavior changes include tests where practical.
+7. Transcript-processing changes are verified with dry-run output when applicable.
