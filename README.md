@@ -21,6 +21,13 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
 - Do not rely on system `python` or `python3` for normal project execution.
 - The CLI prints a warning if it is started outside the repo virtualenv.
 
+## Code Organization
+
+- `src/obsidian_intake_agent/config.py` owns configuration loading, defaults,
+  and validation.
+- `src/obsidian_intake_agent/processors/meeting_processor.py` owns intake file
+  processing and meeting/action output orchestration.
+
 ## Setup
 
 1. Clone the repository.

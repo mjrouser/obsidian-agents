@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from .processors.meeting_processor import Config
+from .config import Config
 from .utils.dates import monday_of_week
 from .utils.fs import safe_write_text
 

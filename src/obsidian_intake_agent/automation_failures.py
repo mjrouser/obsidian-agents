@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .processors.meeting_processor import Config
+from .config import Config
 from .utils.fs import safe_write_text
 
 MAX_STDERR_CHARS = 6000

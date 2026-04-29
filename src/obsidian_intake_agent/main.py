@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .processors.meeting_processor import Config, MeetingProcessor
+from .config import Config
+from .processors.meeting_processor import MeetingProcessor
 from .utils.git import auto_commit_repo
 from .weekly import generate_weekly_snapshot
 

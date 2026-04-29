@@ -8,12 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
-from obsidian_intake_agent.processors.meeting_processor import (
-    Config,
-    MeetingProcessor,
-    normalize_meeting_metadata,
-)
+from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor, normalize_meeting_metadata
 
 
 class MeetingProcessorTests(unittest.TestCase):

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from obsidian_intake_agent.automation_failures import write_automation_failure_note
-from obsidian_intake_agent.processors.meeting_processor import Config
+from obsidian_intake_agent.config import Config
 
 
 class AutomationFailureNoteTests(unittest.TestCase):
