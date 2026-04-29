@@ -244,6 +244,7 @@ Run:
 make check
 make lint
 make test
+make smoke
 make build
 make audit
 ```
@@ -258,6 +259,8 @@ Current behavior:
 - `make format-check` verifies Ruff formatting.
 - `make format` applies Ruff formatting to `src`, `tests`, and `scripts`.
 - `make test` runs the unit test suite.
+- `make smoke` runs the installed CLI against a temporary vault and verifies
+  meeting-note, action-note, archive, and command-output behavior.
 - `make build` byte-compiles the source and tests.
 - `make audit` scans locked dependencies with `pip-audit`.
 - CI creates `.venv`, installs locked dependencies from `requirements.lock`,

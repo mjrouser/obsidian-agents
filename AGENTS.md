@@ -71,6 +71,7 @@ Use these commands first when validating changes:
 
 - `make check`
 - `make test`
+- `make smoke`
 - `make build`
 - `make audit`
 
@@ -157,8 +158,10 @@ A task is done when:
 
 1. `make check` passes, or an explicitly documented equivalent passes.
 2. `make test` passes, or an explicitly documented equivalent passes.
-3. `make build` passes, or an explicitly documented equivalent passes.
-4. `make audit` passes when dependencies or packaging change.
-5. Relevant docs are updated.
-6. Behavior changes include tests where practical.
-7. Transcript-processing changes are verified with dry-run output when applicable.
+3. `make smoke` passes when CLI behavior, processing orchestration, packaging,
+   or command wiring changes.
+4. `make build` passes, or an explicitly documented equivalent passes.
+5. `make audit` passes when dependencies or packaging change.
+6. Relevant docs are updated.
+7. Behavior changes include tests where practical.
+8. Transcript-processing changes are verified with dry-run output when applicable.

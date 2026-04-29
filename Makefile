@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 PYTHON ?= ./.venv/bin/python
 
-.PHONY: check lint format-check format test build audit
+.PHONY: check lint format-check format test smoke build audit
 
 check: lint format-check
 	@if [ -x ./scripts/check.sh ]; then ./scripts/check.sh; else echo "No check script found"; fi
@@ -17,6 +17,9 @@ format:
 
 test:
 	@PYTHONPATH=src $(PYTHON) -m unittest discover -s tests -v
+
+smoke:
+	@$(PYTHON) scripts/smoke_cli.py
 
 build:
 	@$(PYTHON) -m compileall src tests
