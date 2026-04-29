@@ -27,6 +27,10 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
   and validation.
 - `src/obsidian_intake_agent/processors/meeting_processor.py` owns intake file
   processing and meeting/action output orchestration.
+- `src/obsidian_intake_agent/rendering/meeting_renderer.py` owns meeting-note
+  rendering.
+- `src/obsidian_intake_agent/rendering/action_renderer.py` owns weekly
+  action-note parsing, deduplication, and rendering.
 
 ## Setup
 

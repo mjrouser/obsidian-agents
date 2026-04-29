@@ -9,9 +9,8 @@ from pathlib import Path
 from ..config import Config
 from ..llm.codex_extractor import run_codex_json
 from ..llm.prompts import build_meeting_extraction_prompt
+from ..rendering.action_renderer import ActionRecord, render_actions_note
 from ..rendering.meeting_renderer import (
-    ActionRecord,
-    render_actions_note,
     render_extracted_meeting_note,
     render_meeting_note,
     render_vtt_intake_sidecar,
