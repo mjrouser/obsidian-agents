@@ -77,6 +77,7 @@ class Config:
     llm_provider: str = "codex_cli"
     codex_model: str | None = None
     codex_exec_cmd: list[str] | None = None
+    codex_timeout_seconds: int | None = 300
     extraction_mode: str = "draft"
     action_owner_aliases: dict[str, list[str]] | None = None
     git_auto_commit_vault: bool = False
@@ -105,6 +106,7 @@ class Config:
             llm_provider=str(data.get("llm_provider", "codex_cli")),
             codex_model=_optional_string(data.get("codex_model")),
             codex_exec_cmd=_string_list(data.get("codex_exec_cmd", ["codex", "exec"])),
+            codex_timeout_seconds=_optional_positive_int(data.get("codex_timeout_seconds", 300)),
             extraction_mode=str(data.get("extraction_mode", "draft")),
             action_owner_aliases=_string_list_map(data.get("action_owner_aliases", {})),
             git_auto_commit_vault=bool(data.get("git_auto_commit_vault", False)),
@@ -410,6 +412,7 @@ class MeetingProcessor:
                 prompt,
                 self.config.codex_model,
                 exec_cmd=self.config.codex_exec_cmd,
+                timeout_seconds=self.config.codex_timeout_seconds,
             )
         return self._heuristic_extract_meeting_data(transcript_text, metadata)
 
@@ -605,6 +608,18 @@ def _optional_path(value: object) -> Path | None:
     if text is None:
         return None
     return Path(text).expanduser()
+
+
+def _optional_positive_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("codex_timeout_seconds must be a positive integer or null.") from exc
+    if parsed <= 0:
+        raise ValueError("codex_timeout_seconds must be a positive integer or null.")
+    return parsed
 
 
 def _string_list(value: object) -> list[str]:

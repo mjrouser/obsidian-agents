@@ -64,6 +64,11 @@ templates_dir: "Templates"
 owner_filter: "Matthew"
 dry_run: true
 include_unassigned: false
+llm_provider: "codex_cli"
+codex_model: null
+codex_exec_cmd: ["codex", "exec"]
+codex_timeout_seconds: 300
+extraction_mode: "draft"
 git_auto_commit_vault: false
 # Project repo auto-commit is intentionally unsupported at runtime.
 git_auto_commit_project: false
@@ -78,6 +83,7 @@ automation_log_dir: "logs"
 
 Set `dry_run: false` when you want the agent to write files instead of printing planned changes.
 Set `include_unassigned: true` if weekly action notes should also include items without a parsed owner.
+Set `codex_timeout_seconds` to control how long Codex CLI extraction and weekly generation may run before failing. Use `null` only when you intentionally want no timeout.
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
 Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
 If `git_vault_repo_path` is unset, it defaults to `vault_path`.
@@ -151,6 +157,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Markdown intake files extract action items from `Action:` lines and `- [ ]` checkboxes.
 - Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake`.
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
+- Codex CLI calls use `codex_timeout_seconds` so watcher and weekly automation fail clearly instead of hanging indefinitely.
 - For `launchd` jobs, prefer an absolute `codex_exec_cmd` path in `config.yaml` because `launchd` does not reliably inherit your interactive shell `PATH`.
 - The Monday actions note is created or updated in `vault_path/07_Actions`.
 - Weekly action notes use `## This Week` and `## Longer-Term / In Progress`; automated inserts always go under `This Week`.

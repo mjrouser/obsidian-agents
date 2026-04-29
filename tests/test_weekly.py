@@ -104,7 +104,16 @@ class WeeklyCodexTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=None,
             text=True,
+            timeout=None,
         )
+
+    def test_run_codex_markdown_raises_clear_error_on_timeout(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["codex"], timeout=30)):
+            with self.assertRaisesRegex(
+                TimeoutError,
+                "Codex CLI timed out after 30 seconds while returning markdown",
+            ):
+                run_codex_markdown("prompt", model=None, exec_cmd=["codex", "exec"], timeout_seconds=30)
 
 
 class ConfigCompatibilityTests(unittest.TestCase):
@@ -131,6 +140,76 @@ class ConfigCompatibilityTests(unittest.TestCase):
             loaded = Config.load(config_path)
 
             self.assertEqual(loaded.weekly_reviews_dir, "09_Weekly Reviews")
+
+    def test_codex_timeout_defaults_to_300_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'vault_path: "/tmp/vault"',
+                        'intake_dir: "00_Intake"',
+                        'meetings_dir: "01_Meetings"',
+                        'actions_dir: "07_Actions"',
+                        'archive_intake_dir: "z_Archive/Intake"',
+                        'templates_dir: "Templates"',
+                        'owner_filter: "Matthew"',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            loaded = Config.load(config_path)
+
+            self.assertEqual(loaded.codex_timeout_seconds, 300)
+
+    def test_codex_timeout_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'vault_path: "/tmp/vault"',
+                        'intake_dir: "00_Intake"',
+                        'meetings_dir: "01_Meetings"',
+                        'actions_dir: "07_Actions"',
+                        'archive_intake_dir: "z_Archive/Intake"',
+                        'templates_dir: "Templates"',
+                        'owner_filter: "Matthew"',
+                        "codex_timeout_seconds: null",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            loaded = Config.load(config_path)
+
+            self.assertIsNone(loaded.codex_timeout_seconds)
+
+    def test_codex_timeout_must_be_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'vault_path: "/tmp/vault"',
+                        'intake_dir: "00_Intake"',
+                        'meetings_dir: "01_Meetings"',
+                        'actions_dir: "07_Actions"',
+                        'archive_intake_dir: "z_Archive/Intake"',
+                        'templates_dir: "Templates"',
+                        'owner_filter: "Matthew"',
+                        "codex_timeout_seconds: 0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "codex_timeout_seconds must be a positive integer"):
+                Config.load(config_path)
 
 
 def _config(vault: Path) -> Config:

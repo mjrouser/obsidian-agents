@@ -11,6 +11,7 @@ include_unassigned: false
 llm_provider: "codex_cli"
 codex_model: null
 codex_exec_cmd: ["codex", "exec"]
+codex_timeout_seconds: 300
 extraction_mode: "draft"
 action_owner_aliases:
   Matthew Rouser:

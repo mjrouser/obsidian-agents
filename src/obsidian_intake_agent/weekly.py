@@ -48,6 +48,7 @@ def generate_weekly_snapshot(
         full_prompt,
         model=config.codex_model,
         exec_cmd=config.codex_exec_cmd,
+        timeout_seconds=config.codex_timeout_seconds,
     ).strip()
     updated = _normalize_review_text(generated)
     existing = review_path.read_text(encoding="utf-8") if review_path.exists() else ""
@@ -86,19 +87,31 @@ def build_weekly_source_bundle(config: Config, *, monday: date, run_date: date, 
     return "\n\n".join(parts)
 
 
-def run_codex_markdown(prompt: str, *, model: str | None, exec_cmd: list[str] | None) -> str:
+def run_codex_markdown(
+    prompt: str,
+    *,
+    model: str | None,
+    exec_cmd: list[str] | None,
+    timeout_seconds: int | None = None,
+) -> str:
     command = list(exec_cmd or ["codex", "exec"])
     if model:
         command.extend(["--model", model])
     command.append("--skip-git-repo-check")
     command.append(prompt)
-    completed = subprocess.run(
-        command,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=None,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"Codex CLI timed out after {timeout_seconds} seconds while returning markdown."
+        ) from exc
     return completed.stdout
 
 

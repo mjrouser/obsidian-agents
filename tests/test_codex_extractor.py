@@ -25,6 +25,7 @@ class CodexExtractorTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=None,
             text=True,
+            timeout=None,
         )
 
     def test_uses_configured_exec_command_when_provided(self) -> None:
@@ -43,6 +44,7 @@ class CodexExtractorTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=None,
             text=True,
+            timeout=None,
         )
 
     def test_raises_clear_error_on_invalid_json(self) -> None:
@@ -60,6 +62,14 @@ class CodexExtractorTests(unittest.TestCase):
                 run_codex_json("prompt", None)
 
         self.assertIn("not json output", str(exc.exception))
+
+    def test_raises_clear_error_on_timeout(self) -> None:
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["codex"], timeout=12)):
+            with self.assertRaisesRegex(
+                TimeoutError,
+                "Codex CLI timed out after 12 seconds while returning JSON",
+            ):
+                run_codex_json("prompt", None, timeout_seconds=12)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ The app is designed to be safe to test before it writes anything.
 - Already-processed notes are skipped unless `--force` is used.
 - Raw `.vtt` transcripts are archived unchanged; the processed marker is written
   to a sidecar intake note.
+- Codex CLI extraction and weekly generation use `codex_timeout_seconds` so
+  automation fails clearly instead of hanging indefinitely.
 
 Use dry runs when changing config, prompts, dependencies, or parsing behavior.
 
@@ -156,6 +158,8 @@ Common checks:
 - Confirm launchd jobs are loaded: `launchctl list | grep obsidian.agent`
 - Confirm local `config.yaml` exists and points to the intended Obsidian vault.
 - Confirm `dry_run` is set the way you intend before expecting writes.
+- If Codex CLI times out, review `codex_timeout_seconds`, `codex_exec_cmd`, and
+  the relevant stderr log before rerunning.
 
 `config.yaml` is intentionally ignored by git. To rebuild it on a new machine,
 copy `config.example.yaml` to `config.yaml`, then set local paths and automation
