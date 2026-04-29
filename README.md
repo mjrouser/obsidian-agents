@@ -223,6 +223,7 @@ Run:
 
 ```bash
 make check
+make lint
 make test
 make build
 make audit
@@ -230,7 +231,12 @@ make audit
 
 Current behavior:
 
-- `make check` verifies `git`, `rg` when present, and `./.venv/bin/python`.
+- `make check` runs Ruff linting, verifies `git`, `rg` when present, verifies
+  `./.venv/bin/python`, checks config hygiene, and parses shell scripts.
+- `make lint` runs Ruff against `src`, `tests`, and `scripts`.
+- `make format` applies Ruff formatting to `src`, `tests`, and `scripts`; run
+  this intentionally because the current formatter baseline is not enforced in
+  `make check`.
 - `make test` runs the unit test suite.
 - `make build` byte-compiles the source and tests.
 - `make audit` scans locked dependencies with `pip-audit`.
@@ -242,5 +248,5 @@ Current behavior:
 Update the dependency lockfile after changing `pyproject.toml`:
 
 ```bash
-uv pip compile pyproject.toml --extra audit --output-file requirements.lock
+uv pip compile pyproject.toml --extra audit --extra dev --output-file requirements.lock
 ```

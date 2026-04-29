@@ -19,6 +19,9 @@ dependencies = [
 audit = [
   "pip-audit>=2.9,<3",
 ]
+dev = [
+  "ruff>=0.14,<1",
+]
 
 [project.scripts]
 obsidian-agent = "obsidian_intake_agent.main:main"
@@ -28,3 +31,13 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]
