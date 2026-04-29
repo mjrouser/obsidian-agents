@@ -2,6 +2,9 @@
 
 `obsidian_intake_agent` watches or processes files from an Obsidian intake folder, writes canonical meeting notes into `01_Meetings`, appends a weekly actions note in `07_Actions`, and can update weekly review notes in `09_Weekly Reviews`.
 
+For day-to-day commands, automation checks, troubleshooting, and recovery steps,
+see [`USAGE.md`](USAGE.md).
+
 ## Requirements
 
 - Python 3.11+
