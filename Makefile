@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-PYTHON := ./.venv/bin/python
+PYTHON ?= ./.venv/bin/python
 
 .PHONY: check test build
 

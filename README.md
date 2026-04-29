@@ -212,3 +212,5 @@ Current behavior:
 - `make check` verifies `git`, `rg` when present, and `./.venv/bin/python`.
 - `make test` runs the unit test suite.
 - `make build` byte-compiles the source and tests.
+- CI creates `.venv`, installs the project in editable mode, then runs the same
+  `make check`, `make test`, and `make build` commands.
