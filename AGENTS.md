@@ -109,11 +109,44 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 
 ## Code layout notes
 
-Document project-specific structure here once established, for example:
-
-- `src/`: application code
-- `tests/`: automated tests
-- `scripts/`: project automation scripts
+- `src/obsidian_intake_agent/config.py`: configuration loading, defaults,
+  compatibility handling, and validation.
+- `src/obsidian_intake_agent/main.py`: CLI argument parsing, command dispatch,
+  user-visible command output, and vault auto-commit orchestration.
+- `src/obsidian_intake_agent/processors/meeting_processor.py`: high-level
+  meeting intake orchestration. Keep this focused on workflow coordination; move
+  independently meaningful parsing, rendering, metadata, and state rules into
+  purpose-specific modules.
+- `src/obsidian_intake_agent/processors/meeting_metadata.py`: canonical meeting
+  date/source/title normalization from intake filenames.
+- `src/obsidian_intake_agent/processors/vtt_extractor.py`: VTT transcript
+  extraction, heuristic fallback, and extracted-data normalization.
+- `src/obsidian_intake_agent/processors/*_reader.py`: source-format readers for
+  Markdown, DOCX, and VTT input.
+- `src/obsidian_intake_agent/rendering/action_renderer.py`: weekly action-note
+  parsing, deduplication, section preservation, and rendering.
+- `src/obsidian_intake_agent/rendering/meeting_renderer.py`: canonical meeting
+  note and VTT intake sidecar rendering.
+- `src/obsidian_intake_agent/llm/`: Codex prompt construction and Codex CLI JSON
+  extraction helpers.
+- `src/obsidian_intake_agent/weekly.py`: Monday briefing and Friday wrap
+  generation.
+- `src/obsidian_intake_agent/automation.py`,
+  `src/obsidian_intake_agent/watcher.py`, and
+  `src/obsidian_intake_agent/automation_failures.py`: file watching, locking,
+  automation execution, and failure note reporting.
+- `src/obsidian_intake_agent/utils/`: small cross-cutting utilities only. Do not
+  place domain behavior here when a more specific module exists.
+- `scripts/`: thin local wrappers and operational scripts. Keep reusable
+  behavior in `src/` and have scripts call into it.
+- `tests/`: unit tests organized around externally visible behavior. When a
+  source module becomes independently meaningful, prefer a focused matching test
+  file instead of continuing to grow `tests/test_processor.py`.
+- `docs/`: operator runbooks and workflow reference material. Keep historical
+  docs clearly labeled or archived.
+- `prompts/`: prompt templates used by weekly generation.
+- `ops/launchd/rendered/`: generated launchd plist outputs. Regenerate these
+  from scripts when templates or config assumptions change.
 
 ## Definition of done
 
