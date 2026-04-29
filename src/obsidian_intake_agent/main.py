@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from .processors.meeting_processor import Config, MeetingProcessor
 from .utils.git import auto_commit_repo
@@ -126,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.error("Unknown command.")
     return 1
 
+
 def _maybe_auto_commit(config: Config, *, vault_source_name: str) -> None:
     if config.git_auto_commit_vault:
         status = auto_commit_repo(
@@ -137,10 +138,7 @@ def _maybe_auto_commit(config: Config, *, vault_source_name: str) -> None:
         print("git auto-commit vault: skipped (disabled)")
 
     if config.git_auto_commit_project:
-        print(
-            "git auto-commit project: skipped "
-            "(manual review required; commit project changes outside the agent)"
-        )
+        print("git auto-commit project: skipped (manual review required; commit project changes outside the agent)")
     else:
         print("git auto-commit project: skipped (disabled)")
 
@@ -174,8 +172,7 @@ def _warn_if_not_using_repo_venv() -> None:
     except ValueError:
         pass
     print(
-        f"WARNING: expected repo virtualenv interpreter at {expected}, "
-        f"but running with {executable}",
+        f"WARNING: expected repo virtualenv interpreter at {expected}, but running with {executable}",
         file=sys.stderr,
     )
 

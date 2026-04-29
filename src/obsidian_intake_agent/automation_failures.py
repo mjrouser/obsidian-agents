@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import re
 
 from .processors.meeting_processor import Config
 from .utils.fs import safe_write_text

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
-from pathlib import Path
 import ast
 import re
+from dataclasses import dataclass
+from datetime import date
 from os.path import relpath
+from pathlib import Path
 
 from ..llm.codex_extractor import run_codex_json
 from ..llm.prompts import build_meeting_extraction_prompt
@@ -21,7 +21,7 @@ from ..utils.fs import prepend_status_marker, replace_status_marker, safe_move_f
 from ..utils.normalization import normalize_owner
 from ..utils.text import normalize_whitespace
 from .docx_reader import read_docx
-from .md_reader import ActionItem, OWNER_WILL_PATTERN, extract_markdown_action_items, parse_action_text, read_markdown
+from .md_reader import OWNER_WILL_PATTERN, ActionItem, extract_markdown_action_items, parse_action_text, read_markdown
 from .vtt_reader import read_vtt
 
 ALLOWED_EXTENSIONS = {".md", ".docx", ".vtt"}
@@ -114,11 +114,7 @@ class Config:
             git_auto_commit_project=bool(data.get("git_auto_commit_project", False)),
             git_vault_repo_path=_optional_path(data.get("git_vault_repo_path")) or vault_path,
             git_project_repo_path=_optional_path(data.get("git_project_repo_path")) or path.resolve().parent,
-            weekly_reviews_dir=str(
-                data.get("weekly_reviews_dir")
-                or data.get("snapshots_dir")
-                or "09_Weekly Reviews"
-            ),
+            weekly_reviews_dir=str(data.get("weekly_reviews_dir") or data.get("snapshots_dir") or "09_Weekly Reviews"),
             watcher_settle_seconds=int(data.get("watcher_settle_seconds", 5)),
             watcher_stable_seconds=int(data.get("watcher_stable_seconds", 2)),
             automation_log_dir=str(data.get("automation_log_dir", "logs")),

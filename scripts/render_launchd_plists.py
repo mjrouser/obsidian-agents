@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
+from pathlib import Path
 
 
 def build_parser() -> argparse.ArgumentParser:

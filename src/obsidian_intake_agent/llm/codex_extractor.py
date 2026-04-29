@@ -26,9 +26,7 @@ def run_codex_json(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(
-            f"Codex CLI timed out after {timeout_seconds} seconds while returning JSON."
-        ) from exc
+        raise TimeoutError(f"Codex CLI timed out after {timeout_seconds} seconds while returning JSON.") from exc
     stdout = completed.stdout.strip()
 
     try:
@@ -36,14 +34,10 @@ def run_codex_json(
     except json.JSONDecodeError as exc:
         preview = stdout[:500]
         raise ValueError(
-            "Codex CLI did not return valid JSON on stdout. "
-            f"First 500 chars of stdout: {preview!r}"
+            f"Codex CLI did not return valid JSON on stdout. First 500 chars of stdout: {preview!r}"
         ) from exc
 
     if not isinstance(parsed, dict):
-        raise ValueError(
-            "Codex CLI returned JSON that was not an object. "
-            f"First 500 chars of stdout: {stdout[:500]!r}"
-        )
+        raise ValueError(f"Codex CLI returned JSON that was not an object. First 500 chars of stdout: {stdout[:500]!r}")
 
     return parsed

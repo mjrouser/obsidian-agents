@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import io
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from obsidian_intake_agent.utils.git import GitCommitStatus
-
 from obsidian_intake_agent.main import main
+from obsidian_intake_agent.utils.git import GitCommitStatus
 
 
 class MainCliTests(unittest.TestCase):
@@ -232,11 +231,14 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault, git_auto_commit_vault=True, git_auto_commit_project=True)
 
             with patch("obsidian_intake_agent.main.auto_commit_repo") as commit_mock:
-                with patch("obsidian_intake_agent.main.MeetingProcessor.process_file", side_effect=RuntimeError("boom")):
+                with patch(
+                    "obsidian_intake_agent.main.MeetingProcessor.process_file", side_effect=RuntimeError("boom")
+                ):
                     with self.assertRaises(RuntimeError):
                         main(["--config", str(config_path), "process", str(intake_file)])
 
             commit_mock.assert_not_called()
+
 
 def _write_config(
     repo: Path,

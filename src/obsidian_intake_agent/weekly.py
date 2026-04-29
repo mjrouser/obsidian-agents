@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import re
+import subprocess
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-import re
-import subprocess
 
 from .processors.meeting_processor import Config
 from .utils.dates import monday_of_week
 from .utils.fs import safe_write_text
-
 
 LEADING_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\b")
 
@@ -39,11 +38,7 @@ def generate_weekly_snapshot(
     prompt_template = prompt_path.read_text(encoding="utf-8")
     prompt = prompt_template.replace("{{MONDAY_DATE}}", monday.isoformat())
     source_bundle = build_weekly_source_bundle(config, monday=monday, run_date=run_date, mode=mode)
-    full_prompt = (
-        f"{prompt}\n\n"
-        "Source material follows. Ground the note in these files only.\n\n"
-        f"{source_bundle}"
-    )
+    full_prompt = f"{prompt}\n\nSource material follows. Ground the note in these files only.\n\n{source_bundle}"
     generated = run_codex_markdown(
         full_prompt,
         model=config.codex_model,
@@ -65,9 +60,7 @@ def build_weekly_source_bundle(config: Config, *, monday: date, run_date: date, 
         parts.append(_render_source(actions_path))
 
     previous_review = (
-        config.vault_path
-        / config.weekly_reviews_dir
-        / _review_filename(monday=monday - timedelta(days=7), mode=mode)
+        config.vault_path / config.weekly_reviews_dir / _review_filename(monday=monday - timedelta(days=7), mode=mode)
     )
     if previous_review.exists():
         parts.append(_render_source(previous_review))
@@ -109,9 +102,7 @@ def run_codex_markdown(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(
-            f"Codex CLI timed out after {timeout_seconds} seconds while returning markdown."
-        ) from exc
+        raise TimeoutError(f"Codex CLI timed out after {timeout_seconds} seconds while returning markdown.") from exc
     return completed.stdout
 
 

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import date
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 from obsidian_intake_agent.processors.meeting_processor import Config
@@ -51,7 +51,9 @@ class WeeklySnapshotTests(unittest.TestCase):
             (vault / "07_Actions").mkdir(parents=True)
             config = _config(vault)
 
-            with patch("obsidian_intake_agent.weekly.run_codex_markdown", return_value="# Weekly Briefing") as codex_mock:
+            with patch(
+                "obsidian_intake_agent.weekly.run_codex_markdown", return_value="# Weekly Briefing"
+            ) as codex_mock:
                 result = generate_weekly_snapshot(
                     config,
                     mode="briefing",

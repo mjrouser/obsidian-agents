@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
 import io
 import os
 import tempfile
 import unittest
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
+from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
 from obsidian_intake_agent.processors.meeting_processor import (
     Config,
     MeetingProcessor,
     normalize_meeting_metadata,
 )
-from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
 
 
 class MeetingProcessorTests(unittest.TestCase):
@@ -542,9 +542,7 @@ class MeetingProcessorTests(unittest.TestCase):
             processor.process_file(source)
             processor.process_file(vault / "_Archive" / "Intake" / "Raw Transcripts" / source.name, force=True)
 
-            meeting_text = (
-                vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md"
-            ).read_text(encoding="utf-8")
+            meeting_text = (vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md").read_text(encoding="utf-8")
             self.assertEqual(
                 meeting_text.count("[[_Archive/Intake/Raw Transcripts/2026-03-12 - Teams - Platform Sync.md]]"),
                 1,
@@ -552,8 +550,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
     def test_extracts_action_lines_with_owner(self) -> None:
         items = extract_markdown_action_items(
-            "Action: Matthew will complete Codex setup by Friday.\n"
-            "action: Alex will send the notes.\n"
+            "Action: Matthew will complete Codex setup by Friday.\naction: Alex will send the notes.\n"
         )
 
         self.assertEqual(items[0].owner, "Matthew")
@@ -563,9 +560,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
     def test_extracts_owner_to_action_lines(self) -> None:
         items = extract_markdown_action_items(
-            "Action: Matthew to draft the SOW\n"
-            "Action: Matt to send the deck by Friday\n"
-            "Action: Daniel to share links\n"
+            "Action: Matthew to draft the SOW\nAction: Matt to send the deck by Friday\nAction: Daniel to share links\n"
         )
 
         self.assertEqual(items[0].owner, "Matthew")
@@ -593,10 +588,7 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[3].text, "follow up with legal")
 
     def test_extracts_checkbox_actions_as_unassigned(self) -> None:
-        items = extract_markdown_action_items(
-            "- [ ] Share rollout notes\n"
-            "- [ ] Matthew should review docs\n"
-        )
+        items = extract_markdown_action_items("- [ ] Share rollout notes\n- [ ] Matthew should review docs\n")
 
         self.assertIsNone(items[0].owner)
         self.assertEqual(items[0].text, "Share rollout notes")
@@ -631,10 +623,7 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[1].text, "Send revised proposal")
 
     def test_action_section_bullet_parenthetical_owner_does_not_keep_leading_dash(self) -> None:
-        items = extract_markdown_action_items(
-            "### Action Items and Next Steps\n\n"
-            "- Draft SOW (Matthew)\n"
-        )
+        items = extract_markdown_action_items("### Action Items and Next Steps\n\n- Draft SOW (Matthew)\n")
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].owner, "Matthew")
@@ -653,9 +642,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
     def test_extracts_standalone_explicit_assignment_formats(self) -> None:
         items = extract_markdown_action_items(
-            "Matthew to draft the SOW\n"
-            "Matthew: draft the SOW\n"
-            "Assigned to Matthew: draft the SOW\n"
+            "Matthew to draft the SOW\nMatthew: draft the SOW\nAssigned to Matthew: draft the SOW\n"
         )
 
         self.assertEqual(len(items), 3)
@@ -667,9 +654,7 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[2].text, "draft the SOW")
 
     def test_extracts_explicit_non_checkbox_bullet_outside_action_section(self) -> None:
-        items = extract_markdown_action_items(
-            "- Matt to review changes Raymond made to the staffing model\n"
-        )
+        items = extract_markdown_action_items("- Matt to review changes Raymond made to the staffing model\n")
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].owner, "Matt")
@@ -726,9 +711,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
     def test_does_not_extract_ambiguous_standalone_formats(self) -> None:
         items = extract_markdown_action_items(
-            "Draft SOW (v2)\n"
-            "Notes: Louisiana Pacific discussion\n"
-            "Matthew should draft the SOW\n"
+            "Draft SOW (v2)\nNotes: Louisiana Pacific discussion\nMatthew should draft the SOW\n"
         )
 
         self.assertEqual(items, [])
@@ -744,9 +727,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
     def test_does_not_extract_vague_non_checkbox_bullets(self) -> None:
         items = extract_markdown_action_items(
-            "- Matt should review changes\n"
-            "- Notes about staffing model\n"
-            "- Discussion of Raymond’s edits\n"
+            "- Matt should review changes\n- Notes about staffing model\n- Discussion of Raymond’s edits\n"
         )
 
         self.assertEqual(items, [])
@@ -778,8 +759,7 @@ class MeetingProcessorTests(unittest.TestCase):
             intake_dir.mkdir(parents=True)
             source = intake_dir / "2026-03-18 - Teams - Slalom Lower Cost Delivery Model.md"
             source.write_text(
-                "### Action Items and Next Steps\n\n"
-                "- Matthew will focus on the model section.\n",
+                "### Action Items and Next Steps\n\n- Matthew will focus on the model section.\n",
                 encoding="utf-8",
             )
 
@@ -801,8 +781,7 @@ class MeetingProcessorTests(unittest.TestCase):
             intake_dir.mkdir(parents=True)
             source = intake_dir / "2026-03-16 - Teams - E&O Weekly Practice Sync.md"
             source.write_text(
-                "### Action Items and Next Steps\n\n"
-                "- Draft SOW for Louisiana Pacific (Matthew)\n",
+                "### Action Items and Next Steps\n\n- Draft SOW for Louisiana Pacific (Matthew)\n",
                 encoding="utf-8",
             )
 
@@ -855,8 +834,7 @@ class MeetingProcessorTests(unittest.TestCase):
             intake_dir.mkdir(parents=True)
             source = intake_dir / "2026-03-16 - Teams - TDA CRM and GMS SOW Check-in.md"
             source.write_text(
-                "### Meeting Recap\n\n"
-                "- Matt to review changes Raymond made to the staffing model\n",
+                "### Meeting Recap\n\n- Matt to review changes Raymond made to the staffing model\n",
                 encoding="utf-8",
             )
 
@@ -878,9 +856,7 @@ class MeetingProcessorTests(unittest.TestCase):
             intake_dir.mkdir(parents=True)
             source = intake_dir / "2026-03-12 - Teams - Platform Sync.vtt"
             source.write_text(
-                "WEBVTT\n\n"
-                "00:00:00.000 --> 00:00:02.000\n"
-                "Matthew will ship the update by Friday.\n",
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nMatthew will ship the update by Friday.\n",
                 encoding="utf-8",
             )
 

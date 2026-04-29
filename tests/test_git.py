@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import call, patch
 
 from obsidian_intake_agent.utils.git import auto_commit_repo

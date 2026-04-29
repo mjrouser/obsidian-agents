@@ -85,8 +85,9 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - Prefer small, reviewable commits.
 - Keep CLI behavior explicit and discoverable.
 - Preserve dry-run safety for file-writing operations.
-- Use Ruff through `make lint` or `make check` for Python linting. Use
-  `make format` only when a formatting pass is intentionally in scope.
+- Use Ruff through `make lint`, `make format-check`, or `make check` for Python
+  linting and formatting validation. Use `make format` when a formatting pass is
+  intentionally in scope.
 - Do not auto-commit project repo changes from the app. Project code changes
   must be reviewed, tested, committed, and merged manually.
 - When Codex changes this repository, finish by prompting Matthew with the

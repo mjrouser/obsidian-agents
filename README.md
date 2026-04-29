@@ -232,11 +232,12 @@ make audit
 Current behavior:
 
 - `make check` runs Ruff linting, verifies `git`, `rg` when present, verifies
-  `./.venv/bin/python`, checks config hygiene, and parses shell scripts.
-- `make lint` runs Ruff against `src`, `tests`, and `scripts`.
-- `make format` applies Ruff formatting to `src`, `tests`, and `scripts`; run
-  this intentionally because the current formatter baseline is not enforced in
-  `make check`.
+  formatting, verifies `./.venv/bin/python`, checks config hygiene, and parses
+  shell scripts.
+- `make lint` runs Ruff lint and import-order checks against `src`, `tests`, and
+  `scripts`.
+- `make format-check` verifies Ruff formatting.
+- `make format` applies Ruff formatting to `src`, `tests`, and `scripts`.
 - `make test` runs the unit test suite.
 - `make build` byte-compiles the source and tests.
 - `make audit` scans locked dependencies with `pip-audit`.

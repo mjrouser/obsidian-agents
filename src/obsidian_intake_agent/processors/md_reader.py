@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
-
 
 OWNER_TOKEN = r"[A-Za-z][A-Za-z.'-]*"
 OWNER_NAME_PATTERN = rf"{OWNER_TOKEN}(?:\s+{OWNER_TOKEN}){{0,2}}"
 COORDINATED_OWNER_PATTERN = rf"{OWNER_NAME_PATTERN}\s+and\s+{OWNER_NAME_PATTERN}"
 OWNER_WILL_PATTERN = re.compile(rf"^(?P<owner>{OWNER_NAME_PATTERN})\s+will\s+(?P<text>.+)$", re.IGNORECASE)
 OWNER_TO_PATTERN = re.compile(rf"^(?P<owner>{OWNER_NAME_PATTERN})\s+to\s+(?P<text>.+)$", re.IGNORECASE)
-COORDINATED_OWNER_TO_PATTERN = re.compile(rf"^(?P<owner>{COORDINATED_OWNER_PATTERN})\s+to\s+(?P<text>.+)$", re.IGNORECASE)
+COORDINATED_OWNER_TO_PATTERN = re.compile(
+    rf"^(?P<owner>{COORDINATED_OWNER_PATTERN})\s+to\s+(?P<text>.+)$", re.IGNORECASE
+)
 TRAILING_OWNER_WILL_PATTERN = re.compile(
     rf"(?:^|.*[;:]\s+)(?P<owner>{OWNER_NAME_PATTERN})\s+will\s+(?P<text>.+)$",
     re.IGNORECASE,

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from pathlib import Path
 
 from obsidian_intake_agent.automation_failures import write_automation_failure_note
 from obsidian_intake_agent.processors.meeting_processor import Config

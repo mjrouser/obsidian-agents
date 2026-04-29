@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from obsidian_intake_agent.watcher import watch_intake

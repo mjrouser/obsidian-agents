@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import hashlib
-import os
-import time
 
 from .processors.meeting_processor import MeetingProcessor
 

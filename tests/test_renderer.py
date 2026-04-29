@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import unittest
 from datetime import date
 from pathlib import Path
-import unittest
 
 from obsidian_intake_agent.rendering.meeting_renderer import (
     ActionRecord,

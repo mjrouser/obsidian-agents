@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-import re
 
 from ..utils.normalization import normalize_free_text, normalize_owner
-
 
 SOURCE_PATTERN = re.compile(
     r"(?:—|-)\s*Source:\s*(?P<date>\d{4}-\d{2}-\d{2})\s*\[\[(?P<note>[^\]]+)\]\]\.?\s*$",
