@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import date
 from os.path import relpath
 from pathlib import Path
 
 from ..config import Config
-from ..llm.codex_extractor import run_codex_json
-from ..llm.prompts import build_meeting_extraction_prompt
 from ..rendering.action_renderer import ActionRecord, render_actions_note
 from ..rendering.meeting_renderer import (
     render_extracted_meeting_note,
@@ -20,7 +17,9 @@ from ..utils.fs import prepend_status_marker, replace_status_marker, safe_move_f
 from ..utils.normalization import normalize_owner
 from ..utils.text import normalize_whitespace
 from .docx_reader import read_docx
-from .md_reader import OWNER_WILL_PATTERN, ActionItem, extract_markdown_action_items, parse_action_text, read_markdown
+from .md_reader import ActionItem, extract_markdown_action_items, read_markdown
+from .meeting_metadata import normalize_meeting_metadata
+from .vtt_extractor import action_items_from_extracted, extract_vtt_meeting_data, normalize_extracted_meeting_data
 from .vtt_reader import read_vtt
 
 ALLOWED_EXTENSIONS = {".md", ".docx", ".vtt"}
@@ -31,15 +30,6 @@ DISALLOWED_BASENAMES = {
 }
 DISALLOWED_BASENAME_PREFIXES = ("Untitled ",)
 DISALLOWED_PLACEHOLDER_PATTERNS = ("<meeting title>", "YYYY-MM-DD")
-LEADING_DATE_PATTERN = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})(?: - )?(?P<rest>.*)$")
-
-
-@dataclass(slots=True)
-class MeetingMetadata:
-    date: str
-    source: str
-    title: str
-    canonical_basename: str
 
 
 @dataclass(slots=True)
@@ -191,8 +181,8 @@ class MeetingProcessor:
         source_in_intake: bool,
     ) -> ProcessResult:
         metadata = normalize_meeting_metadata(source_path)
-        extracted = self._extract_vtt_meeting_data(transcript_text, metadata)
-        extracted = self._normalize_extracted_meeting_data(extracted, metadata)
+        extracted = extract_vtt_meeting_data(transcript_text=transcript_text, metadata=metadata, config=self.config)
+        extracted = normalize_extracted_meeting_data(extracted, metadata)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         canonical_note_name = metadata.canonical_basename
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
@@ -206,7 +196,7 @@ class MeetingProcessor:
         actions_note_path = self.actions_path / f"{meeting_week.isoformat()}.md"
         existing_actions = actions_note_path.read_text(encoding="utf-8") if actions_note_path.exists() else ""
         action_records = self._build_action_records(
-            action_items=self._action_items_from_extracted(extracted),
+            action_items=action_items_from_extracted(extracted),
             meeting_date=metadata.date,
             canonical_basename=canonical_note_name,
         )
@@ -336,113 +326,6 @@ class MeetingProcessor:
         except ValueError:
             return False
 
-    def _extract_vtt_meeting_data(self, transcript_text: str, metadata: MeetingMetadata) -> dict:
-        if self.config.llm_provider == "codex_cli":
-            prompt = build_meeting_extraction_prompt(
-                transcript_text=transcript_text,
-                meeting_date=metadata.date,
-                source=metadata.source,
-                title=metadata.title,
-            )
-            return run_codex_json(
-                prompt,
-                self.config.codex_model,
-                exec_cmd=self.config.codex_exec_cmd,
-                timeout_seconds=self.config.codex_timeout_seconds,
-            )
-        return self._heuristic_extract_meeting_data(transcript_text, metadata)
-
-    def _heuristic_extract_meeting_data(self, transcript_text: str, metadata: MeetingMetadata) -> dict:
-        key_points: list[str] = []
-        decisions: list[str] = []
-        risks: list[str] = []
-        open_questions: list[str] = []
-        action_items: list[dict[str, str | None]] = []
-        for raw_line in transcript_text.splitlines():
-            line = raw_line.strip()
-            lowered = line.casefold()
-            if not line:
-                continue
-            if lowered.startswith("action:"):
-                action = _parse_heuristic_action(line.split(":", 1)[1].strip())
-                action_items.append(action)
-            elif OWNER_WILL_PATTERN.match(line):
-                parsed = parse_action_text(line)
-                action_items.append(
-                    {
-                        "text": parsed.text,
-                        "owner": parsed.owner,
-                        "due": parsed.due,
-                    }
-                )
-            elif lowered.startswith("decision:"):
-                decisions.append(line.split(":", 1)[1].strip())
-            elif lowered.startswith("risk:"):
-                risks.append(line.split(":", 1)[1].strip())
-            elif lowered.startswith("question:"):
-                open_questions.append(line.split(":", 1)[1].strip())
-            else:
-                key_points.append(line)
-        return {
-            "title": metadata.title,
-            "date": metadata.date,
-            "source": metadata.source,
-            "participants": [],
-            "summary_bullets": key_points[:3],
-            "key_points": key_points,
-            "decisions": decisions,
-            "decision_signals": [],
-            "risks": risks,
-            "assumptions": [],
-            "open_questions": open_questions,
-            "action_items": action_items,
-            "signals_and_tensions": [],
-            "alignment_path": [],
-            "related_initiatives": [],
-            "related_themes": [],
-            "verbatim_excerpt": key_points[0] if key_points else "",
-        }
-
-    def _normalize_extracted_meeting_data(self, extracted: dict, metadata: MeetingMetadata) -> dict:
-        return {
-            "title": str(extracted.get("title") or metadata.title),
-            "date": str(extracted.get("date") or metadata.date),
-            "source": str(extracted.get("source") or metadata.source),
-            "participants": list(extracted.get("participants") or []),
-            "summary_bullets": list(extracted.get("summary_bullets") or []),
-            "key_points": list(extracted.get("key_points") or []),
-            "decisions": list(extracted.get("decisions") or []),
-            "decision_signals": list(extracted.get("decision_signals") or []),
-            "risks": list(extracted.get("risks") or []),
-            "assumptions": list(extracted.get("assumptions") or []),
-            "open_questions": list(extracted.get("open_questions") or []),
-            "action_items": list(extracted.get("action_items") or []),
-            "signals_and_tensions": list(extracted.get("signals_and_tensions") or []),
-            "alignment_path": list(extracted.get("alignment_path") or []),
-            "related_initiatives": list(extracted.get("related_initiatives") or []),
-            "related_themes": list(extracted.get("related_themes") or []),
-            "verbatim_excerpt": str(extracted.get("verbatim_excerpt") or ""),
-        }
-
-    def _action_items_from_extracted(self, extracted: dict) -> list[ActionItem]:
-        items: list[ActionItem] = []
-        for raw in extracted.get("action_items", []):
-            if not isinstance(raw, dict):
-                continue
-            text = str(raw.get("text", "")).strip()
-            if not text:
-                continue
-            owner = raw.get("owner")
-            due = raw.get("due")
-            items.append(
-                ActionItem(
-                    owner=str(owner).strip() if owner else None,
-                    text=text,
-                    due=str(due).strip() if due else None,
-                )
-            )
-        return items
-
     def _vtt_has_processed_sidecar(self, path: Path) -> bool:
         metadata = normalize_meeting_metadata(path)
         sidecar = self.intake_path / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
@@ -465,49 +348,6 @@ class MeetingProcessor:
         destination = self._archive_destination(source_path)
         safe_move_file(source_path, destination)
         return destination
-
-
-def normalize_meeting_metadata(intake_path: Path) -> MeetingMetadata:
-    basename = intake_path.stem
-    match = LEADING_DATE_PATTERN.match(basename)
-    if match:
-        meeting_date = match.group("date")
-        remainder = match.group("rest")
-    else:
-        meeting_date = date.fromtimestamp(intake_path.stat().st_mtime).isoformat()
-        remainder = basename
-
-    if " - Teams - " in basename:
-        source = "Teams"
-        title = basename.split(" - Teams - ", 1)[1]
-    elif " - Copilot - " in basename:
-        source = "Copilot"
-        title = basename.split(" - Copilot - ", 1)[1]
-    else:
-        source = "Unknown"
-        title = remainder
-
-    title = normalize_whitespace(title)
-    if not title:
-        title = "Meeting"
-
-    return MeetingMetadata(
-        date=meeting_date,
-        source=source,
-        title=title,
-        canonical_basename=f"{meeting_date} - {source} - {title}.md",
-    )
-
-
-def _parse_heuristic_action(text: str) -> dict[str, str | None]:
-    match = re.match(r"^(?P<owner>[^.]+?)\s+will\s+(?P<action>.+)$", text, re.IGNORECASE)
-    if match:
-        return {
-            "text": match.group("action").strip(),
-            "owner": match.group("owner").strip(),
-            "due": None,
-        }
-    return {"text": text.strip(), "owner": None, "due": None}
 
 
 def _strip_leading_status_marker(text: str) -> str:
