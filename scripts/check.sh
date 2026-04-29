@@ -24,4 +24,18 @@ else
   exit 1
 fi
 
+if [ -f "$REPO_ROOT/config.example.yaml" ]; then
+  echo "[OK] example config present"
+else
+  echo "[FAIL] expected config.example.yaml"
+  exit 1
+fi
+
+if git -C "$REPO_ROOT" ls-files --error-unmatch config.yaml >/dev/null 2>&1; then
+  echo "[FAIL] config.yaml must remain local and untracked"
+  exit 1
+else
+  echo "[OK] config.yaml is untracked"
+fi
+
 echo "[OK] check script completed"

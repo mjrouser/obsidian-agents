@@ -154,8 +154,12 @@ Common checks:
 - Confirm dependencies are installed: `./.venv/bin/python -m pip check`
 - Confirm the app is installed: `./.venv/bin/obsidian-agent --help`
 - Confirm launchd jobs are loaded: `launchctl list | grep obsidian.agent`
-- Confirm `config.yaml` points to the intended Obsidian vault.
+- Confirm local `config.yaml` exists and points to the intended Obsidian vault.
 - Confirm `dry_run` is set the way you intend before expecting writes.
+
+`config.yaml` is intentionally ignored by git. To rebuild it on a new machine,
+copy `config.example.yaml` to `config.yaml`, then set local paths and automation
+flags.
 
 After code, config, dependency, or prompt changes, run:
 

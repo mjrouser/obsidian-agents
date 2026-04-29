@@ -85,6 +85,8 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - Prefer small, reviewable commits.
 - Keep CLI behavior explicit and discoverable.
 - Preserve dry-run safety for file-writing operations.
+- Keep `config.yaml` local and untracked. Update `config.example.yaml` when
+  reusable configuration keys or defaults change.
 - Keep dependency changes reflected in both `pyproject.toml` and
   `requirements.lock`.
 - Run `make audit` after dependency changes.
@@ -93,6 +95,8 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 
 - Never commit credentials, tokens, private keys, or production data.
 - Use `.env.example` for required environment variables.
+- Do not commit machine-specific vault paths, local Codex executable paths, or
+  live automation settings from `config.yaml`.
 - Call out migrations or destructive operations clearly before running them.
 - Prefer non-destructive validation before modifying vault files.
 

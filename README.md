@@ -38,8 +38,12 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
    ./.venv/bin/python -m pip install -e . --no-deps
    ```
 
-4. Copy [`config.example.yaml`](/Users/matthew.rouser/repos/obsidian-agents/config.example.yaml) to [`config.yaml`](/Users/matthew.rouser/repos/obsidian-agents/config.yaml) if needed, then review and edit it.
+4. Copy [`config.example.yaml`](config.example.yaml) to `config.yaml` if needed, then review and edit it.
 5. Set `vault_path` to the absolute path of your Obsidian vault.
+
+`config.yaml` is a local, ignored file because it contains machine-specific
+paths and operational settings. Keep reusable defaults in
+[`config.example.yaml`](config.example.yaml) instead.
 
 Example:
 
