@@ -130,8 +130,8 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   parsing, deduplication, section preservation, and rendering.
 - `src/obsidian_intake_agent/rendering/meeting_renderer.py`: canonical meeting
   note and VTT intake sidecar rendering.
-- `src/obsidian_intake_agent/llm/`: Codex prompt construction and Codex CLI JSON
-  extraction helpers.
+- `src/obsidian_intake_agent/llm/`: Codex prompt construction, Codex CLI command
+  execution, stdout capture, timeout handling, and JSON extraction helpers.
 - `src/obsidian_intake_agent/weekly.py`: Monday briefing and Friday wrap
   generation.
 - `src/obsidian_intake_agent/automation.py`,

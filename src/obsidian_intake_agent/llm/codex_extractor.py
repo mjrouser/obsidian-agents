@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
+
+from .codex_cli import run_codex_stdout
 
 
 def run_codex_json(
@@ -10,24 +11,13 @@ def run_codex_json(
     exec_cmd: list[str] | None = None,
     timeout_seconds: int | None = None,
 ) -> dict:
-    command = list(exec_cmd or ["codex", "exec"])
-    if model:
-        command.extend(["--model", model])
-    command.append("--skip-git-repo-check")
-    command.append(prompt)
-
-    try:
-        completed = subprocess.run(
-            command,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"Codex CLI timed out after {timeout_seconds} seconds while returning JSON.") from exc
-    stdout = completed.stdout.strip()
+    stdout = run_codex_stdout(
+        prompt,
+        model=model,
+        exec_cmd=exec_cmd,
+        timeout_seconds=timeout_seconds,
+        output_kind="JSON",
+    ).strip()
 
     try:
         parsed = json.loads(stdout)

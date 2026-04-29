@@ -33,6 +33,8 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
   processing and meeting/action output orchestration.
 - `src/obsidian_intake_agent/processors/vtt_extractor.py` owns VTT transcript
   extraction, heuristic fallback, and extracted data normalization.
+- `src/obsidian_intake_agent/llm/codex_cli.py` owns Codex CLI command
+  construction, stdout capture, and timeout handling.
 - `src/obsidian_intake_agent/rendering/meeting_renderer.py` owns meeting-note
   rendering.
 - `src/obsidian_intake_agent/rendering/action_renderer.py` owns weekly

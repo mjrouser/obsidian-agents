@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import tempfile
 import unittest
 from datetime import date
@@ -91,29 +90,23 @@ class WeeklySnapshotTests(unittest.TestCase):
 
 class WeeklyCodexTests(unittest.TestCase):
     def test_run_codex_markdown_uses_configured_exec_cmd(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=["custom-codex", "exec", "prompt"],
-            returncode=0,
-            stdout="# Weekly Briefing\n",
-        )
-        with patch("subprocess.run", return_value=completed) as run_mock:
+        with patch("obsidian_intake_agent.weekly.run_codex_stdout", return_value="# Weekly Briefing\n") as run_mock:
             rendered = run_codex_markdown("prompt", model="gpt-5", exec_cmd=["custom-codex", "exec"])
 
         self.assertEqual(rendered, "# Weekly Briefing\n")
         run_mock.assert_called_once_with(
-            ["custom-codex", "exec", "--model", "gpt-5", "--skip-git-repo-check", "prompt"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            text=True,
-            timeout=None,
+            "prompt",
+            model="gpt-5",
+            exec_cmd=["custom-codex", "exec"],
+            timeout_seconds=None,
+            output_kind="markdown",
         )
 
     def test_run_codex_markdown_raises_clear_error_on_timeout(self) -> None:
         with (
             patch(
-                "subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd=["codex"], timeout=30),
+                "obsidian_intake_agent.weekly.run_codex_stdout",
+                side_effect=TimeoutError("Codex CLI timed out after 30 seconds while returning markdown."),
             ),
             self.assertRaisesRegex(
                 TimeoutError,

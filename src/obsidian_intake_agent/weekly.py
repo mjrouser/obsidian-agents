@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
 from .config import Config
+from .llm.codex_cli import run_codex_stdout
 from .utils.dates import monday_of_week
 from .utils.fs import safe_write_text
 
@@ -87,23 +87,13 @@ def run_codex_markdown(
     exec_cmd: list[str] | None,
     timeout_seconds: int | None = None,
 ) -> str:
-    command = list(exec_cmd or ["codex", "exec"])
-    if model:
-        command.extend(["--model", model])
-    command.append("--skip-git-repo-check")
-    command.append(prompt)
-    try:
-        completed = subprocess.run(
-            command,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"Codex CLI timed out after {timeout_seconds} seconds while returning markdown.") from exc
-    return completed.stdout
+    return run_codex_stdout(
+        prompt,
+        model=model,
+        exec_cmd=exec_cmd,
+        timeout_seconds=timeout_seconds,
+        output_kind="markdown",
+    )
 
 
 def _prompt_path_for_mode(mode: str) -> Path:
