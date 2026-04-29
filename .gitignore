@@ -23,6 +23,7 @@ venv/
 dist/
 build/
 coverage/
+*.egg-info/
 
 # Python cache
 __pycache__/
