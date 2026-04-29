@@ -6,4 +6,9 @@ cd "$REPO_ROOT"
 
 mkdir -p logs
 PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-exec "$PYTHON_BIN" scripts/watch_intake.py >> logs/intake-watcher.stdout.log 2>> logs/intake-watcher.stderr.log
+export PYTHON_BIN
+exec bash "$REPO_ROOT/scripts/run_automation_command.sh" \
+  "intake-watcher" \
+  "logs/intake-watcher.stdout.log" \
+  "logs/intake-watcher.stderr.log" \
+  "$PYTHON_BIN" scripts/watch_intake.py

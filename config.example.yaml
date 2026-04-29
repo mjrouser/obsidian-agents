@@ -29,3 +29,4 @@ git_project_repo_path: null
 watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
+automation_error_dir: "_System/Agent Errors"

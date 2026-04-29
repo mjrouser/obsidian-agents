@@ -38,4 +38,9 @@ else
   echo "[OK] config.yaml is untracked"
 fi
 
+for script in "$REPO_ROOT"/scripts/*.sh; do
+  bash -n "$script"
+done
+echo "[OK] shell scripts parse"
+
 echo "[OK] check script completed"

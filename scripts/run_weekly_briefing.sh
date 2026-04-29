@@ -6,4 +6,9 @@ cd "$REPO_ROOT"
 
 mkdir -p logs
 PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-exec "$PYTHON_BIN" scripts/generate_weekly_summary.py briefing >> logs/weekly-briefing.stdout.log 2>> logs/weekly-briefing.stderr.log
+export PYTHON_BIN
+exec bash "$REPO_ROOT/scripts/run_automation_command.sh" \
+  "weekly-briefing" \
+  "logs/weekly-briefing.stdout.log" \
+  "logs/weekly-briefing.stderr.log" \
+  "$PYTHON_BIN" scripts/generate_weekly_summary.py briefing

@@ -6,4 +6,9 @@ cd "$REPO_ROOT"
 
 mkdir -p logs
 PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-exec "$PYTHON_BIN" scripts/generate_weekly_summary.py wrap >> logs/weekly-wrap.stdout.log 2>> logs/weekly-wrap.stderr.log
+export PYTHON_BIN
+exec bash "$REPO_ROOT/scripts/run_automation_command.sh" \
+  "weekly-wrap" \
+  "logs/weekly-wrap.stdout.log" \
+  "logs/weekly-wrap.stderr.log" \
+  "$PYTHON_BIN" scripts/generate_weekly_summary.py wrap

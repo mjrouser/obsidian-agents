@@ -81,6 +81,12 @@ You only need to step in when:
 
 ## Troubleshooting
 
+### Check Obsidian Failure Notes
+
+Automation failures write a short note under `_System/Agent Errors` in the
+configured vault. Use that note as the quick signal, then inspect logs for full
+details.
+
 ### Check Watcher Logs
 
 ```bash
@@ -144,4 +150,3 @@ If you want to generate reviews manually:
 - Weekly reviews = reflection layer
 
 If Intake is empty and logs are quiet, the system is working.
-

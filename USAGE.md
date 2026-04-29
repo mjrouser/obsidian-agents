@@ -102,6 +102,10 @@ The date in those filenames is the Monday of the relevant week.
 The launchd workflow uses shell wrappers in `scripts/` and the repo virtual
 environment at `./.venv/bin/python`.
 
+When a wrapper exits with a real failure, it writes a short Obsidian note under
+`_System/Agent Errors` in the configured vault. The matching stderr log remains
+the detailed source of truth.
+
 Render launchd plist files after changing automation scripts or schedules:
 
 ```bash
@@ -140,6 +144,12 @@ Check the stderr log first when something did not run:
 tail -n 80 logs/intake-watcher.stderr.log
 tail -n 80 logs/weekly-briefing.stderr.log
 tail -n 80 logs/weekly-wrap.stderr.log
+```
+
+Also check the vault for a failure note:
+
+```bash
+ls "/absolute/path/to/vault/_System/Agent Errors"
 ```
 
 Check stdout logs for normal command output:

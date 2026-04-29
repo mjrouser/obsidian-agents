@@ -77,6 +77,7 @@ git_project_repo_path: null
 watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
+automation_error_dir: "_System/Agent Errors"
 ```
 
 `weekly_reviews_dir` is the preferred key. The older `snapshots_dir` key is still accepted for backward compatibility.
@@ -84,6 +85,7 @@ automation_log_dir: "logs"
 Set `dry_run: false` when you want the agent to write files instead of printing planned changes.
 Set `include_unassigned: true` if weekly action notes should also include items without a parsed owner.
 Set `codex_timeout_seconds` to control how long Codex CLI extraction and weekly generation may run before failing. Use `null` only when you intentionally want no timeout.
+Set `automation_error_dir` to control where automation failure notes are written inside the vault.
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
 Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
 If `git_vault_repo_path` is unset, it defaults to `vault_path`.
@@ -210,6 +212,10 @@ Default schedule:
 - Monday `09:00`: weekly briefing
 - Friday `12:15`: weekly wrap
 - Watcher: starts at login and stays alive
+
+When a launchd wrapper exits with a real failure, it writes an Obsidian note to
+`vault_path/_System/Agent Errors` by default and leaves the detailed trace in
+the matching `logs/*.stderr.log` file.
 
 ## Quality Checks
 

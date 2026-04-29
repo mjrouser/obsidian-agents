@@ -88,6 +88,7 @@ class Config:
     watcher_settle_seconds: int = 5
     watcher_stable_seconds: int = 2
     automation_log_dir: str = "logs"
+    automation_error_dir: str = "_System/Agent Errors"
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -121,6 +122,7 @@ class Config:
             watcher_settle_seconds=int(data.get("watcher_settle_seconds", 5)),
             watcher_stable_seconds=int(data.get("watcher_stable_seconds", 2)),
             automation_log_dir=str(data.get("automation_log_dir", "logs")),
+            automation_error_dir=str(data.get("automation_error_dir", "_System/Agent Errors")),
         )
 
 
