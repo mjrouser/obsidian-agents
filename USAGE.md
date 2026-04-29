@@ -188,10 +188,11 @@ If the preview is correct, rerun without `--dry-run`:
 ./.venv/bin/obsidian-agent process "/absolute/path/to/intake-file.md" --force
 ```
 
-If git auto-commit is enabled, inspect both the vault repo and project repo
-after recovery:
+If vault auto-commit is enabled, inspect the vault repo after recovery:
 
 ```bash
 git -C "/absolute/path/to/vault" status --short
-git status --short
 ```
+
+Project repo changes are not auto-committed by the app. Review and commit them
+manually after checks pass.

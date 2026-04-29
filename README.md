@@ -65,6 +65,7 @@ owner_filter: "Matthew"
 dry_run: true
 include_unassigned: false
 git_auto_commit_vault: false
+# Project repo auto-commit is intentionally unsupported at runtime.
 git_auto_commit_project: false
 git_vault_repo_path: null
 git_project_repo_path: null
@@ -78,8 +79,8 @@ automation_log_dir: "logs"
 Set `dry_run: false` when you want the agent to write files instead of printing planned changes.
 Set `include_unassigned: true` if weekly action notes should also include items without a parsed owner.
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
-Set `git_auto_commit_project: true` to auto-commit project repo changes only when the project repo actually has changes.
-If `git_vault_repo_path` is unset, it defaults to `vault_path`. If `git_project_repo_path` is unset, it defaults to the directory containing `config.yaml`.
+Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
+If `git_vault_repo_path` is unset, it defaults to `vault_path`.
 
 ## Run
 
@@ -115,11 +116,9 @@ Process a specific file:
 obsidian-agent process /absolute/path/to/file.md
 ```
 
-With auto-commit enabled, successful non-dry-run `run --once` and `process` commands will independently attempt:
-- a vault repo commit with `auto: process transcript outputs for <source filename>` (or `multiple intake files` for multi-file batch runs)
-- a project repo commit with `auto: update agent code for transcript processing`
+With vault auto-commit enabled, successful non-dry-run `run --once` and `process` commands will attempt a vault repo commit with `auto: process transcript outputs for <source filename>` (or `multiple intake files` for multi-file batch runs).
 
-Dry runs never auto-commit, and each repo is skipped independently when disabled, unchanged, or not a git repo.
+Dry runs never auto-commit. Project repo changes are never auto-committed by the app; commit them manually after reviewing the diff and running checks.
 
 You can also run the installed CLI without activating the virtual environment:
 

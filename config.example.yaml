@@ -20,6 +20,8 @@ action_owner_aliases:
     - "Matt"
     - "matthew.rouser"
 git_auto_commit_vault: false
+# Project repo auto-commit is intentionally unsupported at runtime. Keep project
+# code changes on a reviewed branch and commit them manually after checks pass.
 git_auto_commit_project: false
 git_vault_repo_path: null
 git_project_repo_path: null

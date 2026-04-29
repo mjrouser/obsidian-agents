@@ -137,11 +137,10 @@ def _maybe_auto_commit(config: Config, *, vault_source_name: str) -> None:
         print("git auto-commit vault: skipped (disabled)")
 
     if config.git_auto_commit_project:
-        status = auto_commit_repo(
-            config.git_project_repo_path or Path.cwd(),
-            "auto: update agent code for transcript processing",
+        print(
+            "git auto-commit project: skipped "
+            "(manual review required; commit project changes outside the agent)"
         )
-        print(_format_git_status("project", status.state, status.repo_path))
     else:
         print("git auto-commit project: skipped (disabled)")
 

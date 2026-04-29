@@ -177,7 +177,7 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("git auto-commit vault: skipped (disabled)", stdout.getvalue())
             self.assertIn("git auto-commit project: skipped (disabled)", stdout.getvalue())
 
-    def test_one_repo_can_commit_while_the_other_is_skipped(self) -> None:
+    def test_project_auto_commit_requires_manual_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
             vault = repo / "vault"
@@ -189,19 +189,16 @@ class MainCliTests(unittest.TestCase):
 
             with patch(
                 "obsidian_intake_agent.main.auto_commit_repo",
-                side_effect=[
-                    GitCommitStatus(state="committed", repo_path=vault),
-                    GitCommitStatus(state="no_changes", repo_path=repo),
-                ],
+                return_value=GitCommitStatus(state="committed", repo_path=vault),
             ) as commit_mock:
                 with patch("sys.stdout", new_callable=io.StringIO) as stdout:
                     exit_code = main(["--config", str(config_path), "process", str(intake_file)])
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(commit_mock.call_count, 2)
+            commit_mock.assert_called_once()
             output = stdout.getvalue()
             self.assertIn("git auto-commit vault: committed", output)
-            self.assertIn("git auto-commit project: skipped (no changes)", output)
+            self.assertIn("git auto-commit project: skipped (manual review required", output)
 
     def test_skips_gracefully_when_repo_path_is_not_git_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

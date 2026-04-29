@@ -85,6 +85,10 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - Prefer small, reviewable commits.
 - Keep CLI behavior explicit and discoverable.
 - Preserve dry-run safety for file-writing operations.
+- Do not auto-commit project repo changes from the app. Project code changes
+  must be reviewed, tested, committed, and merged manually.
+- When Codex changes this repository, finish by prompting Matthew with the
+  exact commit and merge commands after checks pass.
 - Keep `config.yaml` local and untracked. Update `config.example.yaml` when
   reusable configuration keys or defaults change.
 - Keep dependency changes reflected in both `pyproject.toml` and
