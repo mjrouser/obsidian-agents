@@ -1,13 +1,16 @@
 SHELL := /bin/bash
 PYTHON ?= ./.venv/bin/python
 
-.PHONY: check lint format-check format test smoke build audit
+.PHONY: check lint typecheck format-check format test smoke build audit
 
-check: lint format-check
+check: lint typecheck format-check
 	@if [ -x ./scripts/check.sh ]; then ./scripts/check.sh; else echo "No check script found"; fi
 
 lint:
 	@PYTHONPATH=src $(PYTHON) -m ruff check --no-cache src tests scripts
+
+typecheck:
+	@PYTHONPATH=src $(PYTHON) -m mypy
 
 format-check:
 	@$(PYTHON) -m ruff format --check --no-cache src tests scripts

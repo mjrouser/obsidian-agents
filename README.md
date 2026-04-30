@@ -251,6 +251,7 @@ Run:
 ```bash
 make check
 make lint
+make typecheck
 make test
 make smoke
 make build
@@ -259,11 +260,12 @@ make audit
 
 Current behavior:
 
-- `make check` runs Ruff linting, verifies `git`, `rg` when present, verifies
-  formatting, verifies `./.venv/bin/python`, checks config hygiene, and parses
-  shell scripts.
+- `make check` runs Ruff linting, mypy type checking, verifies `git`, `rg` when
+  present, verifies formatting, verifies `./.venv/bin/python`, checks config
+  hygiene, and parses shell scripts.
 - `make lint` runs Ruff lint and import-order checks against `src`, `tests`, and
   `scripts`.
+- `make typecheck` runs mypy against `src`.
 - `make format-check` verifies Ruff formatting.
 - `make format` applies Ruff formatting to `src`, `tests`, and `scripts`.
 - `make test` runs the unit test suite.

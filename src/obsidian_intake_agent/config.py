@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -35,15 +36,15 @@ class Config:
     @classmethod
     def load(cls, path: Path) -> Config:
         data = _load_config_data(path)
-        vault_path = Path(data["vault_path"]).expanduser()
+        vault_path = Path(_required_string(data, "vault_path")).expanduser()
         return cls(
             vault_path=vault_path,
-            intake_dir=data["intake_dir"],
-            meetings_dir=data["meetings_dir"],
-            actions_dir=data["actions_dir"],
-            archive_intake_dir=data["archive_intake_dir"],
-            templates_dir=data["templates_dir"],
-            owner_filter=data["owner_filter"],
+            intake_dir=_required_string(data, "intake_dir"),
+            meetings_dir=_required_string(data, "meetings_dir"),
+            actions_dir=_required_string(data, "actions_dir"),
+            archive_intake_dir=_required_string(data, "archive_intake_dir"),
+            templates_dir=_required_string(data, "templates_dir"),
+            owner_filter=_required_string(data, "owner_filter"),
             dry_run=bool(data.get("dry_run", True)),
             include_unassigned=bool(data.get("include_unassigned", False)),
             llm_provider=str(data.get("llm_provider", "codex_cli")),
@@ -57,8 +58,8 @@ class Config:
             git_vault_repo_path=_optional_path(data.get("git_vault_repo_path")) or vault_path,
             git_project_repo_path=_optional_path(data.get("git_project_repo_path")) or path.resolve().parent,
             weekly_reviews_dir=str(data.get("weekly_reviews_dir") or data.get("snapshots_dir") or "09_Weekly Reviews"),
-            watcher_settle_seconds=int(data.get("watcher_settle_seconds", 5)),
-            watcher_stable_seconds=int(data.get("watcher_stable_seconds", 2)),
+            watcher_settle_seconds=_positive_int(data.get("watcher_settle_seconds", 5), "watcher_settle_seconds"),
+            watcher_stable_seconds=_positive_int(data.get("watcher_stable_seconds", 2), "watcher_stable_seconds"),
             automation_log_dir=str(data.get("automation_log_dir", "logs")),
             automation_error_dir=str(data.get("automation_error_dir", "_System/Agent Errors")),
         )
@@ -69,12 +70,12 @@ def _load_config_data(path: Path) -> dict[str, object]:
     try:
         import yaml  # type: ignore
 
-        data = yaml.safe_load(raw)
-        if not isinstance(data, dict):
+        yaml_data = yaml.safe_load(raw)
+        if not isinstance(yaml_data, dict):
             raise ValueError("Config must be a mapping.")
-        return data
+        return _string_key_mapping(yaml_data)
     except ModuleNotFoundError:
-        data: dict[str, object] = {}
+        fallback_data: dict[str, object] = {}
         for line in raw.splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -93,8 +94,17 @@ def _load_config_data(path: Path) -> dict[str, object]:
                 parsed = ast.literal_eval(normalized)
             else:
                 parsed = normalized
-            data[key.strip()] = parsed
-        return data
+            fallback_data[key.strip()] = parsed
+        return fallback_data
+
+
+def _string_key_mapping(value: dict[Any, Any]) -> dict[str, object]:
+    return {str(key): item for key, item in value.items()}
+
+
+def _required_string(data: dict[str, object], key: str) -> str:
+    value = data[key]
+    return str(value)
 
 
 def _optional_string(value: object) -> str | None:
@@ -114,13 +124,27 @@ def _optional_path(value: object) -> Path | None:
 def _optional_positive_int(value: object) -> int | None:
     if value is None:
         return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("codex_timeout_seconds must be a positive integer or null.") from exc
+    parsed = _parse_int(value, error_message="codex_timeout_seconds must be a positive integer or null.")
     if parsed <= 0:
         raise ValueError("codex_timeout_seconds must be a positive integer or null.")
     return parsed
+
+
+def _positive_int(value: object, key: str) -> int:
+    error_message = f"{key} must be a positive integer."
+    parsed = _parse_int(value, error_message=error_message)
+    if parsed <= 0:
+        raise ValueError(error_message)
+    return parsed
+
+
+def _parse_int(value: object, *, error_message: str) -> int:
+    try:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(error_message) from exc
 
 
 def _string_list(value: object) -> list[str]:

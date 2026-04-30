@@ -112,16 +112,16 @@ def main(argv: list[str] | None = None) -> int:
         target_date = None
         if args.target_date:
             target_date = __import__("datetime").date.fromisoformat(args.target_date)
-        result = generate_weekly_snapshot(
+        weekly_result = generate_weekly_snapshot(
             config,
             mode=args.mode,
             target_date=target_date,
             dry_run=args.dry_run,
         )
-        action = "would_update" if args.dry_run else ("updated" if result.changed else "unchanged")
-        print(f"weekly_review_{action}: {result.review_path}")
-        if result.changed and not args.dry_run:
-            _maybe_auto_commit(config, vault_source_name=result.review_path.name)
+        action = "would_update" if args.dry_run else ("updated" if weekly_result.changed else "unchanged")
+        print(f"weekly_review_{action}: {weekly_result.review_path}")
+        if weekly_result.changed and not args.dry_run:
+            _maybe_auto_commit(config, vault_source_name=weekly_result.review_path.name)
         return 0
 
     parser.error("Unknown command.")

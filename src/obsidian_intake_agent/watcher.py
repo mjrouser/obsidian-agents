@@ -19,7 +19,10 @@ def watch_intake(processor: MeetingProcessor) -> None:
         def _queue_event(self, event: object) -> None:
             if getattr(event, "is_directory", False):
                 return
-            path = Path(event.src_path)
+            source = getattr(event, "src_path", None)
+            if source is None:
+                return
+            path = Path(source)
             if not self.processor._is_under_intake(path):
                 return
             self.watcher.mark_pending(path)

@@ -165,23 +165,27 @@ def _extract_actions_note_parts(existing_text: str) -> tuple[list[str], list[str
         longer_term_lines = _strip_edge_blank_lines(lines[longer_term_index + 1 :])
         return preamble_lines, this_week_lines, longer_term_lines
 
-    longer_term_lines: list[str] = []
+    fallback_longer_term_lines: list[str] = []
     body_lines = lines
     if longer_term_index is not None:
-        longer_term_lines = _strip_edge_blank_lines(lines[longer_term_index + 1 :])
+        fallback_longer_term_lines = _strip_edge_blank_lines(lines[longer_term_index + 1 :])
         body_lines = lines[:longer_term_index]
 
     if open_actions_index is not None:
         body_lines = lines[:open_actions_index] + lines[open_actions_index + 1 :]
 
-    preamble_lines: list[str] = []
-    this_week_lines: list[str] = []
+    fallback_preamble_lines: list[str] = []
+    fallback_this_week_lines: list[str] = []
     for line in body_lines:
         if line.strip().startswith("- ["):
-            this_week_lines.append(line)
+            fallback_this_week_lines.append(line)
         elif line.strip() not in {THIS_WEEK_HEADING, LONGER_TERM_HEADING, OPEN_ACTIONS_HEADING}:
-            preamble_lines.append(line)
-    return _strip_edge_blank_lines(preamble_lines), _strip_edge_blank_lines(this_week_lines), longer_term_lines
+            fallback_preamble_lines.append(line)
+    return (
+        _strip_edge_blank_lines(fallback_preamble_lines),
+        _strip_edge_blank_lines(fallback_this_week_lines),
+        fallback_longer_term_lines,
+    )
 
 
 def _build_actions_note(

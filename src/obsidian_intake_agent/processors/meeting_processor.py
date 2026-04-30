@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from os.path import relpath
 from pathlib import Path
@@ -33,7 +33,7 @@ class ProcessingSummary:
     skipped_ignored_basename: int = 0
     skipped_already_processed: int = 0
     skipped_unsupported_ext: int = 0
-    processed_sources: list[str] | None = None
+    processed_sources: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
