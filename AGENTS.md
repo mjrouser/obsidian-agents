@@ -98,6 +98,9 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - Keep dependency changes reflected in both `pyproject.toml` and
   `requirements.lock`.
 - Run `make audit` after dependency changes.
+- Treat Python 3.11 as the compatibility floor. If code requires newer Python
+  syntax, standard-library behavior, or packaging assumptions, update
+  `pyproject.toml`, CI, and `README.md` together.
 
 ## Safety rules
 

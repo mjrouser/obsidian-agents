@@ -8,6 +8,8 @@ see [`USAGE.md`](USAGE.md).
 ## Requirements
 
 - Python 3.11+
+  - Python 3.11 is the supported compatibility floor.
+  - CI also validates Python 3.14 to match the newer local runtime line.
 - Git
 - `make`
 - macOS or Linux shell
@@ -20,6 +22,8 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
 - `make test` and `make build` also use `./.venv/bin/python`.
 - Do not rely on system `python` or `python3` for normal project execution.
 - The CLI prints a warning if it is started outside the repo virtualenv.
+- Keep code compatible with Python 3.11 unless `pyproject.toml`, CI, and this
+  README are deliberately updated together.
 
 ## Code Organization
 
@@ -266,7 +270,7 @@ Current behavior:
 - CI creates `.venv`, installs locked dependencies from `requirements.lock`,
   installs the project in editable mode without re-resolving dependencies, then
   runs the same `make check`, `make test`, `make build`, and `make audit`
-  commands.
+  commands against Python 3.11 and Python 3.14.
 
 Update the dependency lockfile after changing `pyproject.toml`:
 
