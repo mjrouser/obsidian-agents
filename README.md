@@ -240,7 +240,9 @@ When a launchd wrapper exits with a real failure, it writes an Obsidian note to
 `vault_path/_System/Agent Errors` by default. The timestamped note preserves the
 failure details, and `ACTION NEEDED - Latest Automation Failure.md` points at the
 newest failure so it is easy to spot. The detailed trace stays in the matching
-`logs/*.stderr.log` file.
+`logs/*.stderr.log` file. On macOS, the wrapper also sends a best-effort desktop
+notification through `osascript`; set `AUTOMATION_FAILURE_NOTIFICATIONS=0` to
+disable that notification.
 
 ## Quality Checks
 

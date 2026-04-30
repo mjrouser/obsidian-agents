@@ -86,7 +86,9 @@ You only need to step in when:
 Automation failures write a short note under `_System/Agent Errors` in the
 configured vault. Start with `ACTION NEEDED - Latest Automation Failure.md`; it
 points to the newest timestamped failure note. Use that note as the quick
-signal, then inspect logs for full details.
+signal, then inspect logs for full details. On macOS, failed launchd wrapper
+runs also send a best-effort desktop notification unless
+`AUTOMATION_FAILURE_NOTIFICATIONS=0` is set.
 
 ### Check Watcher Logs
 
