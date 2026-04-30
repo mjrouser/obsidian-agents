@@ -269,8 +269,8 @@ Current behavior:
 - `make audit` scans locked dependencies with `pip-audit`.
 - CI creates `.venv`, installs locked dependencies from `requirements.lock`,
   installs the project in editable mode without re-resolving dependencies, then
-  runs the same `make check`, `make test`, `make build`, and `make audit`
-  commands against Python 3.11 and Python 3.14.
+  runs the same `make check`, `make test`, `make smoke`, `make build`, and
+  `make audit` commands against Python 3.11 and Python 3.14.
 
 Update the dependency lockfile after changing `pyproject.toml`:
 
