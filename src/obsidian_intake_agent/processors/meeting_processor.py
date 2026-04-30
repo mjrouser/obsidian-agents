@@ -44,6 +44,13 @@ class ProcessResult:
     skip_reason: str | None = None
 
 
+@dataclass(slots=True)
+class ActionNoteUpdate:
+    path: Path
+    content: str
+    changed: bool
+
+
 class MeetingProcessor:
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -117,41 +124,29 @@ class MeetingProcessor:
             meeting_title=metadata.title,
         )
 
-        meeting_week = monday_of_week(date.fromisoformat(metadata.date))
-        actions_note_path = self.actions_path / f"{meeting_week.isoformat()}.md"
-        existing_actions = ""
-        if actions_note_path.exists():
-            existing_actions = actions_note_path.read_text(encoding="utf-8")
-        action_records = self._build_action_records(
+        action_update = self._prepare_action_note_update(
             action_items=action_items,
             meeting_date=metadata.date,
             canonical_basename=metadata.canonical_basename,
         )
-        actions_note = render_actions_note(
-            monday=meeting_week,
-            action_records=action_records,
-            owner_aliases=self.action_owner_aliases,
-            existing_text=existing_actions,
-        )
         status_text = f"PROCESSED — see [[{meeting_link}]]"
-        actions_changed = bool(actions_note) and actions_note != existing_actions
 
         if effective_dry_run:
             print(f"DRY RUN — would write: {meeting_note_path}")
-            if actions_changed:
-                print(f"DRY RUN — would update: {actions_note_path}")
+            if action_update.changed:
+                print(f"DRY RUN — would update: {action_update.path}")
             print(f"DRY RUN — would prepend processed marker: {source_path} -> {status_text}")
             if source_in_intake:
                 print(f"DRY RUN — would archive: {source_path} -> {archived_source_path}")
             return ProcessResult(
                 processed=True,
                 canonical_note_path=meeting_note_path,
-                actions_file_path=actions_note_path if actions_changed else None,
+                actions_file_path=action_update.path if action_update.changed else None,
             )
 
         safe_write_text(meeting_note_path, meeting_note)
-        if actions_changed:
-            safe_write_text(actions_note_path, actions_note)
+        if action_update.changed:
+            safe_write_text(action_update.path, action_update.content)
         if source_in_intake and source_path.suffix.lower() == ".md":
             if force:
                 replace_status_marker(source_path, status_text)
@@ -162,7 +157,7 @@ class MeetingProcessor:
         return ProcessResult(
             processed=True,
             canonical_note_path=meeting_note_path,
-            actions_file_path=actions_note_path if actions_changed else None,
+            actions_file_path=action_update.path if action_update.changed else None,
         )
 
     def _process_vtt_file(
@@ -185,21 +180,11 @@ class MeetingProcessor:
             extracted=extracted,
         )
 
-        meeting_week = monday_of_week(date.fromisoformat(metadata.date))
-        actions_note_path = self.actions_path / f"{meeting_week.isoformat()}.md"
-        existing_actions = actions_note_path.read_text(encoding="utf-8") if actions_note_path.exists() else ""
-        action_records = self._build_action_records(
+        action_update = self._prepare_action_note_update(
             action_items=action_items_from_extracted(extracted),
             meeting_date=metadata.date,
             canonical_basename=canonical_note_name,
         )
-        actions_note = render_actions_note(
-            monday=meeting_week,
-            action_records=action_records,
-            owner_aliases=self.action_owner_aliases,
-            existing_text=existing_actions,
-        )
-        actions_changed = bool(actions_note) and actions_note != existing_actions
 
         sidecar_path = self.intake_path / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
         raw_relative_path = relpath(archived_source_path, sidecar_path.parent)
@@ -211,27 +196,27 @@ class MeetingProcessor:
 
         if dry_run:
             print(f"DRY RUN — would write: {meeting_note_path}")
-            if actions_changed:
-                print(f"DRY RUN — would update: {actions_note_path}")
+            if action_update.changed:
+                print(f"DRY RUN — would update: {action_update.path}")
             print(f"DRY RUN — would write: {sidecar_path}")
             if source_in_intake:
                 print(f"DRY RUN — would archive: {source_path} -> {archived_source_path}")
             return ProcessResult(
                 processed=True,
                 canonical_note_path=meeting_note_path,
-                actions_file_path=actions_note_path if actions_changed else None,
+                actions_file_path=action_update.path if action_update.changed else None,
             )
 
         safe_write_text(meeting_note_path, meeting_note)
-        if actions_changed:
-            safe_write_text(actions_note_path, actions_note)
+        if action_update.changed:
+            safe_write_text(action_update.path, action_update.content)
         safe_write_text(sidecar_path, sidecar_note)
         if source_in_intake:
             self._archive_processed_source(source_path)
         return ProcessResult(
             processed=True,
             canonical_note_path=meeting_note_path,
-            actions_file_path=actions_note_path if actions_changed else None,
+            actions_file_path=action_update.path if action_update.changed else None,
         )
 
     def _read_source(self, path: Path) -> str:
@@ -270,6 +255,33 @@ class MeetingProcessor:
                 )
             )
         return records
+
+    def _prepare_action_note_update(
+        self,
+        *,
+        action_items: list[ActionItem],
+        meeting_date: str,
+        canonical_basename: str,
+    ) -> ActionNoteUpdate:
+        meeting_week = monday_of_week(date.fromisoformat(meeting_date))
+        actions_note_path = self.actions_path / f"{meeting_week.isoformat()}.md"
+        existing_actions = actions_note_path.read_text(encoding="utf-8") if actions_note_path.exists() else ""
+        action_records = self._build_action_records(
+            action_items=action_items,
+            meeting_date=meeting_date,
+            canonical_basename=canonical_basename,
+        )
+        actions_note = render_actions_note(
+            monday=meeting_week,
+            action_records=action_records,
+            owner_aliases=self.action_owner_aliases,
+            existing_text=existing_actions,
+        )
+        return ActionNoteUpdate(
+            path=actions_note_path,
+            content=actions_note,
+            changed=bool(actions_note) and actions_note != existing_actions,
+        )
 
     def _should_include_action_owner(self, owner: str | None) -> bool:
         normalized_owner = self._normalize_owner(owner)
