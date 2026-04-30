@@ -9,12 +9,14 @@ from .config import Config
 from .utils.fs import safe_write_text
 
 MAX_STDERR_CHARS = 6000
+LATEST_FAILURE_NOTE = "ACTION NEEDED - Latest Automation Failure.md"
 
 
 @dataclass(frozen=True, slots=True)
 class AutomationFailureNote:
     path: Path
     title: str
+    latest_path: Path
 
 
 def write_automation_failure_note(
@@ -30,15 +32,22 @@ def write_automation_failure_note(
     slug = _slugify(job_name)
     note_dir = config.vault_path / config.automation_error_dir
     note_path = _unique_note_path(note_dir / f"{occurred.strftime('%Y-%m-%d %H%M%S')} - {slug} failed.md")
+    stderr_preview = _read_stderr_preview(stderr_log_path)
+    summary = _failure_summary(stderr_preview)
     content = _render_failure_note(
         title=title,
         job_name=job_name,
         exit_code=exit_code,
         occurred=occurred,
         stderr_log_path=stderr_log_path,
+        stderr_preview=stderr_preview,
+        summary=summary,
     )
     safe_write_text(note_path, content)
-    return AutomationFailureNote(path=note_path, title=title)
+    latest_path = note_dir / LATEST_FAILURE_NOTE
+    latest_content = _render_latest_failure_note(content=content, note_path=note_path)
+    safe_write_text(latest_path, latest_content)
+    return AutomationFailureNote(path=note_path, title=title, latest_path=latest_path)
 
 
 def _render_failure_note(
@@ -48,14 +57,17 @@ def _render_failure_note(
     exit_code: int,
     occurred: datetime,
     stderr_log_path: Path,
+    stderr_preview: str,
+    summary: str,
 ) -> str:
-    stderr_preview = _read_stderr_preview(stderr_log_path)
     return (
         f"# {title}\n\n"
+        "ACTION NEEDED: This automation failed. Check the summary and stderr preview below before rerunning it.\n\n"
         f"- Job: `{job_name}`\n"
         f"- Exit code: `{exit_code}`\n"
         f"- Time: `{occurred.isoformat(timespec='seconds')}`\n"
         f"- Stderr log: `{stderr_log_path}`\n\n"
+        f"## Summary\n\n{summary}\n\n"
         "## Recent stderr\n\n"
         "```text\n"
         f"{stderr_preview}\n"
@@ -67,6 +79,15 @@ def _render_failure_note(
     )
 
 
+def _render_latest_failure_note(*, content: str, note_path: Path) -> str:
+    return (
+        "# ACTION NEEDED: Latest automation failure\n\n"
+        f"- Full failure note: `{note_path}`\n"
+        "- This note is overwritten when a newer automation failure occurs.\n\n"
+        f"{content}"
+    )
+
+
 def _read_stderr_preview(stderr_log_path: Path) -> str:
     if not stderr_log_path.exists():
         return f"Stderr log was not found: {stderr_log_path}"
@@ -75,6 +96,14 @@ def _read_stderr_preview(stderr_log_path: Path) -> str:
     if not preview:
         return "Stderr log exists but is empty."
     return preview.replace("```", "'''")
+
+
+def _failure_summary(stderr_preview: str) -> str:
+    for line in reversed(stderr_preview.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return "No stderr summary was available."
 
 
 def _unique_note_path(path: Path) -> Path:

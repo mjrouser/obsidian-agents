@@ -84,8 +84,9 @@ You only need to step in when:
 ### Check Obsidian Failure Notes
 
 Automation failures write a short note under `_System/Agent Errors` in the
-configured vault. Use that note as the quick signal, then inspect logs for full
-details.
+configured vault. Start with `ACTION NEEDED - Latest Automation Failure.md`; it
+points to the newest timestamped failure note. Use that note as the quick
+signal, then inspect logs for full details.
 
 ### Check Watcher Logs
 

@@ -27,10 +27,18 @@ class AutomationFailureNoteTests(unittest.TestCase):
 
             self.assertEqual(note.path.parent, vault / "_System" / "Agent Errors")
             self.assertEqual(note.path.name, "2026-04-29 121500 - weekly-wrap failed.md")
+            self.assertEqual(
+                note.latest_path, vault / "_System" / "Agent Errors" / "ACTION NEEDED - Latest Automation Failure.md"
+            )
             text = note.path.read_text(encoding="utf-8")
             self.assertIn("# Automation failure: weekly-wrap", text)
+            self.assertIn("ACTION NEEDED: This automation failed.", text)
             self.assertIn("- Exit code: `1`", text)
+            self.assertIn("## Summary\n\nTimeoutError: Codex CLI timed out", text)
             self.assertIn("TimeoutError: Codex CLI timed out", text)
+            latest_text = note.latest_path.read_text(encoding="utf-8")
+            self.assertIn("# ACTION NEEDED: Latest automation failure", latest_text)
+            self.assertIn(f"- Full failure note: `{note.path}`", latest_text)
 
     def test_missing_stderr_log_is_reported_in_note(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -75,6 +83,10 @@ class AutomationFailureNoteTests(unittest.TestCase):
 
             self.assertNotEqual(first.path, second.path)
             self.assertEqual(second.path.name, "2026-04-29 121500 - weekly-wrap failed-2.md")
+            self.assertEqual(first.latest_path, second.latest_path)
+            latest_text = second.latest_path.read_text(encoding="utf-8")
+            self.assertIn(f"- Full failure note: `{second.path}`", latest_text)
+            self.assertNotIn(f"- Full failure note: `{first.path}`", latest_text)
 
 
 def _config(vault: Path) -> Config:

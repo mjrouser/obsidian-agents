@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         stderr_log_path=Path(args.stderr_log),
     )
     print(f"automation_failure_note: {note.path}")
+    print(f"automation_failure_latest_note: {note.latest_path}")
     return 0
 
 

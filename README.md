@@ -237,8 +237,10 @@ Default schedule:
 - Watcher: starts at login and stays alive
 
 When a launchd wrapper exits with a real failure, it writes an Obsidian note to
-`vault_path/_System/Agent Errors` by default and leaves the detailed trace in
-the matching `logs/*.stderr.log` file.
+`vault_path/_System/Agent Errors` by default. The timestamped note preserves the
+failure details, and `ACTION NEEDED - Latest Automation Failure.md` points at the
+newest failure so it is easy to spot. The detailed trace stays in the matching
+`logs/*.stderr.log` file.
 
 ## Quality Checks
 
