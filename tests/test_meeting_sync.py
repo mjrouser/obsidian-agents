@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -7,13 +8,16 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from obsidian_intake_agent.meetings import (
+    BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
+    render_bundle_write_result,
     render_intake_bundle_note,
     render_transcript_sync_plan,
+    write_planned_bundle_notes,
 )
 
 
@@ -257,6 +261,52 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("# 2026-05-04 - Teams - Delivery Review (bundle)", rendered)
         self.assertIn("## Source", rendered)
         self.assertIn("## Artifact Plan", rendered)
+
+    def test_write_planned_bundle_notes_writes_processable_notes_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                        _meeting(event_id="evt-2", subject="Cancelled", is_cancelled=True),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=now,
+            )
+
+            first_result = write_planned_bundle_notes(plan)
+            second_result = write_planned_bundle_notes(plan)
+
+            self.assertEqual(first_result.written_count, 1)
+            self.assertEqual(first_result.skipped_existing_count, 0)
+            self.assertTrue((intake_root / "2026-05-04 - Teams - Platform Sync (bundle).md").exists())
+            self.assertEqual(second_result.written_count, 0)
+            self.assertEqual(second_result.skipped_existing_count, 1)
+
+    def test_render_bundle_write_result_lists_written_and_skipped_paths(self) -> None:
+        result = BundleWriteResult(
+            written_paths=(Path("/tmp/a.md"),),
+            skipped_existing_paths=(Path("/tmp/b.md"),),
+        )
+
+        rendered = render_bundle_write_result(result)
+
+        self.assertIn("meeting_sync_bundle_notes_written: 1", rendered)
+        self.assertIn("meeting_sync_bundle_notes_skipped_existing: 1", rendered)
+        self.assertIn("bundle_note_written: /tmp/a.md", rendered)
+        self.assertIn("bundle_note_skipped_existing: /tmp/b.md", rendered)
 
 
 @dataclass(slots=True)

@@ -11,7 +11,9 @@ from .meetings import (
     GraphOutlookMeetingDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
+    render_bundle_write_result,
     render_transcript_sync_plan,
+    write_planned_bundle_notes,
 )
 from .processors.meeting_processor import MeetingProcessor
 from .utils.git import auto_commit_repo
@@ -90,6 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help="Print the transcript sync plan without downloading or writing artifacts.",
     )
+    sync_parser.add_argument(
+        "--write-bundles",
+        action="store_true",
+        dest="write_bundles",
+        help="Write planned intake bundle notes into the intake folder without downloading artifacts.",
+    )
 
     return parser
 
@@ -153,15 +161,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "meetings":
         if args.meetings_command == "sync-transcripts":
-            if not args.dry_run:
-                parser.error("`obsidian-agent meetings sync-transcripts` currently requires `--dry-run`.")
+            if args.dry_run == args.write_bundles:
+                parser.error(
+                    "`obsidian-agent meetings sync-transcripts` requires exactly one of `--dry-run` or `--write-bundles`."
+                )
             since = date.fromisoformat(args.since)
             plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
                 since=since,
                 intake_root=config.vault_path / config.intake_dir,
             )
-            print(render_transcript_sync_plan(plan))
+            mode = "write-bundles" if args.write_bundles else "dry-run"
+            print(render_transcript_sync_plan(plan, mode=mode))
+            if args.write_bundles:
+                print(render_bundle_write_result(write_planned_bundle_notes(plan)))
             return 0
 
     parser.error("Unknown command.")

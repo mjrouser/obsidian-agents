@@ -1,6 +1,7 @@
 from .sync import (
     ARTIFACT_SOURCE_PRIORITY,
     ArtifactStatus,
+    BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
     MeetingArtifact,
     MeetingDiscoveryClient,
@@ -12,13 +13,16 @@ from .sync import (
     TranscriptSyncPlanItem,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
+    render_bundle_write_result,
     render_intake_bundle_note,
     render_transcript_sync_plan,
+    write_planned_bundle_notes,
 )
 
 __all__ = [
     "ARTIFACT_SOURCE_PRIORITY",
     "ArtifactStatus",
+    "BundleWriteResult",
     "MeetingArtifact",
     "MeetingDiscoveryClient",
     "MeetingDiscoverySnapshot",
@@ -30,6 +34,8 @@ __all__ = [
     "TranscriptSyncPlanItem",
     "UnconfiguredOutlookMeetingDiscoveryClient",
     "build_transcript_sync_plan",
+    "render_bundle_write_result",
     "render_intake_bundle_note",
     "render_transcript_sync_plan",
+    "write_planned_bundle_notes",
 ]

@@ -158,6 +158,12 @@ Dry-run recently ended meeting candidates for future transcript sync:
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
 ```
 
+Write only planned intake bundle notes, without downloading artifacts yet:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --write-bundles
+```
+
 With Graph discovery enabled:
 
 ```bash
@@ -217,11 +223,12 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Draft intake basenames such as `Untitled.md` and `Untitled 2.md` are ignored until you rename them.
 - `obsidian-agent run` currently requires `--once`.
 - `obsidian-agent meetings sync-transcripts` currently requires `--dry-run` and
-  plans candidate meetings from Outlook metadata without downloading
-  transcripts yet. If a Graph bearer token is not configured, it returns a
-  warning-only dry run instead of discovered meetings. For meetings that would
-  be processed, the dry run now also reports the planned intake bundle note
-  path and source-transparency metadata.
+  `--write-bundles` as mutually exclusive modes. Both plan candidate meetings
+  from Outlook metadata without downloading transcripts yet. If a Graph bearer
+  token is not configured, the command returns a warning-only plan instead of
+  discovered meetings. For meetings that would be processed, the plan reports
+  the intake bundle note path and source-transparency metadata. `--write-bundles`
+  writes only those planned bundle notes and skips existing bundle files.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
