@@ -5,7 +5,10 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from obsidian_intake_agent.automation_failures import write_automation_failure_note
+from obsidian_intake_agent.automation_failures import (
+    write_automation_failure_note,
+    write_automation_failure_note_to_dir,
+)
 from obsidian_intake_agent.config import Config
 
 
@@ -87,6 +90,31 @@ class AutomationFailureNoteTests(unittest.TestCase):
             latest_text = second.latest_path.read_text(encoding="utf-8")
             self.assertIn(f"- Full failure note: `{second.path}`", latest_text)
             self.assertNotIn(f"- Full failure note: `{first.path}`", latest_text)
+
+    def test_writes_failure_note_to_explicit_directory_with_extra_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            note_dir = Path(tmp_dir) / "automation-failures"
+            log = Path(tmp_dir) / "weekly-briefing.stderr.log"
+            log.write_text("FileNotFoundError: missing config.yaml\n", encoding="utf-8")
+
+            note = write_automation_failure_note_to_dir(
+                note_dir,
+                job_name="weekly-briefing",
+                exit_code=1,
+                stderr_log_path=log,
+                occurred_at=datetime(2026, 5, 4, 9, 0, tzinfo=UTC),
+                extra_details=[
+                    "Config path could not be loaded: `/repo/config.yaml`",
+                    "This fallback note was written outside the vault because automation config was unavailable.",
+                ],
+            )
+
+            self.assertEqual(note.path.parent, note_dir)
+            self.assertEqual(note.latest_path.parent, note_dir)
+            text = note.path.read_text(encoding="utf-8")
+            self.assertIn("## Automation context", text)
+            self.assertIn("Config path could not be loaded: `/repo/config.yaml`", text)
+            self.assertIn("FileNotFoundError: missing config.yaml", text)
 
 
 def _config(vault: Path) -> Config:

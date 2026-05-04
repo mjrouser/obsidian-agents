@@ -104,6 +104,10 @@ tail -n 50 logs/weekly-briefing.stderr.log
 tail -n 50 logs/weekly-wrap.stderr.log
 ```
 
+If `config.yaml` is missing or broken, check `logs/automation-failures/` too.
+The wrapper now writes a fallback failure note there when it cannot write the
+normal vault-based note.
+
 ---
 
 ## Quick Health Check

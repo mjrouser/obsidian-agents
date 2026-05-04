@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Sequence
 
 from .config import Config
 from .utils.fs import safe_write_text
@@ -27,10 +28,28 @@ def write_automation_failure_note(
     stderr_log_path: Path,
     occurred_at: datetime | None = None,
 ) -> AutomationFailureNote:
+    note_dir = config.vault_path / config.automation_error_dir
+    return write_automation_failure_note_to_dir(
+        note_dir,
+        job_name=job_name,
+        exit_code=exit_code,
+        stderr_log_path=stderr_log_path,
+        occurred_at=occurred_at,
+    )
+
+
+def write_automation_failure_note_to_dir(
+    note_dir: Path,
+    *,
+    job_name: str,
+    exit_code: int,
+    stderr_log_path: Path,
+    occurred_at: datetime | None = None,
+    extra_details: Sequence[str] | None = None,
+) -> AutomationFailureNote:
     occurred = occurred_at or datetime.now().astimezone()
     title = f"Automation failure: {job_name}"
     slug = _slugify(job_name)
-    note_dir = config.vault_path / config.automation_error_dir
     note_path = _unique_note_path(note_dir / f"{occurred.strftime('%Y-%m-%d %H%M%S')} - {slug} failed.md")
     stderr_preview = _read_stderr_preview(stderr_log_path)
     summary = _failure_summary(stderr_preview)
@@ -42,6 +61,7 @@ def write_automation_failure_note(
         stderr_log_path=stderr_log_path,
         stderr_preview=stderr_preview,
         summary=summary,
+        extra_details=extra_details,
     )
     safe_write_text(note_path, content)
     latest_path = note_dir / LATEST_FAILURE_NOTE
@@ -59,7 +79,12 @@ def _render_failure_note(
     stderr_log_path: Path,
     stderr_preview: str,
     summary: str,
+    extra_details: Sequence[str] | None,
 ) -> str:
+    extra_details_section = ""
+    if extra_details:
+        extra_detail_lines = "\n".join(f"- {detail}" for detail in extra_details)
+        extra_details_section = f"## Automation context\n\n{extra_detail_lines}\n\n"
     return (
         f"# {title}\n\n"
         "ACTION NEEDED: This automation failed. Check the summary and stderr preview below before rerunning it.\n\n"
@@ -67,6 +92,7 @@ def _render_failure_note(
         f"- Exit code: `{exit_code}`\n"
         f"- Time: `{occurred.isoformat(timespec='seconds')}`\n"
         f"- Stderr log: `{stderr_log_path}`\n\n"
+        f"{extra_details_section}"
         f"## Summary\n\n{summary}\n\n"
         "## Recent stderr\n\n"
         "```text\n"
