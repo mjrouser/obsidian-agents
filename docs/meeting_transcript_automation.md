@@ -122,6 +122,10 @@ Current implementation status in this repo:
 - The command builds a source bundle for each candidate, marks Outlook calendar
   metadata as the currently available source, and preserves the intended source
   priority for transcript, chat, recap, and manual fallback artifacts.
+- For meetings that would be processed, the dry run also plans a concrete
+  intake bundle note path and renders the future bundle note content shape with
+  attendance confidence, sources used, source limitations, Outlook event ID,
+  and Teams meeting ID.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, and not-yet-ended events with explicit
   reasons.

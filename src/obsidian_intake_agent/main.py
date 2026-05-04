@@ -159,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
                 since=since,
+                intake_root=config.vault_path / config.intake_dir,
             )
             print(render_transcript_sync_plan(plan))
             return 0
