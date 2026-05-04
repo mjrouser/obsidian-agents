@@ -126,6 +126,9 @@ Current implementation status in this repo:
   intake bundle note path and renders the future bundle note content shape with
   attendance confidence, sources used, source limitations, Outlook event ID,
   and Teams meeting ID.
+- `obsidian-agent meetings sync-transcripts --write-bundles` now materializes
+  only those planned bundle notes into `00_Intake`, preserving existing bundle
+  files and still leaving transcript, chat, and recap retrieval for later.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, and not-yet-ended events with explicit
   reasons.

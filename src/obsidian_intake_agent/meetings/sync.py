@@ -149,6 +149,20 @@ class TranscriptSyncPlan:
         return sum(1 for item in self.items if item.decision == "skip")
 
 
+@dataclass(slots=True, frozen=True)
+class BundleWriteResult:
+    written_paths: tuple[Path, ...]
+    skipped_existing_paths: tuple[Path, ...]
+
+    @property
+    def written_count(self) -> int:
+        return len(self.written_paths)
+
+    @property
+    def skipped_existing_count(self) -> int:
+        return len(self.skipped_existing_paths)
+
+
 class MeetingDiscoveryClient(Protocol):
     def list_recently_ended_meetings(
         self,
@@ -250,9 +264,9 @@ def build_transcript_sync_plan(
     )
 
 
-def render_transcript_sync_plan(plan: TranscriptSyncPlan) -> str:
+def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-run") -> str:
     lines = [
-        "meeting_sync_mode: dry-run",
+        f"meeting_sync_mode: {mode}",
         f"meeting_sync_since: {plan.since.isoformat()}",
         f"meeting_sync_generated_at: {plan.generated_at.isoformat()}",
         f"meeting_sync_provider: {plan.provider_label}",
@@ -288,6 +302,37 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan) -> str:
                 lines.append(f"  source_pending: {artifact.source_name}={artifact.status}{detail_suffix}")
         for reason in item.reasons:
             lines.append(f"  reason: {reason}")
+    return "\n".join(lines)
+
+
+def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
+    written_paths: list[Path] = []
+    skipped_existing_paths: list[Path] = []
+    for item in plan.items:
+        if item.decision != "process" or item.intake_bundle_note is None:
+            continue
+        path = item.intake_bundle_note.path
+        if path.exists():
+            skipped_existing_paths.append(path)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(item.intake_bundle_note.content + "\n", encoding="utf-8")
+        written_paths.append(path)
+    return BundleWriteResult(
+        written_paths=tuple(written_paths),
+        skipped_existing_paths=tuple(skipped_existing_paths),
+    )
+
+
+def render_bundle_write_result(result: BundleWriteResult) -> str:
+    lines = [
+        f"meeting_sync_bundle_notes_written: {result.written_count}",
+        f"meeting_sync_bundle_notes_skipped_existing: {result.skipped_existing_count}",
+    ]
+    for path in result.written_paths:
+        lines.append(f"bundle_note_written: {path}")
+    for path in result.skipped_existing_paths:
+        lines.append(f"bundle_note_skipped_existing: {path}")
     return "\n".join(lines)
 
 
