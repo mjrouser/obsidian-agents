@@ -112,6 +112,19 @@ Expected behavior:
 - In dry-run mode, print which meetings would import, which are missing
   transcripts, and which would be skipped as already imported.
 
+Current implementation status in this repo:
+
+- `obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run` now
+  exists as discovery/planning-only CLI plumbing.
+- The command builds a source bundle for each candidate, marks Outlook calendar
+  metadata as the currently available source, and preserves the intended source
+  priority for transcript, chat, recap, and manual fallback artifacts.
+- Planning currently skips canceled, declined-without-content, all-day-without-content,
+  focus-without-content, non-Teams, and not-yet-ended events with explicit
+  reasons.
+- Transcript download, chat export, recap retrieval, and `00_Intake` writes are
+  still future work.
+
 ## Extraction Standard
 
 The extraction prompt intentionally borrows the strongest quality rules from

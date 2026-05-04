@@ -147,6 +147,12 @@ Process a specific file:
 obsidian-agent process /absolute/path/to/file.md
 ```
 
+Dry-run recently ended meeting candidates for future transcript sync:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+```
+
 With vault auto-commit enabled, successful non-dry-run `run --once` and `process` commands will attempt a vault repo commit with `auto: process transcript outputs for <source filename>` (or `multiple intake files` for multi-file batch runs).
 
 Dry runs never auto-commit. Project repo changes are never auto-committed by the app; commit them manually after reviewing the diff and running checks.
@@ -198,6 +204,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - The watcher listens for both create and modify events, waits for the file to stop changing, and uses a per-file lock to avoid duplicate processing attempts.
 - Draft intake basenames such as `Untitled.md` and `Untitled 2.md` are ignored until you rename them.
 - `obsidian-agent run` currently requires `--once`.
+- `obsidian-agent meetings sync-transcripts` currently requires `--dry-run` and
+  plans candidate meetings from an Outlook discovery client without downloading
+  transcripts yet.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
