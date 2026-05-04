@@ -4,10 +4,13 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from ..utils.text import normalize_whitespace
 
 ARTIFACT_SOURCE_PRIORITY = (
     "Teams .vtt transcript",
@@ -96,6 +99,18 @@ class MeetingSourceBundle:
     def available_sources(self) -> list[str]:
         return [artifact.source_name for artifact in self.artifacts if artifact.status == "available"]
 
+    def pending_sources(self) -> list[str]:
+        return [artifact.source_name for artifact in self.artifacts if artifact.status != "available"]
+
+
+@dataclass(slots=True, frozen=True)
+class PlannedIntakeBundleNote:
+    path: Path
+    attendance_confidence: str
+    sources_used: tuple[str, ...]
+    source_limitations: tuple[str, ...]
+    content: str
+
 
 @dataclass(slots=True, frozen=True)
 class TranscriptSyncPlanItem:
@@ -103,6 +118,7 @@ class TranscriptSyncPlanItem:
     meeting: OutlookMeetingCandidate
     bundle: MeetingSourceBundle
     reasons: tuple[str, ...]
+    intake_bundle_note: PlannedIntakeBundleNote | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -219,11 +235,12 @@ def build_transcript_sync_plan(
     *,
     client: MeetingDiscoveryClient,
     since: date,
+    intake_root: Path | None = None,
     now: datetime | None = None,
 ) -> TranscriptSyncPlan:
     generated_at = now or datetime.now().astimezone()
     snapshot = client.list_recently_ended_meetings(since=since, now=generated_at)
-    items = tuple(_plan_item(meeting, now=generated_at) for meeting in snapshot.meetings)
+    items = tuple(_plan_item(meeting, now=generated_at, intake_root=intake_root) for meeting in snapshot.meetings)
     return TranscriptSyncPlan(
         since=since,
         generated_at=generated_at,
@@ -256,6 +273,13 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan) -> str:
         lines.append(f"  teams_meeting_detected: {'yes' if meeting.is_teams_meeting() else 'no'}")
         if item.bundle.teams_meeting_id:
             lines.append(f'  teams_meeting_id: "{item.bundle.teams_meeting_id}"')
+        if item.intake_bundle_note is not None:
+            lines.append(f"  would_write_bundle: {item.intake_bundle_note.path}")
+            lines.append(f"  bundle_attendance_confidence: {item.intake_bundle_note.attendance_confidence}")
+            for source_name in item.intake_bundle_note.sources_used:
+                lines.append(f"  bundle_source_used: {source_name}")
+            for limitation in item.intake_bundle_note.source_limitations:
+                lines.append(f"  bundle_source_limitation: {limitation}")
         for source_name in item.bundle.available_sources():
             lines.append(f"  source_available: {source_name}")
         for artifact in item.bundle.artifacts:
@@ -267,39 +291,45 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan) -> str:
     return "\n".join(lines)
 
 
-def _plan_item(meeting: OutlookMeetingCandidate, *, now: datetime) -> TranscriptSyncPlanItem:
+def _plan_item(
+    meeting: OutlookMeetingCandidate,
+    *,
+    now: datetime,
+    intake_root: Path | None,
+) -> TranscriptSyncPlanItem:
     bundle = _build_source_bundle(meeting)
     reasons: list[str] = []
+    intake_bundle_note = _build_intake_bundle_note(meeting, bundle, intake_root=intake_root)
 
     if meeting.end_at > now:
         reasons.append("Meeting has not ended yet.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons))
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     if meeting.is_cancelled:
         reasons.append("Skipped canceled meeting.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons))
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     response_status = (meeting.response_status or "").strip().lower()
     if response_status == "declined" and not meeting.has_meeting_content():
         reasons.append("Skipped declined event because no meeting content was detected.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons))
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     if meeting.is_all_day and not meeting.has_meeting_content():
         reasons.append("Skipped all-day event because no meeting content was detected.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons))
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     if meeting.is_focus_block() and not meeting.has_meeting_content():
         reasons.append("Skipped focus block because no meeting content was detected.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons))
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     if not meeting.is_teams_meeting():
         reasons.append("Skipped event because Outlook metadata did not identify a Teams meeting.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons))
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
-    reasons.append("Dry-run only: transcript, chat, and recap retrieval are not implemented in this command yet.")
-    return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons))
+    reasons.append("Dry-run only: transcript, chat, recap, and bundle-note writes are not implemented yet.")
+    return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons), intake_bundle_note)
 
 
 def _build_source_bundle(meeting: OutlookMeetingCandidate) -> MeetingSourceBundle:
@@ -326,6 +356,117 @@ def _build_source_bundle(meeting: OutlookMeetingCandidate) -> MeetingSourceBundl
         artifacts=tuple(artifacts),
         teams_meeting_id=meeting.teams_meeting_id(),
     )
+
+
+def _build_intake_bundle_note(
+    meeting: OutlookMeetingCandidate,
+    bundle: MeetingSourceBundle,
+    *,
+    intake_root: Path | None,
+) -> PlannedIntakeBundleNote | None:
+    if intake_root is None:
+        return None
+    basename = _bundle_note_basename(meeting)
+    path = intake_root / basename
+    attendance_confidence, source_limitations = _bundle_transparency(bundle)
+    sources_used = tuple(bundle.available_sources())
+    content = render_intake_bundle_note(
+        meeting=meeting,
+        bundle=bundle,
+        attendance_confidence=attendance_confidence,
+        sources_used=sources_used,
+        source_limitations=source_limitations,
+    )
+    return PlannedIntakeBundleNote(
+        path=path,
+        attendance_confidence=attendance_confidence,
+        sources_used=sources_used,
+        source_limitations=source_limitations,
+        content=content,
+    )
+
+
+def render_intake_bundle_note(
+    *,
+    meeting: OutlookMeetingCandidate,
+    bundle: MeetingSourceBundle,
+    attendance_confidence: str,
+    sources_used: tuple[str, ...],
+    source_limitations: tuple[str, ...],
+) -> str:
+    heading = f"{meeting.start_at.date().isoformat()} - Teams - {_normalized_bundle_title(meeting.subject)}"
+    lines = [
+        "---",
+        'intake_kind: "meeting_source_bundle"',
+        f'date: "{meeting.start_at.date().isoformat()}"',
+        'source: "Teams"',
+        f"title: {json.dumps(_normalized_bundle_title(meeting.subject))}",
+        f"outlook_event_id: {json.dumps(meeting.event_id)}",
+        f"teams_meeting_id: {json.dumps(bundle.teams_meeting_id)}"
+        if bundle.teams_meeting_id
+        else "teams_meeting_id: null",
+        f'attendance_confidence: "{attendance_confidence}"',
+        "sources_used:",
+    ]
+    for source_name in sources_used:
+        lines.append(f"  - {json.dumps(source_name)}")
+    lines.append("source_limitations:")
+    for limitation in source_limitations:
+        lines.append(f"  - {json.dumps(limitation)}")
+    lines.extend(
+        [
+            "---",
+            f"# {heading} (bundle)",
+            "",
+            "## Context",
+            f"- Subject: {meeting.subject}",
+            f"- Start: {meeting.start_at.isoformat()}",
+            f"- End: {meeting.end_at.isoformat()}",
+            f"- Organizer: {meeting.organizer or 'Unknown'}",
+            f"- Outlook Event ID: `{meeting.event_id}`",
+            f"- Teams Meeting ID: `{bundle.teams_meeting_id}`"
+            if bundle.teams_meeting_id
+            else "- Teams Meeting ID: Unknown",
+            "",
+            "## Source",
+            f"- Attendance Confidence: {attendance_confidence}",
+        ]
+    )
+    for source_name in sources_used:
+        lines.append(f"- Source Used: {source_name}")
+    for limitation in source_limitations:
+        lines.append(f"- Source Limitation: {limitation}")
+    lines.extend(
+        [
+            "",
+            "## Artifact Plan",
+        ]
+    )
+    for artifact in bundle.artifacts:
+        detail = f" ({artifact.detail})" if artifact.detail else ""
+        lines.append(f"- {artifact.source_name}: {artifact.status}{detail}")
+    return "\n".join(lines)
+
+
+def _bundle_note_basename(meeting: OutlookMeetingCandidate) -> str:
+    title = _normalized_bundle_title(meeting.subject)
+    return f"{meeting.start_at.date().isoformat()} - Teams - {title} (bundle).md"
+
+
+def _normalized_bundle_title(value: str) -> str:
+    title = normalize_whitespace(value)
+    title = title.replace("/", "-").replace(":", "-").replace("\\", "-")
+    return title or "Meeting"
+
+
+def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, ...]]:
+    if bundle.available_sources() == ["Outlook calendar metadata"]:
+        limitations = ["Known from calendar invite; attendance not guaranteed."]
+        for source_name in bundle.pending_sources():
+            limitations.append(f"{source_name} was not retrieved yet.")
+        return "calendar_invite_only", tuple(limitations)
+    limitations = [f"{source_name} was not retrieved yet." for source_name in bundle.pending_sources()]
+    return "partial_visibility", tuple(limitations)
 
 
 def _optional_string(value: str | None) -> str | None:

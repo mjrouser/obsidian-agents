@@ -7,10 +7,12 @@ from .sync import (
     MeetingDiscoverySnapshot,
     MeetingSourceBundle,
     OutlookMeetingCandidate,
+    PlannedIntakeBundleNote,
     TranscriptSyncPlan,
     TranscriptSyncPlanItem,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
+    render_intake_bundle_note,
     render_transcript_sync_plan,
 )
 
@@ -23,9 +25,11 @@ __all__ = [
     "MeetingSourceBundle",
     "OutlookMeetingCandidate",
     "GraphOutlookMeetingDiscoveryClient",
+    "PlannedIntakeBundleNote",
     "TranscriptSyncPlan",
     "TranscriptSyncPlanItem",
     "UnconfiguredOutlookMeetingDiscoveryClient",
     "build_transcript_sync_plan",
+    "render_intake_bundle_note",
     "render_transcript_sync_plan",
 ]

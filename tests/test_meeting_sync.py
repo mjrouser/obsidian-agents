@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from urllib.error import HTTPError
 
 from obsidian_intake_agent.meetings import (
@@ -11,6 +12,7 @@ from obsidian_intake_agent.meetings import (
     OutlookMeetingCandidate,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
+    render_intake_bundle_note,
     render_transcript_sync_plan,
 )
 
@@ -63,8 +65,9 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(plan.items[0].decision, "process")
         self.assertEqual(plan.items[0].bundle.teams_meeting_id, "19:meeting_YWJjMTIz@thread.v2")
         self.assertEqual(plan.items[0].bundle.available_sources(), ["Outlook calendar metadata"])
+        self.assertIsNone(plan.items[0].intake_bundle_note)
         self.assertIn(
-            "Dry-run only: transcript, chat, and recap retrieval are not implemented in this command yet.",
+            "Dry-run only: transcript, chat, recap, and bundle-note writes are not implemented yet.",
             plan.items[0].reasons,
         )
 
@@ -102,6 +105,69 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         rendered = render_transcript_sync_plan(plan)
         self.assertIn("meeting_sync_warning: Outlook calendar discovery is not configured yet;", rendered)
         self.assertIn("meeting_sync_candidates: 0", rendered)
+
+    def test_builds_planned_intake_bundle_note_when_intake_root_is_available(self) -> None:
+        now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(
+                meetings=(
+                    _meeting(
+                        event_id="evt-1",
+                        subject="Platform / Sync: Weekly",
+                        join_url=(
+                            "https://teams.microsoft.com/l/meetup-join/"
+                            "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                        ),
+                        online_meeting_provider="teamsForBusiness",
+                        organizer="Casey",
+                    ),
+                )
+            ),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=now,
+        )
+
+        bundle_note = plan.items[0].intake_bundle_note
+        self.assertIsNotNone(bundle_note)
+        assert bundle_note is not None
+        self.assertEqual(
+            bundle_note.path,
+            Path("/tmp/vault/00_Intake/2026-05-04 - Teams - Platform - Sync- Weekly (bundle).md"),
+        )
+        self.assertEqual(bundle_note.attendance_confidence, "calendar_invite_only")
+        self.assertIn("Known from calendar invite; attendance not guaranteed.", bundle_note.source_limitations)
+        self.assertIn('outlook_event_id: "evt-1"', bundle_note.content)
+        self.assertIn("- Organizer: Casey", bundle_note.content)
+        self.assertIn("- Source Used: Outlook calendar metadata", bundle_note.content)
+
+    def test_rendered_plan_includes_bundle_path_and_transparency(self) -> None:
+        now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(
+                meetings=(
+                    _meeting(
+                        event_id="evt-1",
+                        subject="Platform Sync",
+                        join_url=(
+                            "https://teams.microsoft.com/l/meetup-join/"
+                            "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                        ),
+                        online_meeting_provider="teamsForBusiness",
+                    ),
+                )
+            ),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=now,
+        )
+
+        rendered = render_transcript_sync_plan(plan)
+        self.assertIn(
+            "would_write_bundle: /tmp/vault/00_Intake/2026-05-04 - Teams - Platform Sync (bundle).md", rendered
+        )
+        self.assertIn("bundle_attendance_confidence: calendar_invite_only", rendered)
+        self.assertIn("bundle_source_limitation: Known from calendar invite; attendance not guaranteed.", rendered)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -161,6 +227,37 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(snapshot.meetings, ())
         self.assertIn("HTTP 403", snapshot.warning or "")
 
+    def test_render_intake_bundle_note_renders_expected_sections(self) -> None:
+        meeting = _meeting(
+            event_id="evt-9",
+            subject="Delivery Review",
+            join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
+            online_meeting_provider="teamsForBusiness",
+            organizer="Morgan",
+        )
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+        )
+        bundle_note = plan.items[0].intake_bundle_note
+        assert bundle_note is not None
+
+        rendered = render_intake_bundle_note(
+            meeting=meeting,
+            bundle=plan.items[0].bundle,
+            attendance_confidence=bundle_note.attendance_confidence,
+            sources_used=bundle_note.sources_used,
+            source_limitations=bundle_note.source_limitations,
+        )
+
+        self.assertTrue(rendered.startswith("---\n"))
+        self.assertIn('intake_kind: "meeting_source_bundle"', rendered)
+        self.assertIn("# 2026-05-04 - Teams - Delivery Review (bundle)", rendered)
+        self.assertIn("## Source", rendered)
+        self.assertIn("## Artifact Plan", rendered)
+
 
 @dataclass(slots=True)
 class _StubMeetingDiscoveryClient:
@@ -183,6 +280,7 @@ def _meeting(
     *,
     event_id: str,
     subject: str,
+    organizer: str | None = None,
     response_status: str | None = None,
     is_cancelled: bool = False,
     is_all_day: bool = False,
@@ -195,6 +293,7 @@ def _meeting(
         subject=subject,
         start_at=datetime.fromisoformat("2026-05-04T13:00:00+00:00"),
         end_at=datetime.fromisoformat("2026-05-04T13:30:00+00:00"),
+        organizer=organizer,
         response_status=response_status,
         is_cancelled=is_cancelled,
         is_all_day=is_all_day,

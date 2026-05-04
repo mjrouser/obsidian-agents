@@ -219,7 +219,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - `obsidian-agent meetings sync-transcripts` currently requires `--dry-run` and
   plans candidate meetings from Outlook metadata without downloading
   transcripts yet. If a Graph bearer token is not configured, it returns a
-  warning-only dry run instead of discovered meetings.
+  warning-only dry run instead of discovered meetings. For meetings that would
+  be processed, the dry run now also reports the planned intake bundle note
+  path and source-transparency metadata.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
