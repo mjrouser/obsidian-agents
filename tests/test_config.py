@@ -35,6 +35,14 @@ class ConfigCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "codex_timeout_seconds must be a positive integer"):
             Config.load(config_path)
 
+    def test_outlook_graph_defaults_load(self) -> None:
+        config_path = _write_config(self)
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.outlook_graph_access_token_env, "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
+        self.assertEqual(loaded.outlook_graph_api_base_url, "https://graph.microsoft.com/v1.0")
+
 
 def _write_config(test_case: unittest.TestCase, *extra_lines: str) -> Path:
     tmp_dir = tempfile.TemporaryDirectory()

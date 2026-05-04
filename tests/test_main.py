@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from obsidian_intake_agent.main import main
+from obsidian_intake_agent.config import Config
+from obsidian_intake_agent.main import _build_meeting_discovery_client, main
+from obsidian_intake_agent.meetings import GraphOutlookMeetingDiscoveryClient, UnconfiguredOutlookMeetingDiscoveryClient
 from obsidian_intake_agent.utils.git import GitCommitStatus
 
 
@@ -283,6 +286,32 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("meeting_sync_since: 2026-05-01", output)
             self.assertIn("meeting_sync_provider: outlook_calendar", output)
             self.assertIn("meeting_sync_warning: Outlook calendar discovery is not configured yet;", output)
+
+    def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
+                client = _build_meeting_discovery_client(config)
+
+            self.assertIsInstance(client, GraphOutlookMeetingDiscoveryClient)
+
+    def test_build_meeting_discovery_client_falls_back_without_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {}, clear=True):
+                client = _build_meeting_discovery_client(config)
+
+            self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
 
 
 def _write_config(

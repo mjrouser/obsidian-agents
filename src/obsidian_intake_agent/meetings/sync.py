@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Literal, Protocol
-from urllib.parse import unquote, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 ARTIFACT_SOURCE_PRIORITY = (
     "Teams .vtt transcript",
@@ -40,6 +44,7 @@ class OutlookMeetingCandidate:
     join_url: str | None = None
     body_text: str | None = None
     categories: tuple[str, ...] = ()
+    show_as: str | None = None
 
     def detected_join_url(self) -> str | None:
         explicit = _optional_string(self.join_url)
@@ -70,6 +75,9 @@ class OutlookMeetingCandidate:
         return "teams.microsoft.com/l/meetup-join/" in normalized or "teams.live.com/meet/" in normalized
 
     def is_focus_block(self) -> bool:
+        show_as = (self.show_as or "").strip().lower()
+        if show_as == "workingelsewhere":
+            return True
         event_type = (self.event_type or "").strip().lower()
         if event_type == "focus":
             return True
@@ -148,6 +156,65 @@ class UnconfiguredOutlookMeetingDiscoveryClient:
         )
 
 
+class GraphOutlookMeetingDiscoveryClient:
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        api_base_url: str = "https://graph.microsoft.com/v1.0",
+        fetch_json: Callable[[str, str], dict[str, object]] | None = None,
+    ) -> None:
+        self._access_token = access_token
+        self._api_base_url = api_base_url.rstrip("/")
+        self._fetch_json = fetch_json or _fetch_graph_json
+
+    def list_recently_ended_meetings(
+        self,
+        *,
+        since: date,
+        now: datetime,
+    ) -> MeetingDiscoverySnapshot:
+        start_at = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
+        start_text = start_at.isoformat().replace("+00:00", "Z")
+        end_text = now.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        url = f"{self._api_base_url}/me/calendarView?" + urlencode(
+            {
+                "startDateTime": start_text,
+                "endDateTime": end_text,
+                "$top": "200",
+                "$select": (
+                    "id,subject,start,end,isCancelled,isAllDay,showAs,responseStatus,"
+                    "onlineMeetingProvider,onlineMeeting,bodyPreview,categories,organizer,type"
+                ),
+            }
+        )
+        meetings: list[OutlookMeetingCandidate] = []
+        next_url: str | None = url
+        try:
+            while next_url:
+                payload = self._fetch_json(next_url, self._access_token)
+                for raw_item in _graph_value_items(payload):
+                    meetings.append(_parse_graph_event(raw_item))
+                next_value = payload.get("@odata.nextLink")
+                next_url = str(next_value) if next_value else None
+        except HTTPError as exc:
+            return MeetingDiscoverySnapshot(
+                meetings=(),
+                provider_label="graph_outlook_calendar",
+                warning=_graph_http_warning(exc),
+            )
+        except (URLError, ValueError, KeyError) as exc:
+            return MeetingDiscoverySnapshot(
+                meetings=(),
+                provider_label="graph_outlook_calendar",
+                warning=f"Graph calendar discovery failed: {exc}",
+            )
+        return MeetingDiscoverySnapshot(
+            meetings=tuple(meetings),
+            provider_label="graph_outlook_calendar",
+        )
+
+
 def build_transcript_sync_plan(
     *,
     client: MeetingDiscoveryClient,
@@ -184,12 +251,7 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan) -> str:
     )
     for item in plan.items:
         meeting = item.meeting
-        lines.append(
-            "meeting_sync_item: "
-            f"{item.decision} "
-            f'event_id="{meeting.event_id}" '
-            f'subject="{meeting.subject}"'
-        )
+        lines.append(f'meeting_sync_item: {item.decision} event_id="{meeting.event_id}" subject="{meeting.subject}"')
         lines.append(f"  end_at: {meeting.end_at.isoformat()}")
         lines.append(f"  teams_meeting_detected: {'yes' if meeting.is_teams_meeting() else 'no'}")
         if item.bundle.teams_meeting_id:
@@ -290,3 +352,92 @@ def _extract_teams_meeting_id(join_url: str) -> str | None:
     encoded = path.split(marker, 1)[1].split("/", 1)[0]
     decoded = unquote(encoded).strip()
     return decoded or None
+
+
+def _fetch_graph_json(url: str, access_token: str) -> dict[str, object]:
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "Prefer": 'outlook.timezone="UTC"',
+        },
+    )
+    with urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _graph_value_items(payload: dict[str, object]) -> list[dict[str, object]]:
+    raw_items = payload.get("value")
+    if not isinstance(raw_items, list):
+        raise ValueError("Graph calendar response did not contain a value list.")
+    items: list[dict[str, object]] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
+    online_meeting = payload.get("onlineMeeting")
+    online_meeting_provider = _optional_string(str(payload.get("onlineMeetingProvider") or "")) or None
+    join_url = None
+    if isinstance(online_meeting, dict):
+        join_url = _optional_string(str(online_meeting.get("joinUrl") or ""))
+    response_status = None
+    raw_response_status = payload.get("responseStatus")
+    if isinstance(raw_response_status, dict):
+        response_status = _optional_string(str(raw_response_status.get("response") or ""))
+    organizer = None
+    raw_organizer = payload.get("organizer")
+    if isinstance(raw_organizer, dict):
+        raw_email = raw_organizer.get("emailAddress")
+        if isinstance(raw_email, dict):
+            organizer = _optional_string(str(raw_email.get("name") or raw_email.get("address") or ""))
+    categories = payload.get("categories")
+    category_values: tuple[str, ...] = ()
+    if isinstance(categories, list):
+        category_values = tuple(str(item) for item in categories)
+    body_preview = _optional_string(str(payload.get("bodyPreview") or ""))
+    return OutlookMeetingCandidate(
+        event_id=str(payload["id"]),
+        subject=str(payload.get("subject") or "(untitled meeting)"),
+        start_at=_parse_graph_datetime(payload["start"]),
+        end_at=_parse_graph_datetime(payload["end"]),
+        organizer=organizer,
+        response_status=response_status,
+        is_cancelled=bool(payload.get("isCancelled", False)),
+        is_all_day=bool(payload.get("isAllDay", False)),
+        event_type=_optional_string(str(payload.get("type") or "")),
+        online_meeting_provider=online_meeting_provider,
+        join_url=join_url,
+        body_text=body_preview,
+        categories=category_values,
+        show_as=_optional_string(str(payload.get("showAs") or "")),
+    )
+
+
+def _parse_graph_datetime(raw_value: object) -> datetime:
+    if not isinstance(raw_value, dict):
+        raise ValueError("Graph event datetime payload was not a mapping.")
+    date_text = str(raw_value.get("dateTime") or "").strip()
+    if not date_text:
+        raise ValueError("Graph event datetime payload was missing dateTime.")
+    if date_text.endswith("Z"):
+        return datetime.fromisoformat(date_text.replace("Z", "+00:00"))
+    timezone_name = str(raw_value.get("timeZone") or "").strip()
+    parsed = datetime.fromisoformat(date_text)
+    if parsed.tzinfo is not None:
+        return parsed
+    if timezone_name.upper() == "UTC":
+        return parsed.replace(tzinfo=UTC)
+    raise ValueError(f"Unsupported Graph event timezone: {timezone_name or 'unknown'}")
+
+
+def _graph_http_warning(error: HTTPError) -> str:
+    if error.code in {401, 403}:
+        return (
+            f"Graph calendar discovery failed with HTTP {error.code}. "
+            "Check delegated calendar/transcript permissions and the bearer token."
+        )
+    return f"Graph calendar discovery failed with HTTP {error.code}."

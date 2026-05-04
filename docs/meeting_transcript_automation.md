@@ -116,6 +116,9 @@ Current implementation status in this repo:
 
 - `obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run` now
   exists as discovery/planning-only CLI plumbing.
+- When `OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN` is present, the command queries
+  Microsoft Graph `me/calendarView` and turns returned events into internal
+  Outlook meeting candidates.
 - The command builds a source bundle for each candidate, marks Outlook calendar
   metadata as the currently available source, and preserves the intended source
   priority for transcript, chat, recap, and manual fallback artifacts.
