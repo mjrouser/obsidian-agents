@@ -1,6 +1,7 @@
 from .sync import (
     ARTIFACT_SOURCE_PRIORITY,
     ArtifactStatus,
+    GraphOutlookMeetingDiscoveryClient,
     MeetingArtifact,
     MeetingDiscoveryClient,
     MeetingDiscoverySnapshot,
@@ -21,6 +22,7 @@ __all__ = [
     "MeetingDiscoverySnapshot",
     "MeetingSourceBundle",
     "OutlookMeetingCandidate",
+    "GraphOutlookMeetingDiscoveryClient",
     "TranscriptSyncPlan",
     "TranscriptSyncPlanItem",
     "UnconfiguredOutlookMeetingDiscoveryClient",

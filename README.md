@@ -101,6 +101,8 @@ watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
 automation_error_dir: "_System/Agent Errors"
+outlook_graph_access_token_env: "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
+outlook_graph_api_base_url: "https://graph.microsoft.com/v1.0"
 ```
 
 `weekly_reviews_dir` is the preferred key. The older `snapshots_dir` key is still accepted for backward compatibility.
@@ -112,6 +114,9 @@ Set `automation_error_dir` to control where automation failure notes are written
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
 Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
 If `git_vault_repo_path` is unset, it defaults to `vault_path`.
+Set the environment variable named by `outlook_graph_access_token_env` before
+running `meetings sync-transcripts` if you want real Outlook discovery instead
+of the no-token dry-run warning.
 
 ## Run
 
@@ -150,6 +155,13 @@ obsidian-agent process /absolute/path/to/file.md
 Dry-run recently ended meeting candidates for future transcript sync:
 
 ```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+```
+
+With Graph discovery enabled:
+
+```bash
+export OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN="..."
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
 ```
 
@@ -205,8 +217,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Draft intake basenames such as `Untitled.md` and `Untitled 2.md` are ignored until you rename them.
 - `obsidian-agent run` currently requires `--once`.
 - `obsidian-agent meetings sync-transcripts` currently requires `--dry-run` and
-  plans candidate meetings from an Outlook discovery client without downloading
-  transcripts yet.
+  plans candidate meetings from Outlook metadata without downloading
+  transcripts yet. If a Graph bearer token is not configured, it returns a
+  warning-only dry run instead of discovered meetings.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

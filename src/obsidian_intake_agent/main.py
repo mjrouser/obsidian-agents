@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
 
 from .config import Config
 from .meetings import (
+    GraphOutlookMeetingDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
     render_transcript_sync_plan,
@@ -155,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("`obsidian-agent meetings sync-transcripts` currently requires `--dry-run`.")
             since = date.fromisoformat(args.since)
             plan = build_transcript_sync_plan(
-                client=UnconfiguredOutlookMeetingDiscoveryClient(),
+                client=_build_meeting_discovery_client(config),
                 since=since,
             )
             print(render_transcript_sync_plan(plan))
@@ -212,6 +214,18 @@ def _warn_if_not_using_repo_venv() -> None:
     print(
         f"WARNING: expected repo virtualenv interpreter at {expected}, but running with {executable}",
         file=sys.stderr,
+    )
+
+
+def _build_meeting_discovery_client(
+    config: Config,
+) -> GraphOutlookMeetingDiscoveryClient | UnconfiguredOutlookMeetingDiscoveryClient:
+    token = os.environ.get(config.outlook_graph_access_token_env, "").strip()
+    if not token:
+        return UnconfiguredOutlookMeetingDiscoveryClient()
+    return GraphOutlookMeetingDiscoveryClient(
+        access_token=token,
+        api_base_url=config.outlook_graph_api_base_url,
     )
 
 
