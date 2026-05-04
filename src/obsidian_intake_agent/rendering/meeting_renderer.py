@@ -36,6 +36,7 @@ def render_extracted_meeting_note(
     context = context or {}
     participants = _string_list(extracted.get("participants", [])) or _string_list(context.get("participants", []))
     sections = [
+        _render_text_section("Context", extracted.get("context", "")),
         _render_list_section("Participants", participants),
         _render_list_section("Summary", extracted.get("summary_bullets", [])),
         _render_list_section("Key Points", extracted.get("key_points", [])),
@@ -49,6 +50,11 @@ def render_extracted_meeting_note(
         _render_list_section("Alignment Path", extracted.get("alignment_path", [])),
         _render_list_section("Related Initiatives", extracted.get("related_initiatives", [])),
         _render_list_section("Related Themes", extracted.get("related_themes", [])),
+        _render_source_section(
+            sources_used=extracted.get("sources_used", []),
+            source_limitations=extracted.get("source_limitations", []),
+            attendance_confidence=extracted.get("attendance_confidence", ""),
+        ),
     ]
     verbatim_excerpt = str(extracted.get("verbatim_excerpt", "")).strip()
     body = "\n\n".join(section for section in sections if section)
@@ -200,6 +206,32 @@ def _render_list_section(title: str, items: Sequence[object]) -> str:
         return ""
     lines = "\n".join(f"- {value}" for value in values)
     return f"## {title}\n\n{lines}"
+
+
+def _render_text_section(title: str, value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    return f"## {title}\n\n{text}"
+
+
+def _render_source_section(
+    *,
+    sources_used: object,
+    source_limitations: object,
+    attendance_confidence: object,
+) -> str:
+    lines: list[str] = []
+    confidence = str(attendance_confidence).strip()
+    if confidence:
+        lines.append(f"- Attendance Confidence: {confidence}")
+    for source in _string_list(sources_used):
+        lines.append(f"- Source Used: {source}")
+    for limitation in _string_list(source_limitations):
+        lines.append(f"- Limitation: {limitation}")
+    if not lines:
+        return ""
+    return "## Source\n\n" + "\n".join(lines)
 
 
 def _render_action_section(items: list[object]) -> str:

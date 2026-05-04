@@ -27,6 +27,10 @@ For every meeting Matthew attends:
   - `teams_meeting_id`
   - `transcript_id`
   - `intake_file`
+- Extracted meeting notes include explicit `Context` and `Source` sections when
+  the extractor returns that information. The `Source` section records attendance
+  confidence, sources used, and source limitations such as missing chat, missing
+  recap, partial transcript visibility, or unconfirmed attendance.
 
 ## Connector Findings
 
@@ -107,3 +111,19 @@ Expected behavior:
 - Let the existing intake processor create canonical notes and action updates.
 - In dry-run mode, print which meetings would import, which are missing
   transcripts, and which would be skipped as already imported.
+
+## Extraction Standard
+
+The extraction prompt intentionally borrows the strongest quality rules from
+Josh's batch workflow:
+
+- Process the full available transcript before writing.
+- Preserve named attribution when a person's viewpoint, concern, decision, or
+  action materially matters.
+- Distinguish explicit decisions from directional alignment, preferences,
+  unresolved discussion, or inferred signals.
+- Include only transcript-evidenced participants as confirmed participants.
+- When attendance is known only from the calendar invite, include:
+  `Known from calendar invite; attendance not guaranteed.`
+- State source limitations directly instead of hiding missing transcript, chat,
+  recap, or attendance visibility.

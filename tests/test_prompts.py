@@ -16,6 +16,11 @@ class PromptTests(unittest.TestCase):
 
         self.assertIn('"action_items": [{"text": str, "owner": str|null, "due": str|null}]', prompt)
         self.assertIn('"participants": [str]', prompt)
+        self.assertIn(
+            '"attendance_confidence": "confirmed"|"calendar_invite_only"|"partial_visibility"|"unknown"', prompt
+        )
+        self.assertIn('"sources_used": [str]', prompt)
+        self.assertIn('"source_limitations": [str]', prompt)
         self.assertIn('"verbatim_excerpt": str', prompt)
         self.assertIn("===TRANSCRIPT===", prompt)
         self.assertIn("Speaker: We should ship Friday.", prompt)
@@ -31,6 +36,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Return STRICT JSON only.", prompt)
         self.assertIn("Output JSON only, no extra text.", prompt)
         self.assertIn("Do NOT invent facts", prompt)
+        self.assertIn("Preserve nuance and named attribution", prompt)
+        self.assertIn("Known from calendar invite; attendance not guaranteed.", prompt)
 
 
 if __name__ == "__main__":

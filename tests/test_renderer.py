@@ -42,8 +42,12 @@ class MeetingRendererTests(unittest.TestCase):
                 "date": "2026-03-12",
                 "source": "Teams",
                 "title": "Platform Sync",
+                "context": "The team reviewed the rollout path.",
                 "participants": ["Matthew Rouser", "Ada Lovelace"],
+                "attendance_confidence": "confirmed",
                 "summary_bullets": ["Reviewed rollout status."],
+                "sources_used": ["Teams transcript", "Outlook calendar metadata"],
+                "source_limitations": ["Meeting chat was not available."],
             },
             context={
                 "organizer": "Ada Lovelace",
@@ -60,7 +64,12 @@ class MeetingRendererTests(unittest.TestCase):
         self.assertIn('outlook_event_id: "event-123"', rendered)
         self.assertIn('teams_meeting_id: "meeting-456"', rendered)
         self.assertIn('transcript_id: "transcript-789"', rendered)
+        self.assertIn("## Context\n\nThe team reviewed the rollout path.", rendered)
         self.assertIn("## Participants\n\n- Matthew Rouser\n- Ada Lovelace", rendered)
+        self.assertIn("## Source\n\n- Attendance Confidence: confirmed", rendered)
+        self.assertIn("- Source Used: Teams transcript", rendered)
+        self.assertIn("- Source Used: Outlook calendar metadata", rendered)
+        self.assertIn("- Limitation: Meeting chat was not available.", rendered)
 
     def test_front_matter_escapes_yaml_values(self) -> None:
         rendered = render_meeting_front_matter(

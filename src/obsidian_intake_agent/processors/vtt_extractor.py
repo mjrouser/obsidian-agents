@@ -61,7 +61,9 @@ def heuristic_extract_meeting_data(transcript_text: str, metadata: MeetingMetada
         "title": metadata.title,
         "date": metadata.date,
         "source": metadata.source,
+        "context": "",
         "participants": [],
+        "attendance_confidence": "unknown",
         "summary_bullets": key_points[:3],
         "key_points": key_points,
         "decisions": decisions,
@@ -74,6 +76,8 @@ def heuristic_extract_meeting_data(transcript_text: str, metadata: MeetingMetada
         "alignment_path": [],
         "related_initiatives": [],
         "related_themes": [],
+        "sources_used": ["VTT transcript"],
+        "source_limitations": ["Heuristic extraction used; no calendar, chat, or recap context was available."],
         "verbatim_excerpt": key_points[0] if key_points else "",
     }
 
@@ -83,7 +87,9 @@ def normalize_extracted_meeting_data(extracted: dict, metadata: MeetingMetadata)
         "title": str(extracted.get("title") or metadata.title),
         "date": str(extracted.get("date") or metadata.date),
         "source": str(extracted.get("source") or metadata.source),
+        "context": str(extracted.get("context") or ""),
         "participants": list(extracted.get("participants") or []),
+        "attendance_confidence": str(extracted.get("attendance_confidence") or "unknown"),
         "summary_bullets": list(extracted.get("summary_bullets") or []),
         "key_points": list(extracted.get("key_points") or []),
         "decisions": list(extracted.get("decisions") or []),
@@ -96,6 +102,8 @@ def normalize_extracted_meeting_data(extracted: dict, metadata: MeetingMetadata)
         "alignment_path": list(extracted.get("alignment_path") or []),
         "related_initiatives": list(extracted.get("related_initiatives") or []),
         "related_themes": list(extracted.get("related_themes") or []),
+        "sources_used": list(extracted.get("sources_used") or []),
+        "source_limitations": list(extracted.get("source_limitations") or []),
         "verbatim_excerpt": str(extracted.get("verbatim_excerpt") or ""),
     }
 

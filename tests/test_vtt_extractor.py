@@ -44,7 +44,20 @@ class VttExtractorTests(unittest.TestCase):
         self.assertEqual(normalized["title"], "Platform Sync")
         self.assertEqual(normalized["date"], "2026-03-12")
         self.assertEqual(normalized["source"], "Teams")
+        self.assertEqual(normalized["context"], "")
+        self.assertEqual(normalized["attendance_confidence"], "unknown")
         self.assertEqual(normalized["action_items"], [])
+        self.assertEqual(normalized["sources_used"], [])
+        self.assertEqual(normalized["source_limitations"], [])
+
+    def test_heuristic_records_source_limitations(self) -> None:
+        extracted = heuristic_extract_meeting_data("Decision: Move forward.", _metadata())
+
+        self.assertEqual(extracted["sources_used"], ["VTT transcript"])
+        self.assertEqual(
+            extracted["source_limitations"],
+            ["Heuristic extraction used; no calendar, chat, or recap context was available."],
+        )
 
 
 def _metadata() -> MeetingMetadata:
