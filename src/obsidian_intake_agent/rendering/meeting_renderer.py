@@ -1,6 +1,22 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from pathlib import Path
+
+FRONT_MATTER_KEYS = [
+    "date",
+    "source",
+    "title",
+    "participants",
+    "organizer",
+    "attendees",
+    "owner_filter",
+    "intake_file",
+    "outlook_event_id",
+    "teams_meeting_id",
+    "transcript_id",
+]
 
 
 def format_obsidian_link(path: Path | str) -> str:
@@ -15,9 +31,12 @@ def render_extracted_meeting_note(
     heading: str,
     intake_file: Path | str,
     extracted: dict,
+    context: dict | None = None,
 ) -> str:
+    context = context or {}
+    participants = _string_list(extracted.get("participants", [])) or _string_list(context.get("participants", []))
     sections = [
-        _render_list_section("Participants", extracted.get("participants", [])),
+        _render_list_section("Participants", participants),
         _render_list_section("Summary", extracted.get("summary_bullets", [])),
         _render_list_section("Key Points", extracted.get("key_points", [])),
         _render_list_section("Decisions", extracted.get("decisions", [])),
@@ -37,7 +56,20 @@ def render_extracted_meeting_note(
     if verbatim_excerpt:
         excerpt = f"\n\n## Verbatim Excerpt\n\n> {verbatim_excerpt}"
 
+    front_matter = render_meeting_front_matter(
+        date=str(extracted.get("date", "")),
+        source=str(extracted.get("source", "")),
+        title=str(extracted.get("title", "")),
+        intake_file=intake_file,
+        participants=participants,
+        organizer=_optional_string(context.get("organizer")),
+        attendees=_string_list(context.get("attendees", [])),
+        outlook_event_id=_optional_string(context.get("outlook_event_id")),
+        teams_meeting_id=_optional_string(context.get("teams_meeting_id")),
+        transcript_id=_optional_string(context.get("transcript_id")),
+    )
     return (
+        f"{front_matter}"
         f"# {heading}\n\n"
         f"- Date: {extracted.get('date', '')}\n"
         f"- Source: {extracted.get('source', '')}\n"
@@ -56,8 +88,24 @@ def render_meeting_note(
     meeting_date: str,
     meeting_source: str,
     meeting_title: str,
+    context: dict | None = None,
 ) -> str:
+    context = context or {}
+    front_matter = render_meeting_front_matter(
+        date=meeting_date,
+        source=meeting_source,
+        title=meeting_title,
+        intake_file=intake_file,
+        participants=_string_list(context.get("participants", [])),
+        organizer=_optional_string(context.get("organizer")),
+        attendees=_string_list(context.get("attendees", [])),
+        owner_filter=owner_filter,
+        outlook_event_id=_optional_string(context.get("outlook_event_id")),
+        teams_meeting_id=_optional_string(context.get("teams_meeting_id")),
+        transcript_id=_optional_string(context.get("transcript_id")),
+    )
     return (
+        f"{front_matter}"
         f"# {heading}\n\n"
         f"- Date: {meeting_date}\n"
         f"- Source: {meeting_source}\n"
@@ -67,6 +115,40 @@ def render_meeting_note(
         "## Transcript\n\n"
         f"{normalized_body}\n"
     )
+
+
+def render_meeting_front_matter(
+    *,
+    date: str,
+    source: str,
+    title: str,
+    intake_file: Path | str,
+    participants: list[str] | None = None,
+    organizer: str | None = None,
+    attendees: list[str] | None = None,
+    owner_filter: str | None = None,
+    outlook_event_id: str | None = None,
+    teams_meeting_id: str | None = None,
+    transcript_id: str | None = None,
+) -> str:
+    values: dict[str, object] = {
+        "date": date,
+        "source": source,
+        "title": title,
+        "participants": participants or [],
+        "organizer": organizer,
+        "attendees": attendees or [],
+        "owner_filter": owner_filter,
+        "intake_file": _path_value(intake_file),
+        "outlook_event_id": outlook_event_id,
+        "teams_meeting_id": teams_meeting_id,
+        "transcript_id": transcript_id,
+    }
+    lines = ["---"]
+    for key in FRONT_MATTER_KEYS:
+        lines.append(f"{key}: {_yaml_value(values[key])}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n"
 
 
 def render_vtt_intake_sidecar(
@@ -85,7 +167,34 @@ def render_vtt_intake_sidecar(
     return "\n".join(parts) + "\n"
 
 
-def _render_list_section(title: str, items: list[object]) -> str:
+def _path_value(path: Path | str) -> str:
+    return path.as_posix() if isinstance(path, Path) else str(path).strip().replace("\\", "/")
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _string_list(items: object) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _yaml_value(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        return json.dumps(value, ensure_ascii=False)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _render_list_section(title: str, items: Sequence[object]) -> str:
     values = [str(item).strip() for item in items if str(item).strip()]
     if not values:
         return ""

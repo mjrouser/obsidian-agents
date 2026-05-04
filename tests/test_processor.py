@@ -242,6 +242,12 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(archived_vtt_path.exists())
 
             meeting_text = meeting_path.read_text(encoding="utf-8")
+            self.assertTrue(meeting_text.startswith("---\n"))
+            self.assertIn('date: "2026-03-12"', meeting_text)
+            self.assertIn('source: "Teams"', meeting_text)
+            self.assertIn('title: "Platform Sync"', meeting_text)
+            self.assertIn("participants: []", meeting_text)
+            self.assertIn('intake_file: "_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt"', meeting_text)
             self.assertIn("# 2026-03-12 - Teams - Platform Sync", meeting_text)
             self.assertIn(
                 "- Intake File: [[_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt]]",

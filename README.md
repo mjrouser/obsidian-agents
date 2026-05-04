@@ -179,6 +179,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Markdown, `.docx`, and `.vtt` inputs are supported.
 - `INBOX.md`, placeholder/template filenames, and already-processed notes are skipped.
 - A canonical meeting note is written to `vault_path/01_Meetings`.
+- Meeting notes start with YAML front matter for Obsidian properties, including
+  participant, attendee, organizer, Outlook event, Teams meeting, transcript,
+  and source-file fields when that context is available.
 - Markdown intake files extract action items from `Action:` lines and `- [ ]` checkboxes.
 - Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake`.
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
