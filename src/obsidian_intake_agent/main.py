@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 from .config import Config
+from .meetings import (
+    UnconfiguredOutlookMeetingDiscoveryClient,
+    build_transcript_sync_plan,
+    render_transcript_sync_plan,
+)
 from .processors.meeting_processor import MeetingProcessor
 from .utils.git import auto_commit_repo
 from .weekly import generate_weekly_snapshot
@@ -62,6 +68,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="dry_run",
         help="Render the weekly note update without writing the weekly review file.",
+    )
+
+    meetings_parser = subparsers.add_parser("meetings", help="Discover and plan meeting artifact sync.")
+    meetings_subparsers = meetings_parser.add_subparsers(dest="meetings_command", required=True)
+
+    sync_parser = meetings_subparsers.add_parser(
+        "sync-transcripts",
+        help="Dry-run transcript sync planning for recently ended meetings.",
+    )
+    sync_parser.add_argument(
+        "--since",
+        required=True,
+        help="Include meetings ending on or after this YYYY-MM-DD date.",
+    )
+    sync_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print the transcript sync plan without downloading or writing artifacts.",
     )
 
     return parser
@@ -123,6 +148,18 @@ def main(argv: list[str] | None = None) -> int:
         if weekly_result.changed and not args.dry_run:
             _maybe_auto_commit(config, vault_source_name=weekly_result.review_path.name)
         return 0
+
+    if args.command == "meetings":
+        if args.meetings_command == "sync-transcripts":
+            if not args.dry_run:
+                parser.error("`obsidian-agent meetings sync-transcripts` currently requires `--dry-run`.")
+            since = date.fromisoformat(args.since)
+            plan = build_transcript_sync_plan(
+                client=UnconfiguredOutlookMeetingDiscoveryClient(),
+                since=since,
+            )
+            print(render_transcript_sync_plan(plan))
+            return 0
 
     parser.error("Unknown command.")
     return 1

@@ -245,6 +245,45 @@ class MainCliTests(unittest.TestCase):
 
             commit_mock.assert_not_called()
 
+    def test_meetings_sync_transcripts_requires_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with self.assertRaises(SystemExit) as exc:
+                main(["--config", str(config_path), "meetings", "sync-transcripts", "--since", "2026-05-01"])
+
+            self.assertEqual(exc.exception.code, 2)
+
+    def test_meetings_sync_transcripts_prints_dry_run_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_sync_mode: dry-run", output)
+            self.assertIn("meeting_sync_since: 2026-05-01", output)
+            self.assertIn("meeting_sync_provider: outlook_calendar", output)
+            self.assertIn("meeting_sync_warning: Outlook calendar discovery is not configured yet;", output)
+
 
 def _write_config(
     repo: Path,
