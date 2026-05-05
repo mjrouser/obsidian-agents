@@ -282,6 +282,18 @@ class MainCliTests(unittest.TestCase):
 
             self.assertEqual(both_exc.exception.code, 2)
 
+    def test_meetings_process_bundles_requires_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with self.assertRaises(SystemExit) as exc:
+                main(["--config", str(config_path), "meetings", "process-bundles"])
+
+            self.assertEqual(exc.exception.code, 2)
+
     def test_meetings_sync_transcripts_prints_dry_run_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -364,6 +376,53 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("bundle_note_written:", output)
             self.assertIn("outlook_metadata_written:", output)
             self.assertIn("meeting_identity_written:", output)
+
+    def test_meetings_process_bundles_prints_dry_run_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            (vault / "00_Intake").mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            (vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (outlook).json").write_text(
+                "\n".join(
+                    [
+                        "{",
+                        '  "outlook_event_id": "evt-1",',
+                        '  "subject": "Platform Sync",',
+                        '  "processor_handoff": {',
+                        '    "preferred_input_path": null,',
+                        '    "preferred_input_source_name": null',
+                        "  },",
+                        '  "artifacts": [',
+                        '    {"source_name": "Outlook calendar metadata", "status": "available", "detail": "metadata", "matched_paths": []}',
+                        "  ]",
+                        "}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "process-bundles",
+                        "--dry-run",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_bundle_process_mode: dry-run", output)
+            self.assertIn("meeting_bundle_process_candidates: 1", output)
+            self.assertIn("meeting_bundle_process_blocked: 1", output)
+            self.assertIn(
+                "reason: Bundle is still calendar-only, so there is no processor-ready transcript artifact yet.",
+                output,
+            )
 
     def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

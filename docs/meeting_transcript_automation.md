@@ -151,6 +151,11 @@ Current implementation status in this repo:
 - The bundle contract now also records a preferred processor handoff input when
   one of those local transcript artifacts is available, including the selected
   source type and exact file path the next ingestion step should process.
+- `obsidian-agent meetings process-bundles --dry-run` now reads those written
+  Outlook metadata sidecars and reports which bundles are ready to hand to the
+  existing intake processor versus blocked by calendar-only state, missing local
+  files, or intake artifacts the current processor would skip as already
+  processed.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
