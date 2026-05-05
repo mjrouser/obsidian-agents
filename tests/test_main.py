@@ -334,8 +334,12 @@ class MainCliTests(unittest.TestCase):
                         written_metadata_paths=(
                             vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (outlook).json",
                         ),
+                        written_identity_paths=(
+                            vault / "00_Intake" / "_meeting_sync" / "identities" / "2026-05-04-f922f45f924d0fb4.json",
+                        ),
                         skipped_existing_bundle_note_paths=(),
                         skipped_existing_metadata_paths=(),
+                        skipped_existing_identity_paths=(),
                     ),
                 ),
                 patch("sys.stdout", new_callable=io.StringIO) as stdout,
@@ -356,8 +360,10 @@ class MainCliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("meeting_sync_bundle_notes_written: 1", output)
             self.assertIn("meeting_sync_outlook_metadata_written: 1", output)
+            self.assertIn("meeting_sync_identity_markers_written: 1", output)
             self.assertIn("bundle_note_written:", output)
             self.assertIn("outlook_metadata_written:", output)
+            self.assertIn("meeting_identity_written:", output)
 
     def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

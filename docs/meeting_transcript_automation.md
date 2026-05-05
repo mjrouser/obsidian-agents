@@ -132,10 +132,12 @@ Current implementation status in this repo:
   Outlook metadata JSON sidecar for each processable meeting, preserves
   existing bundle files, and backfills the metadata sidecar when a prior bundle
   note exists without it.
+- The sync path also writes a hidden meeting identity marker keyed from
+  Outlook event ID plus Teams meeting ID so future polling runs can recognize
+  already-imported meetings even if meeting titles or bundle filenames change.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
-  focus-without-content, non-Teams, meetings whose bundle note and Outlook
-  metadata sidecar already exist, and not-yet-ended events with explicit
-  reasons.
+  focus-without-content, non-Teams, meetings whose identity marker already
+  exists, and not-yet-ended events with explicit reasons.
 - Transcript download, chat export, recap retrieval, and `00_Intake` writes are
   still future work.
 
