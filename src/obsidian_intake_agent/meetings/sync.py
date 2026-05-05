@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -125,11 +126,13 @@ class MeetingSourceBundle:
 class PlannedIntakeBundleNote:
     path: Path
     metadata_path: Path
+    identity_path: Path
     attendance_confidence: str
     sources_used: tuple[str, ...]
     source_limitations: tuple[str, ...]
     content: str
     metadata_content: str
+    identity_content: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -173,8 +176,10 @@ class TranscriptSyncPlan:
 class BundleWriteResult:
     written_bundle_note_paths: tuple[Path, ...]
     written_metadata_paths: tuple[Path, ...]
+    written_identity_paths: tuple[Path, ...]
     skipped_existing_bundle_note_paths: tuple[Path, ...]
     skipped_existing_metadata_paths: tuple[Path, ...]
+    skipped_existing_identity_paths: tuple[Path, ...]
 
     @property
     def written_count(self) -> int:
@@ -312,6 +317,7 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
         if item.intake_bundle_note is not None:
             lines.append(f"  would_write_bundle: {item.intake_bundle_note.path}")
             lines.append(f"  would_write_outlook_metadata: {item.intake_bundle_note.metadata_path}")
+            lines.append(f"  would_write_meeting_identity: {item.intake_bundle_note.identity_path}")
             lines.append(f"  bundle_attendance_confidence: {item.intake_bundle_note.attendance_confidence}")
             for source_name in item.intake_bundle_note.sources_used:
                 lines.append(f"  bundle_source_used: {source_name}")
@@ -331,13 +337,16 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
 def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
     written_bundle_note_paths: list[Path] = []
     written_metadata_paths: list[Path] = []
+    written_identity_paths: list[Path] = []
     skipped_existing_bundle_note_paths: list[Path] = []
     skipped_existing_metadata_paths: list[Path] = []
+    skipped_existing_identity_paths: list[Path] = []
     for item in plan.items:
         if item.decision != "process" or item.intake_bundle_note is None:
             continue
         note = item.intake_bundle_note
         note.path.parent.mkdir(parents=True, exist_ok=True)
+        note.identity_path.parent.mkdir(parents=True, exist_ok=True)
         if note.path.exists():
             skipped_existing_bundle_note_paths.append(note.path)
         else:
@@ -348,11 +357,18 @@ def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
         else:
             note.metadata_path.write_text(note.metadata_content + "\n", encoding="utf-8")
             written_metadata_paths.append(note.metadata_path)
+        if note.identity_path.exists():
+            skipped_existing_identity_paths.append(note.identity_path)
+        else:
+            note.identity_path.write_text(note.identity_content + "\n", encoding="utf-8")
+            written_identity_paths.append(note.identity_path)
     return BundleWriteResult(
         written_bundle_note_paths=tuple(written_bundle_note_paths),
         written_metadata_paths=tuple(written_metadata_paths),
+        written_identity_paths=tuple(written_identity_paths),
         skipped_existing_bundle_note_paths=tuple(skipped_existing_bundle_note_paths),
         skipped_existing_metadata_paths=tuple(skipped_existing_metadata_paths),
+        skipped_existing_identity_paths=tuple(skipped_existing_identity_paths),
     )
 
 
@@ -362,6 +378,8 @@ def render_bundle_write_result(result: BundleWriteResult) -> str:
         f"meeting_sync_bundle_notes_skipped_existing: {result.skipped_existing_count}",
         f"meeting_sync_outlook_metadata_written: {len(result.written_metadata_paths)}",
         f"meeting_sync_outlook_metadata_skipped_existing: {len(result.skipped_existing_metadata_paths)}",
+        f"meeting_sync_identity_markers_written: {len(result.written_identity_paths)}",
+        f"meeting_sync_identity_markers_skipped_existing: {len(result.skipped_existing_identity_paths)}",
     ]
     for path in result.written_bundle_note_paths:
         lines.append(f"bundle_note_written: {path}")
@@ -371,6 +389,10 @@ def render_bundle_write_result(result: BundleWriteResult) -> str:
         lines.append(f"outlook_metadata_written: {path}")
     for path in result.skipped_existing_metadata_paths:
         lines.append(f"outlook_metadata_skipped_existing: {path}")
+    for path in result.written_identity_paths:
+        lines.append(f"meeting_identity_written: {path}")
+    for path in result.skipped_existing_identity_paths:
+        lines.append(f"meeting_identity_skipped_existing: {path}")
     return "\n".join(lines)
 
 
@@ -409,12 +431,8 @@ def _plan_item(
         reasons.append("Skipped event because Outlook metadata did not identify a Teams meeting.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
-    if (
-        intake_bundle_note is not None
-        and intake_bundle_note.path.exists()
-        and intake_bundle_note.metadata_path.exists()
-    ):
-        reasons.append("Skipped meeting because intake bundle and Outlook metadata already exist.")
+    if intake_bundle_note is not None and intake_bundle_note.identity_path.exists():
+        reasons.append("Skipped meeting because a meeting identity marker already exists.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
@@ -460,6 +478,7 @@ def _build_intake_bundle_note(
     basename = _bundle_note_basename(meeting)
     path = intake_root / basename
     metadata_path = intake_root / _outlook_metadata_basename(meeting)
+    identity_path = intake_root / _meeting_identity_relative_path(meeting)
     attendance_confidence, source_limitations = _bundle_transparency(bundle)
     sources_used = tuple(bundle.available_sources())
     content = render_intake_bundle_note(
@@ -470,14 +489,22 @@ def _build_intake_bundle_note(
         source_limitations=source_limitations,
     )
     metadata_content = render_outlook_metadata_sidecar(meeting=meeting, bundle=bundle)
+    identity_content = render_meeting_identity_sidecar(
+        meeting=meeting,
+        bundle=bundle,
+        bundle_note_path=path,
+        metadata_path=metadata_path,
+    )
     return PlannedIntakeBundleNote(
         path=path,
         metadata_path=metadata_path,
+        identity_path=identity_path,
         attendance_confidence=attendance_confidence,
         sources_used=sources_used,
         source_limitations=source_limitations,
         content=content,
         metadata_content=metadata_content,
+        identity_content=identity_content,
     )
 
 
@@ -561,6 +588,17 @@ def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
     return f"{meeting.start_at.date().isoformat()} - Teams - {title} (outlook).json"
 
 
+def _meeting_identity_relative_path(meeting: OutlookMeetingCandidate) -> Path:
+    identity_key = _meeting_identity_key(meeting)
+    digest = hashlib.sha1(identity_key.encode("utf-8")).hexdigest()[:16]
+    return Path("_meeting_sync") / "identities" / f"{meeting.start_at.date().isoformat()}-{digest}.json"
+
+
+def _meeting_identity_key(meeting: OutlookMeetingCandidate) -> str:
+    teams_meeting_id = meeting.teams_meeting_id() or "no-teams-id"
+    return f"{meeting.event_id}|{teams_meeting_id}"
+
+
 def _normalized_bundle_title(value: str) -> str:
     title = normalize_whitespace(value)
     title = title.replace("/", "-").replace(":", "-").replace("\\", "-")
@@ -607,6 +645,26 @@ def render_outlook_metadata_sidecar(
             }
             for attendee in meeting.attendees
         ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def render_meeting_identity_sidecar(
+    *,
+    meeting: OutlookMeetingCandidate,
+    bundle: MeetingSourceBundle,
+    bundle_note_path: Path,
+    metadata_path: Path,
+) -> str:
+    payload = {
+        "source_type": "meeting_sync_identity",
+        "identity_key": _meeting_identity_key(meeting),
+        "outlook_event_id": meeting.event_id,
+        "teams_meeting_id": bundle.teams_meeting_id,
+        "bundle_note_path": str(bundle_note_path),
+        "outlook_metadata_path": str(metadata_path),
+        "meeting_date": meeting.start_at.date().isoformat(),
+        "subject": meeting.subject,
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 

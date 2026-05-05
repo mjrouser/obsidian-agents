@@ -234,7 +234,10 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   include Outlook organizer, attendee, response-status, and join-link context
   when Graph discovery provides it. `--write-bundles` also writes a sibling
   Outlook metadata sidecar JSON file for each processable meeting and will
-  backfill that sidecar when an older bundle note exists without it.
+  backfill that sidecar when an older bundle note exists without it. The sync
+  path now also writes a hidden identity marker keyed from the Outlook event ID
+  and Teams meeting ID so repeated polling can skip already-imported meetings
+  even if the bundle filename later changes.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
