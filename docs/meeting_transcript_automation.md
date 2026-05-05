@@ -135,6 +135,9 @@ Current implementation status in this repo:
 - The sync path also writes a hidden meeting identity marker keyed from
   Outlook event ID plus Teams meeting ID so future polling runs can recognize
   already-imported meetings even if meeting titles or bundle filenames change.
+- Dry-run output now rolls up processable meetings by remaining source gaps so
+  the polling summary can show how many meetings are still calendar-only versus
+  missing transcript, chat, or recap artifacts.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.

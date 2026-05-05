@@ -237,7 +237,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   backfill that sidecar when an older bundle note exists without it. The sync
   path now also writes a hidden identity marker keyed from the Outlook event ID
   and Teams meeting ID so repeated polling can skip already-imported meetings
-  even if the bundle filename later changes.
+  even if the bundle filename later changes. Dry-run output now includes top-level
+  counts for processable meetings that are still missing `.vtt`, transcript text,
+  chat, recap, or any non-calendar source.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
