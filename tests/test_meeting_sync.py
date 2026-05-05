@@ -812,6 +812,7 @@ def _meeting(
     event_type: str | None = None,
     join_url: str | None = None,
     online_meeting_provider: str | None = None,
+    discovered_artifacts: tuple[MeetingArtifact, ...] = (),
 ) -> OutlookMeetingCandidate:
     return OutlookMeetingCandidate(
         event_id=event_id,
@@ -826,6 +827,7 @@ def _meeting(
         event_type=event_type,
         join_url=join_url,
         online_meeting_provider=online_meeting_provider,
+        discovered_artifacts=discovered_artifacts,
     )
 
 

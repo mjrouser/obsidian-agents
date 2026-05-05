@@ -24,6 +24,18 @@ ARTIFACT_SOURCE_PRIORITY = (
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 PlanDecision = Literal["process", "skip"]
+SYNC_SOURCE_SUMMARY_FIELDS = (
+    ("Teams .vtt transcript", "vtt"),
+    ("Teams transcript text", "transcript_text"),
+    ("Teams meeting chat", "chat"),
+    ("Copilot recap / AI summary", "recap"),
+)
+ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
+    "available",
+    "missing",
+    "permission_blocked",
+    "not_attempted",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -134,6 +146,12 @@ class MeetingSourceBundle:
             if artifact.source_name == source_name:
                 return artifact
         return None
+
+    def artifact_paths(self, source_name: str) -> tuple[Path, ...]:
+        artifact = self.artifact(source_name)
+        if artifact is None:
+            return ()
+        return artifact.matched_paths
 
 
 @dataclass(slots=True, frozen=True)
@@ -423,6 +441,12 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             f"meeting_sync_processable_calendar_only: {_count_process_items_with_only_calendar_metadata(process_items)}",
         ]
     )
+    for source_name, summary_key in SYNC_SOURCE_SUMMARY_FIELDS:
+        for status in ARTIFACT_STATUS_SUMMARY_SEQUENCE:
+            lines.append(
+                f"meeting_sync_processable_{summary_key}_{status}: "
+                f"{_count_process_items_with_source_status(process_items, source_name, status)}"
+            )
     for item in plan.items:
         meeting = item.meeting
         lines.append(f'meeting_sync_item: {item.decision} event_id="{meeting.event_id}" subject="{meeting.subject}"')
@@ -444,7 +468,12 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             for limitation in item.intake_bundle_note.source_limitations:
                 lines.append(f"  bundle_source_limitation: {limitation}")
         for source_name in item.bundle.available_sources():
-            lines.append(f"  source_available: {source_name}")
+            matched_paths = item.bundle.artifact_paths(source_name)
+            if matched_paths:
+                for matched_path in matched_paths:
+                    lines.append(f"  source_available: {source_name} ({matched_path})")
+            else:
+                lines.append(f"  source_available: {source_name}")
         for artifact in item.bundle.artifacts:
             if artifact.status != "available":
                 detail_suffix = f" ({artifact.detail})" if artifact.detail else ""
@@ -525,6 +554,14 @@ def _count_process_items_missing_source(
 
 def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSyncPlanItem, ...]) -> int:
     return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
+
+
+def _count_process_items_with_source_status(
+    items: tuple[TranscriptSyncPlanItem, ...],
+    source_name: str,
+    status: ArtifactStatus,
+) -> int:
+    return sum(1 for item in items if item.bundle.source_status(source_name) == status)
 
 
 def _discover_meeting_artifacts(
@@ -780,10 +817,16 @@ def _normalized_bundle_title(value: str) -> str:
 def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, ...]]:
     if bundle.available_sources() == ["Outlook calendar metadata"]:
         limitations = ["Known from calendar invite; attendance not guaranteed."]
-        for source_name in bundle.pending_sources():
-            limitations.append(f"{source_name} was not retrieved yet.")
+        for artifact in bundle.artifacts:
+            if artifact.source_name == "Outlook calendar metadata" or artifact.status == "available":
+                continue
+            limitations.append(_artifact_limitation(artifact))
         return "calendar_invite_only", tuple(limitations)
-    limitations = [f"{source_name} was not retrieved yet." for source_name in bundle.pending_sources()]
+    limitations = []
+    for artifact in bundle.artifacts:
+        if artifact.source_name == "Outlook calendar metadata" or artifact.status == "available":
+            continue
+        limitations.append(_artifact_limitation(artifact))
     return "partial_visibility", tuple(limitations)
 
 
