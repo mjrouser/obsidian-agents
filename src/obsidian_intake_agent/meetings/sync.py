@@ -43,6 +43,7 @@ class MeetingArtifact:
     source_name: str
     status: ArtifactStatus
     detail: str | None = None
+    matched_paths: tuple[Path, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -145,6 +146,12 @@ class MeetingSourceBundle:
             if artifact.source_name == source_name:
                 return artifact
         return None
+
+    def artifact_paths(self, source_name: str) -> tuple[Path, ...]:
+        artifact = self.artifact(source_name)
+        if artifact is None:
+            return ()
+        return artifact.matched_paths
 
 
 @dataclass(slots=True, frozen=True)
@@ -285,7 +292,12 @@ class LocalIntakeTranscriptDiscoveryClient:
         if not matches:
             return MeetingArtifact(source_name, "missing", missing_detail)
         rendered_matches = ", ".join(str(path) for path in matches)
-        return MeetingArtifact(source_name, "available", f"Matched local intake artifact(s): {rendered_matches}")
+        return MeetingArtifact(
+            source_name,
+            "available",
+            f"Matched local intake artifact(s): {rendered_matches}",
+            matched_paths=matches,
+        )
 
     def _matching_intake_paths(self, meeting: OutlookMeetingCandidate) -> tuple[Path, ...]:
         expected_stem = f"{meeting.start_at.date().isoformat()} - Teams - {_normalized_bundle_title(meeting.subject)}"
@@ -452,7 +464,12 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             for limitation in item.intake_bundle_note.source_limitations:
                 lines.append(f"  bundle_source_limitation: {limitation}")
         for source_name in item.bundle.available_sources():
-            lines.append(f"  source_available: {source_name}")
+            artifact = item.bundle.artifact(source_name)
+            if artifact and artifact.matched_paths:
+                rendered_paths = ", ".join(str(path) for path in artifact.matched_paths)
+                lines.append(f"  source_available: {source_name} ({rendered_paths})")
+            else:
+                lines.append(f"  source_available: {source_name}")
         for artifact in item.bundle.artifacts:
             if artifact.status != "available":
                 detail_suffix = f" ({artifact.detail})" if artifact.detail else ""
@@ -743,6 +760,8 @@ def render_intake_bundle_note(
     for artifact in bundle.artifacts:
         detail = f" ({artifact.detail})" if artifact.detail else ""
         lines.append(f"- {artifact.source_name}: {artifact.status}{detail}")
+        for matched_path in artifact.matched_paths:
+            lines.append(f"  - Matched Path: `{matched_path}`")
     return "\n".join(lines)
 
 
@@ -822,6 +841,15 @@ def render_outlook_metadata_sidecar(
                 "response_status": attendee.response_status,
             }
             for attendee in meeting.attendees
+        ],
+        "artifacts": [
+            {
+                "source_name": artifact.source_name,
+                "status": artifact.status,
+                "detail": artifact.detail,
+                "matched_paths": [str(path) for path in artifact.matched_paths],
+            }
+            for artifact in bundle.artifacts
         ],
     }
     return json.dumps(payload, indent=2, sort_keys=True)

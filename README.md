@@ -244,7 +244,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   `available`, `missing`, `permission_blocked`, or `not_attempted`. When the
   local intake folder exists, the planner now actively probes `00_Intake` for
   canonical date/title-matched `.vtt`, `.md`, and `.docx` transcript artifacts
-  before falling back to `missing` or `not_attempted`.
+  before falling back to `missing` or `not_attempted`, and it preserves those
+  exact matched artifact paths in the bundle note artifact plan plus the raw
+  Outlook metadata sidecar.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

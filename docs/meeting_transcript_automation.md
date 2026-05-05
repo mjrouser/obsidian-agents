@@ -144,6 +144,10 @@ Current implementation status in this repo:
   already sitting in `00_Intake`, marking canonical date/title-matched `.vtt`,
   `.md`, and `.docx` files as available transcript sources before any network
   retrieval is added.
+- When local transcript discovery finds a match, the planner now carries the
+  exact local artifact path forward into the bundle note artifact plan and the
+  raw Outlook metadata sidecar so later ingestion steps can reuse the same
+  source file without rediscovering it.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
