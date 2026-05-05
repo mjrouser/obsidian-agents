@@ -125,7 +125,8 @@ Current implementation status in this repo:
 - For meetings that would be processed, the dry run also plans a concrete
   intake bundle note path and renders the future bundle note content shape with
   attendance confidence, sources used, source limitations, Outlook event ID,
-  and Teams meeting ID.
+  Teams meeting ID, organizer, attendee list, response status, and join-link
+  context when available from Outlook metadata.
 - `obsidian-agent meetings sync-transcripts --write-bundles` now materializes
   only those planned bundle notes into `00_Intake`, preserving existing bundle
   files and still leaving transcript, chat, and recap retrieval for later.

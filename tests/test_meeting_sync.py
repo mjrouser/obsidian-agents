@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
+    MeetingAttendee,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
     UnconfiguredOutlookMeetingDiscoveryClient,
@@ -124,6 +125,15 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                         ),
                         online_meeting_provider="teamsForBusiness",
                         organizer="Casey",
+                        response_status="accepted",
+                        attendees=(
+                            MeetingAttendee(
+                                name="Jordan",
+                                email="jordan@example.com",
+                                role="required",
+                                response_status="accepted",
+                            ),
+                        ),
                     ),
                 )
             ),
@@ -143,6 +153,12 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("Known from calendar invite; attendance not guaranteed.", bundle_note.source_limitations)
         self.assertIn('outlook_event_id: "evt-1"', bundle_note.content)
         self.assertIn("- Organizer: Casey", bundle_note.content)
+        self.assertIn("- Your Response: accepted", bundle_note.content)
+        self.assertIn(
+            "- Join URL: https://teams.microsoft.com/l/meetup-join/19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D",
+            bundle_note.content,
+        )
+        self.assertIn("  - Jordan <jordan@example.com> (required, accepted)", bundle_note.content)
         self.assertIn("- Source Used: Outlook calendar metadata", bundle_note.content)
 
     def test_rendered_plan_includes_bundle_path_and_transparency(self) -> None:
@@ -197,6 +213,18 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                         "bodyPreview": "Join here",
                         "categories": ["Client"],
                         "organizer": {"emailAddress": {"name": "Casey"}},
+                        "attendees": [
+                            {
+                                "type": "required",
+                                "status": {"response": "accepted"},
+                                "emailAddress": {"name": "Morgan", "address": "morgan@example.com"},
+                            },
+                            {
+                                "type": "optional",
+                                "status": {"response": "tentativelyAccepted"},
+                                "emailAddress": {"name": "Jordan", "address": "jordan@example.com"},
+                            },
+                        ],
                         "type": "singleInstance",
                     }
                 ]
@@ -214,8 +242,26 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         meeting = snapshot.meetings[0]
         self.assertEqual(meeting.event_id, "evt-123")
         self.assertEqual(meeting.organizer, "Casey")
+        self.assertEqual(meeting.response_status, "accepted")
         self.assertTrue(meeting.is_teams_meeting())
         self.assertEqual(meeting.teams_meeting_id(), "19:meeting_graph123@thread.v2")
+        self.assertEqual(
+            meeting.attendees,
+            (
+                MeetingAttendee(
+                    name="Morgan",
+                    email="morgan@example.com",
+                    role="required",
+                    response_status="accepted",
+                ),
+                MeetingAttendee(
+                    name="Jordan",
+                    email="jordan@example.com",
+                    role="optional",
+                    response_status="tentativelyAccepted",
+                ),
+            ),
+        )
 
     def test_graph_client_returns_permission_warning(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -238,6 +284,14 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
             online_meeting_provider="teamsForBusiness",
             organizer="Morgan",
+            attendees=(
+                MeetingAttendee(
+                    name="Priya",
+                    email="priya@example.com",
+                    role="required",
+                    response_status="accepted",
+                ),
+            ),
         )
         plan = build_transcript_sync_plan(
             client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
@@ -259,6 +313,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertTrue(rendered.startswith("---\n"))
         self.assertIn('intake_kind: "meeting_source_bundle"', rendered)
         self.assertIn("# 2026-05-04 - Teams - Delivery Review (bundle)", rendered)
+        self.assertIn("- Attendees:", rendered)
+        self.assertIn("  - Priya <priya@example.com> (required, accepted)", rendered)
         self.assertIn("## Source", rendered)
         self.assertIn("## Artifact Plan", rendered)
 
@@ -368,6 +424,7 @@ def _meeting(
     event_id: str,
     subject: str,
     organizer: str | None = None,
+    attendees: tuple[MeetingAttendee, ...] = (),
     response_status: str | None = None,
     is_cancelled: bool = False,
     is_all_day: bool = False,
@@ -381,6 +438,7 @@ def _meeting(
         start_at=datetime.fromisoformat("2026-05-04T13:00:00+00:00"),
         end_at=datetime.fromisoformat("2026-05-04T13:30:00+00:00"),
         organizer=organizer,
+        attendees=attendees,
         response_status=response_status,
         is_cancelled=is_cancelled,
         is_all_day=is_all_day,

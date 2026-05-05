@@ -33,12 +33,30 @@ class MeetingArtifact:
 
 
 @dataclass(slots=True, frozen=True)
+class MeetingAttendee:
+    name: str
+    email: str | None = None
+    role: str | None = None
+    response_status: str | None = None
+
+    def display_label(self) -> str:
+        label = self.name
+        if self.email:
+            label = f"{label} <{self.email}>"
+        details = [detail for detail in (self.role, self.response_status) if detail]
+        if details:
+            return f"{label} ({', '.join(details)})"
+        return label
+
+
+@dataclass(slots=True, frozen=True)
 class OutlookMeetingCandidate:
     event_id: str
     subject: str
     start_at: datetime
     end_at: datetime
     organizer: str | None = None
+    attendees: tuple[MeetingAttendee, ...] = ()
     response_status: str | None = None
     is_cancelled: bool = False
     is_all_day: bool = False
@@ -214,7 +232,7 @@ class GraphOutlookMeetingDiscoveryClient:
                 "$top": "200",
                 "$select": (
                     "id,subject,start,end,isCancelled,isAllDay,showAs,responseStatus,"
-                    "onlineMeetingProvider,onlineMeeting,bodyPreview,categories,organizer,type"
+                    "onlineMeetingProvider,onlineMeeting,bodyPreview,categories,organizer,type,attendees"
                 ),
             }
         )
@@ -472,7 +490,9 @@ def render_intake_bundle_note(
             f"- Start: {meeting.start_at.isoformat()}",
             f"- End: {meeting.end_at.isoformat()}",
             f"- Organizer: {meeting.organizer or 'Unknown'}",
+            f"- Your Response: {meeting.response_status or 'Unknown'}",
             f"- Outlook Event ID: `{meeting.event_id}`",
+            f"- Join URL: {meeting.detected_join_url()}" if meeting.detected_join_url() else "- Join URL: Unknown",
             f"- Teams Meeting ID: `{bundle.teams_meeting_id}`"
             if bundle.teams_meeting_id
             else "- Teams Meeting ID: Unknown",
@@ -481,6 +501,12 @@ def render_intake_bundle_note(
             f"- Attendance Confidence: {attendance_confidence}",
         ]
     )
+    if meeting.attendees:
+        lines.append("- Attendees:")
+        for attendee in meeting.attendees:
+            lines.append(f"  - {attendee.display_label()}")
+    else:
+        lines.append("- Attendees: Unknown")
     for source_name in sources_used:
         lines.append(f"- Source Used: {source_name}")
     for limitation in source_limitations:
@@ -588,6 +614,7 @@ def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
     category_values: tuple[str, ...] = ()
     if isinstance(categories, list):
         category_values = tuple(str(item) for item in categories)
+    attendee_values = _parse_graph_attendees(payload.get("attendees"))
     body_preview = _optional_string(str(payload.get("bodyPreview") or ""))
     return OutlookMeetingCandidate(
         event_id=str(payload["id"]),
@@ -595,6 +622,7 @@ def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
         start_at=_parse_graph_datetime(payload["start"]),
         end_at=_parse_graph_datetime(payload["end"]),
         organizer=organizer,
+        attendees=attendee_values,
         response_status=response_status,
         is_cancelled=bool(payload.get("isCancelled", False)),
         is_all_day=bool(payload.get("isAllDay", False)),
@@ -605,6 +633,37 @@ def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
         categories=category_values,
         show_as=_optional_string(str(payload.get("showAs") or "")),
     )
+
+
+def _parse_graph_attendees(raw_value: object) -> tuple[MeetingAttendee, ...]:
+    if not isinstance(raw_value, list):
+        return ()
+    attendees: list[MeetingAttendee] = []
+    for raw_attendee in raw_value:
+        if not isinstance(raw_attendee, dict):
+            continue
+        email_payload = raw_attendee.get("emailAddress")
+        name = None
+        email = None
+        if isinstance(email_payload, dict):
+            name = _optional_string(str(email_payload.get("name") or ""))
+            email = _optional_string(str(email_payload.get("address") or ""))
+        attendee_name = name or email
+        if attendee_name is None:
+            continue
+        attendee_response = None
+        raw_response_status = raw_attendee.get("status")
+        if isinstance(raw_response_status, dict):
+            attendee_response = _optional_string(str(raw_response_status.get("response") or ""))
+        attendees.append(
+            MeetingAttendee(
+                name=attendee_name,
+                email=email,
+                role=_optional_string(str(raw_attendee.get("type") or "")),
+                response_status=attendee_response,
+            )
+        )
+    return tuple(attendees)
 
 
 def _parse_graph_datetime(raw_value: object) -> datetime:
