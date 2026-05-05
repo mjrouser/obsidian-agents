@@ -137,7 +137,9 @@ Current implementation status in this repo:
   already-imported meetings even if meeting titles or bundle filenames change.
 - Dry-run output now rolls up processable meetings by remaining source gaps so
   the polling summary can show how many meetings are still calendar-only versus
-  missing transcript, chat, or recap artifacts.
+  missing transcript, chat, or recap artifacts, and it now breaks those source
+  states down explicitly as `available`, `missing`, `permission_blocked`, or
+  `not_attempted` for each processable meeting source.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
