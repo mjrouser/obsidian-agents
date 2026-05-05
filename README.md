@@ -230,7 +230,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   the intake bundle note path and source-transparency metadata. `--write-bundles`
   writes only those planned bundle notes and skips existing bundle files. If the
   planned bundle note already exists, the planner now reports that meeting as an
-  explicit skip so repeated polling runs stay quieter.
+  explicit skip so repeated polling runs stay quieter. Planned bundle notes now
+  include Outlook organizer, attendee, response-status, and join-link context
+  when Graph discovery provides it.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
