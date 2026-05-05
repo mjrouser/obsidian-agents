@@ -10,6 +10,8 @@ from urllib.error import HTTPError
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
+    LocalIntakeTranscriptDiscoveryClient,
+    MeetingArtifact,
     MeetingAttendee,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
