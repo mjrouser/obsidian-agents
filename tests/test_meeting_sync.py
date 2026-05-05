@@ -204,6 +204,36 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("bundle_attendance_confidence: calendar_invite_only", rendered)
         self.assertIn("bundle_source_limitation: Known from calendar invite; attendance not guaranteed.", rendered)
 
+    def test_rendered_plan_includes_processable_gap_summary(self) -> None:
+        now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(
+                meetings=(
+                    _meeting(
+                        event_id="evt-1",
+                        subject="Platform Sync",
+                        join_url=(
+                            "https://teams.microsoft.com/l/meetup-join/"
+                            "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                        ),
+                        online_meeting_provider="teamsForBusiness",
+                    ),
+                    _meeting(event_id="evt-2", subject="Cancelled", is_cancelled=True),
+                )
+            ),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=now,
+        )
+
+        rendered = render_transcript_sync_plan(plan)
+
+        self.assertIn("meeting_sync_processable_missing_vtt: 1", rendered)
+        self.assertIn("meeting_sync_processable_missing_transcript_text: 1", rendered)
+        self.assertIn("meeting_sync_processable_missing_chat: 1", rendered)
+        self.assertIn("meeting_sync_processable_missing_recap: 1", rendered)
+        self.assertIn("meeting_sync_processable_calendar_only: 1", rendered)
+
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
             access_token="token",

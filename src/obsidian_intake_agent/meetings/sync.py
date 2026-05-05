@@ -121,6 +121,12 @@ class MeetingSourceBundle:
     def pending_sources(self) -> list[str]:
         return [artifact.source_name for artifact in self.artifacts if artifact.status != "available"]
 
+    def source_status(self, source_name: str) -> ArtifactStatus | None:
+        for artifact in self.artifacts:
+            if artifact.source_name == source_name:
+                return artifact.status
+        return None
+
 
 @dataclass(slots=True, frozen=True)
 class PlannedIntakeBundleNote:
@@ -170,6 +176,9 @@ class TranscriptSyncPlan:
     @property
     def skip_count(self) -> int:
         return sum(1 for item in self.items if item.decision == "skip")
+
+    def process_items(self) -> tuple[TranscriptSyncPlanItem, ...]:
+        return tuple(item for item in self.items if item.decision == "process")
 
 
 @dataclass(slots=True, frozen=True)
@@ -292,6 +301,7 @@ def build_transcript_sync_plan(
 
 
 def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-run") -> str:
+    process_items = plan.process_items()
     lines = [
         f"meeting_sync_mode: {mode}",
         f"meeting_sync_since: {plan.since.isoformat()}",
@@ -305,6 +315,14 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             f"meeting_sync_candidates: {plan.candidate_count}",
             f"meeting_sync_would_process: {plan.process_count}",
             f"meeting_sync_would_skip: {plan.skip_count}",
+            f"meeting_sync_processable_missing_vtt: {_count_process_items_missing_source(process_items, 'Teams .vtt transcript')}",
+            (
+                "meeting_sync_processable_missing_transcript_text: "
+                f"{_count_process_items_missing_source(process_items, 'Teams transcript text')}"
+            ),
+            f"meeting_sync_processable_missing_chat: {_count_process_items_missing_source(process_items, 'Teams meeting chat')}",
+            f"meeting_sync_processable_missing_recap: {_count_process_items_missing_source(process_items, 'Copilot recap / AI summary')}",
+            f"meeting_sync_processable_calendar_only: {_count_process_items_with_only_calendar_metadata(process_items)}",
         ]
     )
     for item in plan.items:
@@ -394,6 +412,17 @@ def render_bundle_write_result(result: BundleWriteResult) -> str:
     for path in result.skipped_existing_identity_paths:
         lines.append(f"meeting_identity_skipped_existing: {path}")
     return "\n".join(lines)
+
+
+def _count_process_items_missing_source(
+    items: tuple[TranscriptSyncPlanItem, ...],
+    source_name: str,
+) -> int:
+    return sum(1 for item in items if item.bundle.source_status(source_name) != "available")
+
+
+def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSyncPlanItem, ...]) -> int:
+    return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
 
 
 def _plan_item(
