@@ -159,6 +159,8 @@ class PlannedIntakeBundleNote:
     path: Path
     metadata_path: Path
     identity_path: Path
+    processor_input_path: Path | None
+    processor_input_source_name: str | None
     attendance_confidence: str
     sources_used: tuple[str, ...]
     source_limitations: tuple[str, ...]
@@ -458,6 +460,10 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             lines.append(f"  would_write_bundle: {item.intake_bundle_note.path}")
             lines.append(f"  would_write_outlook_metadata: {item.intake_bundle_note.metadata_path}")
             lines.append(f"  would_write_meeting_identity: {item.intake_bundle_note.identity_path}")
+            if item.intake_bundle_note.processor_input_path is not None:
+                lines.append(f"  would_process_intake_file: {item.intake_bundle_note.processor_input_path}")
+            if item.intake_bundle_note.processor_input_source_name is not None:
+                lines.append(f"  processor_input_source: {item.intake_bundle_note.processor_input_source_name}")
             lines.append(f"  bundle_attendance_confidence: {item.intake_bundle_note.attendance_confidence}")
             for source_name in item.intake_bundle_note.sources_used:
                 lines.append(f"  bundle_source_used: {source_name}")
@@ -666,9 +672,12 @@ def _build_intake_bundle_note(
     identity_path = intake_root / _meeting_identity_relative_path(meeting)
     attendance_confidence, source_limitations = _bundle_transparency(bundle)
     sources_used = tuple(bundle.available_sources())
+    processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
     content = render_intake_bundle_note(
         meeting=meeting,
         bundle=bundle,
+        processor_input_path=processor_input_path,
+        processor_input_source_name=processor_input_source_name,
         attendance_confidence=attendance_confidence,
         sources_used=sources_used,
         source_limitations=source_limitations,
@@ -684,6 +693,8 @@ def _build_intake_bundle_note(
         path=path,
         metadata_path=metadata_path,
         identity_path=identity_path,
+        processor_input_path=processor_input_path,
+        processor_input_source_name=processor_input_source_name,
         attendance_confidence=attendance_confidence,
         sources_used=sources_used,
         source_limitations=source_limitations,
@@ -697,6 +708,8 @@ def render_intake_bundle_note(
     *,
     meeting: OutlookMeetingCandidate,
     bundle: MeetingSourceBundle,
+    processor_input_path: Path | None,
+    processor_input_source_name: str | None,
     attendance_confidence: str,
     sources_used: tuple[str, ...],
     source_limitations: tuple[str, ...],
@@ -762,6 +775,19 @@ def render_intake_bundle_note(
         lines.append(f"- {artifact.source_name}: {artifact.status}{detail}")
         for matched_path in artifact.matched_paths:
             lines.append(f"  - Matched Path: `{matched_path}`")
+    lines.extend(
+        [
+            "",
+            "## Processor Handoff",
+        ]
+    )
+    if processor_input_path is not None and processor_input_source_name is not None:
+        lines.append(f"- Preferred Input: `{processor_input_path}`")
+        lines.append(f"- Preferred Source: {processor_input_source_name}")
+        lines.append(f"- Suggested Dry Run: `.venv/bin/obsidian-agent process {processor_input_path} --dry-run`")
+    else:
+        lines.append("- Preferred Input: None yet")
+        lines.append("- Preferred Source: None yet")
     return "\n".join(lines)
 
 
@@ -812,11 +838,21 @@ def _artifact_limitation(artifact: MeetingArtifact) -> str:
     return f"{artifact.source_name} was not retrieved yet."
 
 
+def _preferred_processor_input(bundle: MeetingSourceBundle) -> tuple[Path | None, str | None]:
+    for source_name in ("Teams .vtt transcript", "Teams transcript text", "Manual / semi-manual intake"):
+        artifact = bundle.artifact(source_name)
+        if artifact is None or artifact.status != "available" or not artifact.matched_paths:
+            continue
+        return artifact.matched_paths[0], artifact.source_name
+    return None, None
+
+
 def render_outlook_metadata_sidecar(
     *,
     meeting: OutlookMeetingCandidate,
     bundle: MeetingSourceBundle,
 ) -> str:
+    processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
     payload = {
         "source_type": "outlook_calendar_metadata",
         "outlook_event_id": meeting.event_id,
@@ -851,6 +887,10 @@ def render_outlook_metadata_sidecar(
             }
             for artifact in bundle.artifacts
         ],
+        "processor_handoff": {
+            "preferred_input_path": str(processor_input_path) if processor_input_path is not None else None,
+            "preferred_input_source_name": processor_input_source_name,
+        },
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 

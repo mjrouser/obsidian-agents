@@ -148,6 +148,9 @@ Current implementation status in this repo:
   exact local artifact path forward into the bundle note artifact plan and the
   raw Outlook metadata sidecar so later ingestion steps can reuse the same
   source file without rediscovering it.
+- The bundle contract now also records a preferred processor handoff input when
+  one of those local transcript artifacts is available, including the selected
+  source type and exact file path the next ingestion step should process.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
