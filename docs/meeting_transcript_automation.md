@@ -128,11 +128,14 @@ Current implementation status in this repo:
   Teams meeting ID, organizer, attendee list, response status, and join-link
   context when available from Outlook metadata.
 - `obsidian-agent meetings sync-transcripts --write-bundles` now materializes
-  only those planned bundle notes into `00_Intake`, preserving existing bundle
-  files and still leaving transcript, chat, and recap retrieval for later.
+  only those planned bundle notes into `00_Intake`, writes a sibling raw
+  Outlook metadata JSON sidecar for each processable meeting, preserves
+  existing bundle files, and backfills the metadata sidecar when a prior bundle
+  note exists without it.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
-  focus-without-content, non-Teams, already-imported bundle notes, and
-  not-yet-ended events with explicit reasons.
+  focus-without-content, non-Teams, meetings whose bundle note and Outlook
+  metadata sidecar already exist, and not-yet-ended events with explicit
+  reasons.
 - Transcript download, chat export, recap retrieval, and `00_Intake` writes are
   still future work.
 

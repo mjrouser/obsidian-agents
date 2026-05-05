@@ -17,6 +17,7 @@ from obsidian_intake_agent.meetings import (
     build_transcript_sync_plan,
     render_bundle_write_result,
     render_intake_bundle_note,
+    render_outlook_metadata_sidecar,
     render_transcript_sync_plan,
     write_planned_bundle_notes,
 )
@@ -149,6 +150,10 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             bundle_note.path,
             Path("/tmp/vault/00_Intake/2026-05-04 - Teams - Platform - Sync- Weekly (bundle).md"),
         )
+        self.assertEqual(
+            bundle_note.metadata_path,
+            Path("/tmp/vault/00_Intake/2026-05-04 - Teams - Platform - Sync- Weekly (outlook).json"),
+        )
         self.assertEqual(bundle_note.attendance_confidence, "calendar_invite_only")
         self.assertIn("Known from calendar invite; attendance not guaranteed.", bundle_note.source_limitations)
         self.assertIn('outlook_event_id: "evt-1"', bundle_note.content)
@@ -185,6 +190,10 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         rendered = render_transcript_sync_plan(plan)
         self.assertIn(
             "would_write_bundle: /tmp/vault/00_Intake/2026-05-04 - Teams - Platform Sync (bundle).md", rendered
+        )
+        self.assertIn(
+            "would_write_outlook_metadata: /tmp/vault/00_Intake/2026-05-04 - Teams - Platform Sync (outlook).json",
+            rendered,
         )
         self.assertIn("bundle_attendance_confidence: calendar_invite_only", rendered)
         self.assertIn("bundle_source_limitation: Known from calendar invite; attendance not guaranteed.", rendered)
@@ -318,6 +327,37 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("## Source", rendered)
         self.assertIn("## Artifact Plan", rendered)
 
+    def test_render_outlook_metadata_sidecar_renders_expected_json(self) -> None:
+        meeting = _meeting(
+            event_id="evt-9",
+            subject="Delivery Review",
+            join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
+            online_meeting_provider="teamsForBusiness",
+            organizer="Morgan",
+            response_status="accepted",
+            attendees=(
+                MeetingAttendee(
+                    name="Priya",
+                    email="priya@example.com",
+                    role="required",
+                    response_status="accepted",
+                ),
+            ),
+        )
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+        )
+
+        rendered = render_outlook_metadata_sidecar(meeting=meeting, bundle=plan.items[0].bundle)
+
+        self.assertIn('"source_type": "outlook_calendar_metadata"', rendered)
+        self.assertIn('"outlook_event_id": "evt-9"', rendered)
+        self.assertIn('"teams_meeting_id": "19:meeting_delivery@thread.v2"', rendered)
+        self.assertIn('"email": "priya@example.com"', rendered)
+
     def test_write_planned_bundle_notes_writes_processable_notes_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
@@ -348,10 +388,56 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(first_result.written_count, 1)
             self.assertEqual(first_result.skipped_existing_count, 0)
             self.assertTrue((intake_root / "2026-05-04 - Teams - Platform Sync (bundle).md").exists())
+            self.assertTrue((intake_root / "2026-05-04 - Teams - Platform Sync (outlook).json").exists())
             self.assertEqual(second_result.written_count, 0)
             self.assertEqual(second_result.skipped_existing_count, 1)
+            self.assertEqual(len(first_result.written_metadata_paths), 1)
+            self.assertEqual(len(second_result.skipped_existing_metadata_paths), 1)
 
-    def test_planning_skips_meeting_when_bundle_note_already_exists(self) -> None:
+    def test_planning_skips_meeting_when_bundle_note_and_metadata_already_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            existing_bundle = intake_root / "2026-05-04 - Teams - Platform Sync (bundle).md"
+            existing_bundle.write_text("existing bundle\n", encoding="utf-8")
+            existing_metadata = intake_root / "2026-05-04 - Teams - Platform Sync (outlook).json"
+            existing_metadata.write_text("{}\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.process_count, 0)
+            self.assertEqual(plan.skip_count, 1)
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertEqual(plan.items[0].intake_bundle_note.path, existing_bundle)
+            self.assertEqual(plan.items[0].intake_bundle_note.metadata_path, existing_metadata)
+            self.assertEqual(
+                plan.items[0].reasons,
+                ("Skipped meeting because intake bundle and Outlook metadata already exist.",),
+            )
+
+            rendered = render_transcript_sync_plan(plan)
+            self.assertIn("meeting_sync_would_process: 0", rendered)
+            self.assertIn("meeting_sync_would_skip: 1", rendered)
+            self.assertIn("reason: Skipped meeting because intake bundle and Outlook metadata already exist.", rendered)
+
+    def test_planning_allows_metadata_backfill_when_bundle_note_exists_without_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             intake_root.mkdir(parents=True)
@@ -377,29 +463,34 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
             )
 
-            self.assertEqual(plan.process_count, 0)
-            self.assertEqual(plan.skip_count, 1)
-            self.assertEqual(plan.items[0].decision, "skip")
-            self.assertEqual(plan.items[0].intake_bundle_note.path, existing_bundle)
-            self.assertEqual(plan.items[0].reasons, ("Skipped meeting because intake bundle already exists.",))
+            self.assertEqual(plan.process_count, 1)
+            self.assertEqual(plan.skip_count, 0)
+            self.assertEqual(plan.items[0].decision, "process")
 
-            rendered = render_transcript_sync_plan(plan)
-            self.assertIn("meeting_sync_would_process: 0", rendered)
-            self.assertIn("meeting_sync_would_skip: 1", rendered)
-            self.assertIn("reason: Skipped meeting because intake bundle already exists.", rendered)
+            result = write_planned_bundle_notes(plan)
+            self.assertEqual(result.written_count, 0)
+            self.assertEqual(len(result.written_metadata_paths), 1)
+            self.assertEqual(result.skipped_existing_count, 1)
+            self.assertTrue((intake_root / "2026-05-04 - Teams - Platform Sync (outlook).json").exists())
 
     def test_render_bundle_write_result_lists_written_and_skipped_paths(self) -> None:
         result = BundleWriteResult(
-            written_paths=(Path("/tmp/a.md"),),
-            skipped_existing_paths=(Path("/tmp/b.md"),),
+            written_bundle_note_paths=(Path("/tmp/a.md"),),
+            written_metadata_paths=(Path("/tmp/a.json"),),
+            skipped_existing_bundle_note_paths=(Path("/tmp/b.md"),),
+            skipped_existing_metadata_paths=(Path("/tmp/b.json"),),
         )
 
         rendered = render_bundle_write_result(result)
 
         self.assertIn("meeting_sync_bundle_notes_written: 1", rendered)
         self.assertIn("meeting_sync_bundle_notes_skipped_existing: 1", rendered)
+        self.assertIn("meeting_sync_outlook_metadata_written: 1", rendered)
+        self.assertIn("meeting_sync_outlook_metadata_skipped_existing: 1", rendered)
         self.assertIn("bundle_note_written: /tmp/a.md", rendered)
         self.assertIn("bundle_note_skipped_existing: /tmp/b.md", rendered)
+        self.assertIn("outlook_metadata_written: /tmp/a.json", rendered)
+        self.assertIn("outlook_metadata_skipped_existing: /tmp/b.json", rendered)
 
 
 @dataclass(slots=True)

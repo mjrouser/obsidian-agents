@@ -328,8 +328,14 @@ class MainCliTests(unittest.TestCase):
                 patch(
                     "obsidian_intake_agent.main.write_planned_bundle_notes",
                     return_value=BundleWriteResult(
-                        written_paths=(vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (bundle).md",),
-                        skipped_existing_paths=(),
+                        written_bundle_note_paths=(
+                            vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (bundle).md",
+                        ),
+                        written_metadata_paths=(
+                            vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (outlook).json",
+                        ),
+                        skipped_existing_bundle_note_paths=(),
+                        skipped_existing_metadata_paths=(),
                     ),
                 ),
                 patch("sys.stdout", new_callable=io.StringIO) as stdout,
@@ -349,7 +355,9 @@ class MainCliTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 0)
             self.assertIn("meeting_sync_bundle_notes_written: 1", output)
+            self.assertIn("meeting_sync_outlook_metadata_written: 1", output)
             self.assertIn("bundle_note_written:", output)
+            self.assertIn("outlook_metadata_written:", output)
 
     def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
