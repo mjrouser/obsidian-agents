@@ -9,6 +9,7 @@ from pathlib import Path
 from .config import Config
 from .meetings import (
     GraphOutlookMeetingDiscoveryClient,
+    LocalIntakeTranscriptDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_transcript_sync_plan,
     render_bundle_write_result,
@@ -168,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
             since = date.fromisoformat(args.since)
             plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(
+                    intake_root=config.vault_path / config.intake_dir,
+                ),
                 since=since,
                 intake_root=config.vault_path / config.intake_dir,
             )
