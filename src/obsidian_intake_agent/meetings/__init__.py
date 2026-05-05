@@ -16,6 +16,7 @@ from .sync import (
     build_transcript_sync_plan,
     render_bundle_write_result,
     render_intake_bundle_note,
+    render_outlook_metadata_sidecar,
     render_transcript_sync_plan,
     write_planned_bundle_notes,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "build_transcript_sync_plan",
     "render_bundle_write_result",
     "render_intake_bundle_note",
+    "render_outlook_metadata_sidecar",
     "render_transcript_sync_plan",
     "write_planned_bundle_notes",
 ]

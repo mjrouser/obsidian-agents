@@ -232,7 +232,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   planned bundle note already exists, the planner now reports that meeting as an
   explicit skip so repeated polling runs stay quieter. Planned bundle notes now
   include Outlook organizer, attendee, response-status, and join-link context
-  when Graph discovery provides it.
+  when Graph discovery provides it. `--write-bundles` also writes a sibling
+  Outlook metadata sidecar JSON file for each processable meeting and will
+  backfill that sidecar when an older bundle note exists without it.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

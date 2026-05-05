@@ -124,10 +124,12 @@ class MeetingSourceBundle:
 @dataclass(slots=True, frozen=True)
 class PlannedIntakeBundleNote:
     path: Path
+    metadata_path: Path
     attendance_confidence: str
     sources_used: tuple[str, ...]
     source_limitations: tuple[str, ...]
     content: str
+    metadata_content: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -169,16 +171,18 @@ class TranscriptSyncPlan:
 
 @dataclass(slots=True, frozen=True)
 class BundleWriteResult:
-    written_paths: tuple[Path, ...]
-    skipped_existing_paths: tuple[Path, ...]
+    written_bundle_note_paths: tuple[Path, ...]
+    written_metadata_paths: tuple[Path, ...]
+    skipped_existing_bundle_note_paths: tuple[Path, ...]
+    skipped_existing_metadata_paths: tuple[Path, ...]
 
     @property
     def written_count(self) -> int:
-        return len(self.written_paths)
+        return len(self.written_bundle_note_paths)
 
     @property
     def skipped_existing_count(self) -> int:
-        return len(self.skipped_existing_paths)
+        return len(self.skipped_existing_bundle_note_paths)
 
 
 class MeetingDiscoveryClient(Protocol):
@@ -307,6 +311,7 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             lines.append(f'  teams_meeting_id: "{item.bundle.teams_meeting_id}"')
         if item.intake_bundle_note is not None:
             lines.append(f"  would_write_bundle: {item.intake_bundle_note.path}")
+            lines.append(f"  would_write_outlook_metadata: {item.intake_bundle_note.metadata_path}")
             lines.append(f"  bundle_attendance_confidence: {item.intake_bundle_note.attendance_confidence}")
             for source_name in item.intake_bundle_note.sources_used:
                 lines.append(f"  bundle_source_used: {source_name}")
@@ -324,21 +329,30 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
 
 
 def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
-    written_paths: list[Path] = []
-    skipped_existing_paths: list[Path] = []
+    written_bundle_note_paths: list[Path] = []
+    written_metadata_paths: list[Path] = []
+    skipped_existing_bundle_note_paths: list[Path] = []
+    skipped_existing_metadata_paths: list[Path] = []
     for item in plan.items:
         if item.decision != "process" or item.intake_bundle_note is None:
             continue
-        path = item.intake_bundle_note.path
-        if path.exists():
-            skipped_existing_paths.append(path)
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(item.intake_bundle_note.content + "\n", encoding="utf-8")
-        written_paths.append(path)
+        note = item.intake_bundle_note
+        note.path.parent.mkdir(parents=True, exist_ok=True)
+        if note.path.exists():
+            skipped_existing_bundle_note_paths.append(note.path)
+        else:
+            note.path.write_text(note.content + "\n", encoding="utf-8")
+            written_bundle_note_paths.append(note.path)
+        if note.metadata_path.exists():
+            skipped_existing_metadata_paths.append(note.metadata_path)
+        else:
+            note.metadata_path.write_text(note.metadata_content + "\n", encoding="utf-8")
+            written_metadata_paths.append(note.metadata_path)
     return BundleWriteResult(
-        written_paths=tuple(written_paths),
-        skipped_existing_paths=tuple(skipped_existing_paths),
+        written_bundle_note_paths=tuple(written_bundle_note_paths),
+        written_metadata_paths=tuple(written_metadata_paths),
+        skipped_existing_bundle_note_paths=tuple(skipped_existing_bundle_note_paths),
+        skipped_existing_metadata_paths=tuple(skipped_existing_metadata_paths),
     )
 
 
@@ -346,11 +360,17 @@ def render_bundle_write_result(result: BundleWriteResult) -> str:
     lines = [
         f"meeting_sync_bundle_notes_written: {result.written_count}",
         f"meeting_sync_bundle_notes_skipped_existing: {result.skipped_existing_count}",
+        f"meeting_sync_outlook_metadata_written: {len(result.written_metadata_paths)}",
+        f"meeting_sync_outlook_metadata_skipped_existing: {len(result.skipped_existing_metadata_paths)}",
     ]
-    for path in result.written_paths:
+    for path in result.written_bundle_note_paths:
         lines.append(f"bundle_note_written: {path}")
-    for path in result.skipped_existing_paths:
+    for path in result.skipped_existing_bundle_note_paths:
         lines.append(f"bundle_note_skipped_existing: {path}")
+    for path in result.written_metadata_paths:
+        lines.append(f"outlook_metadata_written: {path}")
+    for path in result.skipped_existing_metadata_paths:
+        lines.append(f"outlook_metadata_skipped_existing: {path}")
     return "\n".join(lines)
 
 
@@ -389,8 +409,12 @@ def _plan_item(
         reasons.append("Skipped event because Outlook metadata did not identify a Teams meeting.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
-    if intake_bundle_note is not None and intake_bundle_note.path.exists():
-        reasons.append("Skipped meeting because intake bundle already exists.")
+    if (
+        intake_bundle_note is not None
+        and intake_bundle_note.path.exists()
+        and intake_bundle_note.metadata_path.exists()
+    ):
+        reasons.append("Skipped meeting because intake bundle and Outlook metadata already exist.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
@@ -435,6 +459,7 @@ def _build_intake_bundle_note(
         return None
     basename = _bundle_note_basename(meeting)
     path = intake_root / basename
+    metadata_path = intake_root / _outlook_metadata_basename(meeting)
     attendance_confidence, source_limitations = _bundle_transparency(bundle)
     sources_used = tuple(bundle.available_sources())
     content = render_intake_bundle_note(
@@ -444,12 +469,15 @@ def _build_intake_bundle_note(
         sources_used=sources_used,
         source_limitations=source_limitations,
     )
+    metadata_content = render_outlook_metadata_sidecar(meeting=meeting, bundle=bundle)
     return PlannedIntakeBundleNote(
         path=path,
+        metadata_path=metadata_path,
         attendance_confidence=attendance_confidence,
         sources_used=sources_used,
         source_limitations=source_limitations,
         content=content,
+        metadata_content=metadata_content,
     )
 
 
@@ -528,6 +556,11 @@ def _bundle_note_basename(meeting: OutlookMeetingCandidate) -> str:
     return f"{meeting.start_at.date().isoformat()} - Teams - {title} (bundle).md"
 
 
+def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
+    title = _normalized_bundle_title(meeting.subject)
+    return f"{meeting.start_at.date().isoformat()} - Teams - {title} (outlook).json"
+
+
 def _normalized_bundle_title(value: str) -> str:
     title = normalize_whitespace(value)
     title = title.replace("/", "-").replace(":", "-").replace("\\", "-")
@@ -542,6 +575,40 @@ def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, .
         return "calendar_invite_only", tuple(limitations)
     limitations = [f"{source_name} was not retrieved yet." for source_name in bundle.pending_sources()]
     return "partial_visibility", tuple(limitations)
+
+
+def render_outlook_metadata_sidecar(
+    *,
+    meeting: OutlookMeetingCandidate,
+    bundle: MeetingSourceBundle,
+) -> str:
+    payload = {
+        "source_type": "outlook_calendar_metadata",
+        "outlook_event_id": meeting.event_id,
+        "subject": meeting.subject,
+        "start_at": meeting.start_at.isoformat(),
+        "end_at": meeting.end_at.isoformat(),
+        "organizer": meeting.organizer,
+        "response_status": meeting.response_status,
+        "is_cancelled": meeting.is_cancelled,
+        "is_all_day": meeting.is_all_day,
+        "event_type": meeting.event_type,
+        "online_meeting_provider": meeting.online_meeting_provider,
+        "join_url": meeting.detected_join_url(),
+        "teams_meeting_id": bundle.teams_meeting_id,
+        "show_as": meeting.show_as,
+        "categories": list(meeting.categories),
+        "attendees": [
+            {
+                "name": attendee.name,
+                "email": attendee.email,
+                "role": attendee.role,
+                "response_status": attendee.response_status,
+            }
+            for attendee in meeting.attendees
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
 
 
 def _optional_string(value: str | None) -> str | None:
