@@ -239,7 +239,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   and Teams meeting ID so repeated polling can skip already-imported meetings
   even if the bundle filename later changes. Dry-run output now includes top-level
   counts for processable meetings that are still missing `.vtt`, transcript text,
-  chat, recap, or any non-calendar source.
+  chat, recap, or any non-calendar source. The planner also now reports explicit
+  per-source retrieval states for `.vtt`, transcript text, chat, and recap:
+  `available`, `missing`, `permission_blocked`, or `not_attempted`.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

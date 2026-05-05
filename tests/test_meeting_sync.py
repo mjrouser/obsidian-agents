@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
+    MeetingArtifact,
     MeetingAttendee,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
@@ -74,7 +75,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(plan.items[0].bundle.available_sources(), ["Outlook calendar metadata"])
         self.assertIsNone(plan.items[0].intake_bundle_note)
         self.assertIn(
-            "Dry-run only: transcript, chat, recap, and bundle-note writes are not implemented yet.",
+            "Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first.",
             plan.items[0].reasons,
         )
 
@@ -233,6 +234,68 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("meeting_sync_processable_missing_chat: 1", rendered)
         self.assertIn("meeting_sync_processable_missing_recap: 1", rendered)
         self.assertIn("meeting_sync_processable_calendar_only: 1", rendered)
+        self.assertIn("meeting_sync_processable_vtt_available: 0", rendered)
+        self.assertIn("meeting_sync_processable_vtt_not_attempted: 1", rendered)
+        self.assertIn("meeting_sync_processable_chat_permission_blocked: 0", rendered)
+
+    def test_rendered_plan_includes_source_status_breakdown_and_limitations(self) -> None:
+        now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(
+                meetings=(
+                    _meeting(
+                        event_id="evt-1",
+                        subject="Platform Sync",
+                        join_url=(
+                            "https://teams.microsoft.com/l/meetup-join/"
+                            "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                        ),
+                        online_meeting_provider="teamsForBusiness",
+                        discovered_artifacts=(
+                            MeetingArtifact(
+                                source_name="Teams .vtt transcript",
+                                status="missing",
+                                detail="No transcript file was published for this meeting.",
+                            ),
+                            MeetingArtifact(
+                                source_name="Teams transcript text",
+                                status="available",
+                                detail="Transcript text was discovered from a future Teams sync source.",
+                            ),
+                            MeetingArtifact(
+                                source_name="Teams meeting chat",
+                                status="permission_blocked",
+                                detail="Graph chat message access is not granted.",
+                            ),
+                        ),
+                    ),
+                )
+            ),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=now,
+        )
+
+        rendered = render_transcript_sync_plan(plan)
+        bundle_note = plan.items[0].intake_bundle_note
+        assert bundle_note is not None
+
+        self.assertIn("meeting_sync_processable_vtt_missing: 1", rendered)
+        self.assertIn("meeting_sync_processable_transcript_text_available: 1", rendered)
+        self.assertIn("meeting_sync_processable_chat_permission_blocked: 1", rendered)
+        self.assertIn("meeting_sync_processable_recap_not_attempted: 1", rendered)
+        self.assertIn(
+            "source_pending: Teams .vtt transcript=missing (No transcript file was published for this meeting.)",
+            rendered,
+        )
+        self.assertIn(
+            "source_pending: Teams meeting chat=permission_blocked (Graph chat message access is not granted.)",
+            rendered,
+        )
+        self.assertEqual(bundle_note.sources_used, ("Teams transcript text", "Outlook calendar metadata"))
+        self.assertIn("Teams .vtt transcript was not available.", bundle_note.source_limitations)
+        self.assertIn("Permission blocked retrieval of Teams meeting chat.", bundle_note.source_limitations)
+        self.assertIn("Copilot recap / AI summary was not retrieved yet.", bundle_note.source_limitations)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -618,6 +681,7 @@ def _meeting(
     event_type: str | None = None,
     join_url: str | None = None,
     online_meeting_provider: str | None = None,
+    discovered_artifacts: tuple[MeetingArtifact, ...] = (),
 ) -> OutlookMeetingCandidate:
     return OutlookMeetingCandidate(
         event_id=event_id,
@@ -632,6 +696,7 @@ def _meeting(
         event_type=event_type,
         join_url=join_url,
         online_meeting_provider=online_meeting_provider,
+        discovered_artifacts=discovered_artifacts,
     )
 
 

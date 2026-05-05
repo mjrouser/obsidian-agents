@@ -24,6 +24,13 @@ ARTIFACT_SOURCE_PRIORITY = (
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 PlanDecision = Literal["process", "skip"]
+SYNC_SOURCE_SUMMARY_FIELDS = (
+    ("Teams .vtt transcript", "vtt"),
+    ("Teams transcript text", "transcript_text"),
+    ("Teams meeting chat", "chat"),
+    ("Copilot recap / AI summary", "recap"),
+)
+ARTIFACT_STATUS_SUMMARY_ORDER = ("available", "missing", "permission_blocked", "not_attempted")
 
 
 @dataclass(slots=True, frozen=True)
@@ -67,6 +74,7 @@ class OutlookMeetingCandidate:
     body_text: str | None = None
     categories: tuple[str, ...] = ()
     show_as: str | None = None
+    discovered_artifacts: tuple[MeetingArtifact, ...] = ()
 
     def detected_join_url(self) -> str | None:
         explicit = _optional_string(self.join_url)
@@ -125,6 +133,12 @@ class MeetingSourceBundle:
         for artifact in self.artifacts:
             if artifact.source_name == source_name:
                 return artifact.status
+        return None
+
+    def artifact(self, source_name: str) -> MeetingArtifact | None:
+        for artifact in self.artifacts:
+            if artifact.source_name == source_name:
+                return artifact
         return None
 
 
@@ -325,6 +339,12 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             f"meeting_sync_processable_calendar_only: {_count_process_items_with_only_calendar_metadata(process_items)}",
         ]
     )
+    for source_name, summary_key in SYNC_SOURCE_SUMMARY_FIELDS:
+        for status in ARTIFACT_STATUS_SUMMARY_ORDER:
+            lines.append(
+                f"meeting_sync_processable_{summary_key}_{status}: "
+                f"{_count_process_items_with_source_status(process_items, source_name, status)}"
+            )
     for item in plan.items:
         meeting = item.meeting
         lines.append(f'meeting_sync_item: {item.decision} event_id="{meeting.event_id}" subject="{meeting.subject}"')
@@ -421,6 +441,14 @@ def _count_process_items_missing_source(
     return sum(1 for item in items if item.bundle.source_status(source_name) != "available")
 
 
+def _count_process_items_with_source_status(
+    items: tuple[TranscriptSyncPlanItem, ...],
+    source_name: str,
+    status: ArtifactStatus,
+) -> int:
+    return sum(1 for item in items if item.bundle.source_status(source_name) == status)
+
+
 def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSyncPlanItem, ...]) -> int:
     return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
 
@@ -466,13 +494,18 @@ def _plan_item(
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
-    reasons.append("Dry-run only: transcript, chat, recap, and bundle-note writes are not implemented yet.")
+    reasons.append("Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first.")
     return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons), intake_bundle_note)
 
 
 def _build_source_bundle(meeting: OutlookMeetingCandidate) -> MeetingSourceBundle:
+    discovered_artifacts = {artifact.source_name: artifact for artifact in meeting.discovered_artifacts}
     artifacts = []
     for source_name in ARTIFACT_SOURCE_PRIORITY:
+        discovered = discovered_artifacts.get(source_name)
+        if discovered is not None:
+            artifacts.append(discovered)
+            continue
         if source_name == "Outlook calendar metadata":
             artifacts.append(
                 MeetingArtifact(
@@ -637,11 +670,21 @@ def _normalized_bundle_title(value: str) -> str:
 def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, ...]]:
     if bundle.available_sources() == ["Outlook calendar metadata"]:
         limitations = ["Known from calendar invite; attendance not guaranteed."]
-        for source_name in bundle.pending_sources():
-            limitations.append(f"{source_name} was not retrieved yet.")
+        for artifact in bundle.artifacts:
+            if artifact.status == "available":
+                continue
+            limitations.append(_artifact_limitation(artifact))
         return "calendar_invite_only", tuple(limitations)
-    limitations = [f"{source_name} was not retrieved yet." for source_name in bundle.pending_sources()]
+    limitations = [_artifact_limitation(artifact) for artifact in bundle.artifacts if artifact.status != "available"]
     return "partial_visibility", tuple(limitations)
+
+
+def _artifact_limitation(artifact: MeetingArtifact) -> str:
+    if artifact.status == "missing":
+        return f"{artifact.source_name} was not available."
+    if artifact.status == "permission_blocked":
+        return f"Permission blocked retrieval of {artifact.source_name}."
+    return f"{artifact.source_name} was not retrieved yet."
 
 
 def render_outlook_metadata_sidecar(
