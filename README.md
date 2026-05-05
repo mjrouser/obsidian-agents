@@ -241,7 +241,10 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   counts for processable meetings that are still missing `.vtt`, transcript text,
   chat, recap, or any non-calendar source. The planner also now reports explicit
   per-source retrieval states for `.vtt`, transcript text, chat, and recap:
-  `available`, `missing`, `permission_blocked`, or `not_attempted`.
+  `available`, `missing`, `permission_blocked`, or `not_attempted`. When the
+  local intake folder exists, the planner now actively probes `00_Intake` for
+  canonical date/title-matched `.vtt`, `.md`, and `.docx` transcript artifacts
+  before falling back to `missing` or `not_attempted`.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

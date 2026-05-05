@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
+    LocalIntakeTranscriptDiscoveryClient,
     MeetingArtifact,
     MeetingAttendee,
     MeetingDiscoverySnapshot,
@@ -296,6 +297,80 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("Teams .vtt transcript was not available.", bundle_note.source_limitations)
         self.assertIn("Permission blocked retrieval of Teams meeting chat.", bundle_note.source_limitations)
         self.assertIn("Copilot recap / AI summary was not retrieved yet.", bundle_note.source_limitations)
+
+    def test_local_transcript_discovery_marks_matching_vtt_as_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            rendered = render_transcript_sync_plan(plan)
+            bundle_note = plan.items[0].intake_bundle_note
+            assert bundle_note is not None
+
+            self.assertEqual(plan.items[0].bundle.source_status("Teams .vtt transcript"), "available")
+            self.assertIn("meeting_sync_processable_vtt_available: 1", rendered)
+            self.assertIn("source_available: Teams .vtt transcript", rendered)
+            self.assertEqual(
+                bundle_note.sources_used,
+                ("Teams .vtt transcript", "Outlook calendar metadata"),
+            )
+            self.assertNotIn("Teams .vtt transcript was not retrieved yet.", bundle_note.source_limitations)
+
+    def test_local_transcript_discovery_marks_matching_markdown_transcript_as_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.md"
+            transcript_path.write_text("Transcript text\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            rendered = render_transcript_sync_plan(plan)
+
+            self.assertEqual(plan.items[0].bundle.source_status("Teams transcript text"), "available")
+            self.assertEqual(plan.items[0].bundle.source_status("Teams .vtt transcript"), "missing")
+            self.assertIn("meeting_sync_processable_transcript_text_available: 1", rendered)
+            self.assertIn("meeting_sync_processable_vtt_missing: 1", rendered)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(

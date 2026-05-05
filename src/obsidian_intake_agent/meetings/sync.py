@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -30,7 +30,12 @@ SYNC_SOURCE_SUMMARY_FIELDS = (
     ("Teams meeting chat", "chat"),
     ("Copilot recap / AI summary", "recap"),
 )
-ARTIFACT_STATUS_SUMMARY_ORDER = ("available", "missing", "permission_blocked", "not_attempted")
+ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
+    "available",
+    "missing",
+    "permission_blocked",
+    "not_attempted",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -222,6 +227,82 @@ class MeetingDiscoveryClient(Protocol):
     ) -> MeetingDiscoverySnapshot: ...
 
 
+class MeetingArtifactDiscoveryClient(Protocol):
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]: ...
+
+
+class NoopMeetingArtifactDiscoveryClient:
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        del meeting
+        return ()
+
+
+class LocalIntakeTranscriptDiscoveryClient:
+    def __init__(self, *, intake_root: Path) -> None:
+        self._intake_root = intake_root
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        if not self._intake_root.exists():
+            detail = f"Local intake root does not exist: {self._intake_root}"
+            return (
+                MeetingArtifact("Teams .vtt transcript", "not_attempted", detail),
+                MeetingArtifact("Teams transcript text", "not_attempted", detail),
+            )
+
+        matching_paths = tuple(self._matching_intake_paths(meeting))
+        return (
+            self._artifact_for_matches(
+                source_name="Teams .vtt transcript",
+                matches=tuple(path for path in matching_paths if path.suffix.lower() == ".vtt"),
+                missing_detail="No local .vtt intake file matched the meeting date/title.",
+            ),
+            self._artifact_for_matches(
+                source_name="Teams transcript text",
+                matches=tuple(path for path in matching_paths if path.suffix.lower() in {".md", ".docx"}),
+                missing_detail="No local transcript-text intake file matched the meeting date/title.",
+            ),
+        )
+
+    def _artifact_for_matches(
+        self,
+        *,
+        source_name: str,
+        matches: tuple[Path, ...],
+        missing_detail: str,
+    ) -> MeetingArtifact:
+        if not matches:
+            return MeetingArtifact(source_name, "missing", missing_detail)
+        rendered_matches = ", ".join(str(path) for path in matches)
+        return MeetingArtifact(source_name, "available", f"Matched local intake artifact(s): {rendered_matches}")
+
+    def _matching_intake_paths(self, meeting: OutlookMeetingCandidate) -> tuple[Path, ...]:
+        expected_stem = f"{meeting.start_at.date().isoformat()} - Teams - {_normalized_bundle_title(meeting.subject)}"
+        matches: list[Path] = []
+        for path in self._intake_root.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.relative_to(self._intake_root).parts[:1] == ("_meeting_sync",):
+                continue
+            if path.stem != expected_stem:
+                continue
+            if path.suffix.lower() not in {".vtt", ".md", ".docx"}:
+                continue
+            matches.append(path)
+        return tuple(sorted(matches))
+
+
 class UnconfiguredOutlookMeetingDiscoveryClient:
     def list_recently_ended_meetings(
         self,
@@ -298,13 +379,22 @@ class GraphOutlookMeetingDiscoveryClient:
 def build_transcript_sync_plan(
     *,
     client: MeetingDiscoveryClient,
+    artifact_discovery_client: MeetingArtifactDiscoveryClient | None = None,
     since: date,
     intake_root: Path | None = None,
     now: datetime | None = None,
 ) -> TranscriptSyncPlan:
     generated_at = now or datetime.now().astimezone()
     snapshot = client.list_recently_ended_meetings(since=since, now=generated_at)
-    items = tuple(_plan_item(meeting, now=generated_at, intake_root=intake_root) for meeting in snapshot.meetings)
+    effective_artifact_discovery_client = artifact_discovery_client or NoopMeetingArtifactDiscoveryClient()
+    items = tuple(
+        _plan_item(
+            _discover_meeting_artifacts(meeting, artifact_discovery_client=effective_artifact_discovery_client),
+            now=generated_at,
+            intake_root=intake_root,
+        )
+        for meeting in snapshot.meetings
+    )
     return TranscriptSyncPlan(
         since=since,
         generated_at=generated_at,
@@ -340,7 +430,7 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
         ]
     )
     for source_name, summary_key in SYNC_SOURCE_SUMMARY_FIELDS:
-        for status in ARTIFACT_STATUS_SUMMARY_ORDER:
+        for status in ARTIFACT_STATUS_SUMMARY_SEQUENCE:
             lines.append(
                 f"meeting_sync_processable_{summary_key}_{status}: "
                 f"{_count_process_items_with_source_status(process_items, source_name, status)}"
@@ -453,6 +543,20 @@ def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSync
     return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
 
 
+def _discover_meeting_artifacts(
+    meeting: OutlookMeetingCandidate,
+    *,
+    artifact_discovery_client: MeetingArtifactDiscoveryClient,
+) -> OutlookMeetingCandidate:
+    discovered_artifacts = artifact_discovery_client.discover_artifacts(meeting=meeting)
+    if not discovered_artifacts:
+        return meeting
+    existing = {artifact.source_name: artifact for artifact in meeting.discovered_artifacts}
+    for artifact in discovered_artifacts:
+        existing[artifact.source_name] = artifact
+    return replace(meeting, discovered_artifacts=tuple(existing.values()))
+
+
 def _plan_item(
     meeting: OutlookMeetingCandidate,
     *,
@@ -494,7 +598,9 @@ def _plan_item(
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
-    reasons.append("Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first.")
+    reasons.append(
+        "Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first."
+    )
     return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons), intake_bundle_note)
 
 
