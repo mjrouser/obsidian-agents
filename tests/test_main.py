@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from obsidian_intake_agent.main import main
+from obsidian_intake_agent.config import Config
+from obsidian_intake_agent.main import _build_meeting_discovery_client, main
+from obsidian_intake_agent.meetings import (
+    BundleWriteResult,
+    GraphOutlookMeetingDiscoveryClient,
+    TranscriptSyncPlan,
+    UnconfiguredOutlookMeetingDiscoveryClient,
+)
 from obsidian_intake_agent.utils.git import GitCommitStatus
 
 
@@ -244,6 +253,143 @@ class MainCliTests(unittest.TestCase):
                 main(["--config", str(config_path), "process", str(intake_file)])
 
             commit_mock.assert_not_called()
+
+    def test_meetings_sync_transcripts_requires_exactly_one_mode_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with self.assertRaises(SystemExit) as exc:
+                main(["--config", str(config_path), "meetings", "sync-transcripts", "--since", "2026-05-01"])
+
+            self.assertEqual(exc.exception.code, 2)
+
+            with self.assertRaises(SystemExit) as both_exc:
+                main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                        "--write-bundles",
+                    ]
+                )
+
+            self.assertEqual(both_exc.exception.code, 2)
+
+    def test_meetings_sync_transcripts_prints_dry_run_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_sync_mode: dry-run", output)
+            self.assertIn("meeting_sync_since: 2026-05-01", output)
+            self.assertIn("meeting_sync_provider: outlook_calendar", output)
+            self.assertIn("meeting_sync_warning: Outlook calendar discovery is not configured yet;", output)
+
+    def test_meetings_sync_transcripts_write_bundles_prints_write_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            fake_plan = TranscriptSyncPlan(
+                since=date(2026, 5, 1),
+                generated_at=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+                provider_label="stub_outlook_calendar",
+                warning=None,
+                items=(),
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.build_transcript_sync_plan", return_value=fake_plan),
+                patch(
+                    "obsidian_intake_agent.main.write_planned_bundle_notes",
+                    return_value=BundleWriteResult(
+                        written_bundle_note_paths=(
+                            vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (bundle).md",
+                        ),
+                        written_metadata_paths=(
+                            vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (outlook).json",
+                        ),
+                        written_identity_paths=(
+                            vault / "00_Intake" / "_meeting_sync" / "identities" / "2026-05-04-f922f45f924d0fb4.json",
+                        ),
+                        skipped_existing_bundle_note_paths=(),
+                        skipped_existing_metadata_paths=(),
+                        skipped_existing_identity_paths=(),
+                    ),
+                ),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--write-bundles",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_sync_bundle_notes_written: 1", output)
+            self.assertIn("meeting_sync_outlook_metadata_written: 1", output)
+            self.assertIn("meeting_sync_identity_markers_written: 1", output)
+            self.assertIn("bundle_note_written:", output)
+            self.assertIn("outlook_metadata_written:", output)
+            self.assertIn("meeting_identity_written:", output)
+
+    def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
+                client = _build_meeting_discovery_client(config)
+
+            self.assertIsInstance(client, GraphOutlookMeetingDiscoveryClient)
+
+    def test_build_meeting_discovery_client_falls_back_without_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {}, clear=True):
+                client = _build_meeting_discovery_client(config)
+
+            self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
 
 
 def _write_config(

@@ -32,6 +32,8 @@ class Config:
     watcher_stable_seconds: int = 2
     automation_log_dir: str = "logs"
     automation_error_dir: str = "_System/Agent Errors"
+    outlook_graph_access_token_env: str = "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
+    outlook_graph_api_base_url: str = "https://graph.microsoft.com/v1.0"
 
     @classmethod
     def load(cls, path: Path) -> Config:
@@ -62,6 +64,10 @@ class Config:
             watcher_stable_seconds=_positive_int(data.get("watcher_stable_seconds", 2), "watcher_stable_seconds"),
             automation_log_dir=str(data.get("automation_log_dir", "logs")),
             automation_error_dir=str(data.get("automation_error_dir", "_System/Agent Errors")),
+            outlook_graph_access_token_env=str(
+                data.get("outlook_graph_access_token_env", "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
+            ),
+            outlook_graph_api_base_url=str(data.get("outlook_graph_api_base_url", "https://graph.microsoft.com/v1.0")),
         )
 
 

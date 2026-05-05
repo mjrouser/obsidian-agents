@@ -101,6 +101,8 @@ watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
 automation_error_dir: "_System/Agent Errors"
+outlook_graph_access_token_env: "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
+outlook_graph_api_base_url: "https://graph.microsoft.com/v1.0"
 ```
 
 `weekly_reviews_dir` is the preferred key. The older `snapshots_dir` key is still accepted for backward compatibility.
@@ -112,6 +114,9 @@ Set `automation_error_dir` to control where automation failure notes are written
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
 Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
 If `git_vault_repo_path` is unset, it defaults to `vault_path`.
+Set the environment variable named by `outlook_graph_access_token_env` before
+running `meetings sync-transcripts` if you want real Outlook discovery instead
+of the no-token dry-run warning.
 
 ## Run
 
@@ -147,6 +152,25 @@ Process a specific file:
 obsidian-agent process /absolute/path/to/file.md
 ```
 
+Dry-run recently ended meeting candidates for future transcript sync:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+```
+
+Write only planned intake bundle notes, without downloading artifacts yet:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --write-bundles
+```
+
+With Graph discovery enabled:
+
+```bash
+export OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN="..."
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+```
+
 With vault auto-commit enabled, successful non-dry-run `run --once` and `process` commands will attempt a vault repo commit with `auto: process transcript outputs for <source filename>` (or `multiple intake files` for multi-file batch runs).
 
 Dry runs never auto-commit. Project repo changes are never auto-committed by the app; commit them manually after reviewing the diff and running checks.
@@ -179,6 +203,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Markdown, `.docx`, and `.vtt` inputs are supported.
 - `INBOX.md`, placeholder/template filenames, and already-processed notes are skipped.
 - A canonical meeting note is written to `vault_path/01_Meetings`.
+- Meeting notes start with YAML front matter for Obsidian properties, including
+  participant, attendee, organizer, Outlook event, Teams meeting, transcript,
+  and source-file fields when that context is available.
 - Markdown intake files extract action items from `Action:` lines and `- [ ]` checkboxes.
 - Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake`.
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
@@ -195,6 +222,24 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - The watcher listens for both create and modify events, waits for the file to stop changing, and uses a per-file lock to avoid duplicate processing attempts.
 - Draft intake basenames such as `Untitled.md` and `Untitled 2.md` are ignored until you rename them.
 - `obsidian-agent run` currently requires `--once`.
+- `obsidian-agent meetings sync-transcripts` currently requires `--dry-run` and
+  `--write-bundles` as mutually exclusive modes. Both plan candidate meetings
+  from Outlook metadata without downloading transcripts yet. If a Graph bearer
+  token is not configured, the command returns a warning-only plan instead of
+  discovered meetings. For meetings that would be processed, the plan reports
+  the intake bundle note path and source-transparency metadata. `--write-bundles`
+  writes only those planned bundle notes and skips existing bundle files. If the
+  planned bundle note already exists, the planner now reports that meeting as an
+  explicit skip so repeated polling runs stay quieter. Planned bundle notes now
+  include Outlook organizer, attendee, response-status, and join-link context
+  when Graph discovery provides it. `--write-bundles` also writes a sibling
+  Outlook metadata sidecar JSON file for each processable meeting and will
+  backfill that sidecar when an older bundle note exists without it. The sync
+  path now also writes a hidden identity marker keyed from the Outlook event ID
+  and Teams meeting ID so repeated polling can skip already-imported meetings
+  even if the bundle filename later changes. Dry-run output now includes top-level
+  counts for processable meetings that are still missing `.vtt`, transcript text,
+  chat, recap, or any non-calendar source.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup
@@ -240,9 +285,11 @@ When a launchd wrapper exits with a real failure, it writes an Obsidian note to
 `vault_path/_System/Agent Errors` by default. The timestamped note preserves the
 failure details, and `ACTION NEEDED - Latest Automation Failure.md` points at the
 newest failure so it is easy to spot. The detailed trace stays in the matching
-`logs/*.stderr.log` file. On macOS, the wrapper also sends a best-effort desktop
-notification through `osascript`; set `AUTOMATION_FAILURE_NOTIFICATIONS=0` to
-disable that notification.
+`logs/*.stderr.log` file. If the configured `config.yaml` is missing or cannot be
+loaded, the failure-note helper falls back to `logs/automation-failures/` beside
+the stderr log so the job still leaves a readable artifact. On macOS, the wrapper
+also sends a best-effort desktop notification through `osascript`; set
+`AUTOMATION_FAILURE_NOTIFICATIONS=0` to disable that notification.
 
 ## Quality Checks
 
