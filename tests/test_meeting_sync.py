@@ -331,12 +331,17 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
             self.assertEqual(plan.items[0].bundle.source_status("Teams .vtt transcript"), "available")
             self.assertIn("meeting_sync_processable_vtt_available: 1", rendered)
-            self.assertIn("source_available: Teams .vtt transcript", rendered)
+            self.assertEqual(
+                plan.items[0].bundle.artifact_paths("Teams .vtt transcript"),
+                (transcript_path,),
+            )
+            self.assertIn(f"source_available: Teams .vtt transcript ({transcript_path})", rendered)
             self.assertEqual(
                 bundle_note.sources_used,
                 ("Teams .vtt transcript", "Outlook calendar metadata"),
             )
             self.assertNotIn("Teams .vtt transcript was not retrieved yet.", bundle_note.source_limitations)
+            self.assertIn(f"- Matched Path: `{transcript_path}`", bundle_note.content)
 
     def test_local_transcript_discovery_marks_matching_markdown_transcript_as_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -366,11 +371,18 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             )
 
             rendered = render_transcript_sync_plan(plan)
+            bundle_note = plan.items[0].intake_bundle_note
+            assert bundle_note is not None
 
             self.assertEqual(plan.items[0].bundle.source_status("Teams transcript text"), "available")
             self.assertEqual(plan.items[0].bundle.source_status("Teams .vtt transcript"), "missing")
+            self.assertEqual(
+                plan.items[0].bundle.artifact_paths("Teams transcript text"),
+                (transcript_path,),
+            )
             self.assertIn("meeting_sync_processable_transcript_text_available: 1", rendered)
             self.assertIn("meeting_sync_processable_vtt_missing: 1", rendered)
+            self.assertIn(f"- Matched Path: `{transcript_path}`", bundle_note.content)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -531,6 +543,32 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn('"outlook_event_id": "evt-9"', rendered)
         self.assertIn('"teams_meeting_id": "19:meeting_delivery@thread.v2"', rendered)
         self.assertIn('"email": "priya@example.com"', rendered)
+
+    def test_render_outlook_metadata_sidecar_includes_matched_artifact_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            meeting = _meeting(
+                event_id="evt-9",
+                subject="Delivery Review",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            rendered = render_outlook_metadata_sidecar(meeting=meeting, bundle=plan.items[0].bundle)
+
+            self.assertIn('"artifacts": [', rendered)
+            self.assertIn('"source_name": "Teams .vtt transcript"', rendered)
+            self.assertIn(f'"matched_paths": [\n        "{transcript_path}"', rendered)
 
     def test_render_meeting_identity_sidecar_renders_expected_json(self) -> None:
         meeting = _meeting(
