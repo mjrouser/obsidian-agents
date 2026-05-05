@@ -558,7 +558,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn('"outlook_event_id": "evt-9"', rendered)
         self.assertIn('"teams_meeting_id": "19:meeting_delivery@thread.v2"', rendered)
         self.assertIn('"email": "priya@example.com"', rendered)
- 
+
     def test_render_outlook_metadata_sidecar_includes_matched_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
@@ -587,7 +587,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertIn('"preferred_input_source_name": "Teams .vtt transcript"', rendered)
             self.assertIn('"source_name": "Teams .vtt transcript"', rendered)
             self.assertIn(f'"matched_paths": [\n        "{transcript_path}"', rendered)
- 
+
     def test_render_meeting_identity_sidecar_renders_expected_json(self) -> None:
         meeting = _meeting(
             event_id="evt-9",
