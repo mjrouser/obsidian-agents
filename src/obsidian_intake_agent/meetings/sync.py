@@ -371,6 +371,10 @@ def _plan_item(
         reasons.append("Skipped event because Outlook metadata did not identify a Teams meeting.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
+    if intake_bundle_note is not None and intake_bundle_note.path.exists():
+        reasons.append("Skipped meeting because intake bundle already exists.")
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
+
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
     reasons.append("Dry-run only: transcript, chat, recap, and bundle-note writes are not implemented yet.")

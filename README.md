@@ -228,7 +228,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   token is not configured, the command returns a warning-only plan instead of
   discovered meetings. For meetings that would be processed, the plan reports
   the intake bundle note path and source-transparency metadata. `--write-bundles`
-  writes only those planned bundle notes and skips existing bundle files.
+  writes only those planned bundle notes and skips existing bundle files. If the
+  planned bundle note already exists, the planner now reports that meeting as an
+  explicit skip so repeated polling runs stay quieter.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

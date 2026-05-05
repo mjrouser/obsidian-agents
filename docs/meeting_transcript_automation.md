@@ -130,8 +130,8 @@ Current implementation status in this repo:
   only those planned bundle notes into `00_Intake`, preserving existing bundle
   files and still leaving transcript, chat, and recap retrieval for later.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
-  focus-without-content, non-Teams, and not-yet-ended events with explicit
-  reasons.
+  focus-without-content, non-Teams, already-imported bundle notes, and
+  not-yet-ended events with explicit reasons.
 - Transcript download, chat export, recap retrieval, and `00_Intake` writes are
   still future work.
 
