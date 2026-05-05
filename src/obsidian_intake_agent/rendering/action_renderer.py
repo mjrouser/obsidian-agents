@@ -13,7 +13,9 @@ SOURCE_PATTERN = re.compile(
 OWNER_PAREN_PATTERN = re.compile(r"\(\s*Owner:\s*(?P<owner>[^)]+)\)", re.IGNORECASE)
 OWNER_INLINE_PATTERN = re.compile(r"\bOwner:\s*(?P<owner>[^—-]+?)(?=(?:\s*[—-]\s*Source:|$))", re.IGNORECASE)
 CHECKBOX_PATTERN = re.compile(r"^\s*-\s*\[(?: |x|X)\]\s*")
+UNCHECKED_CHECKBOX_PATTERN = re.compile(r"^\s*-\s*\[\s\]\s*")
 THIS_WEEK_HEADING = "## This Week"
+CARRY_OVER_HEADING = "## Carry Over Items"
 LONGER_TERM_HEADING = "## Longer-Term / In Progress"
 OPEN_ACTIONS_HEADING = "## Open Actions"
 
@@ -33,6 +35,7 @@ def render_actions_note(
     action_records: list[ActionRecord],
     owner_aliases: dict[str, list[str]],
     existing_text: str = "",
+    carry_over_records: list[ActionRecord] | None = None,
 ) -> str:
     title = f"# Actions — Week of {monday.isoformat()}"
     unique_records: list[ActionRecord] = []
@@ -43,6 +46,13 @@ def render_actions_note(
             unique_records.append(record)
             seen_records.add(key)
 
+    unique_carry_over_records: list[ActionRecord] = []
+    for record in carry_over_records or []:
+        key = normalize_action_for_key(record, owner_aliases)
+        if key not in seen_records:
+            unique_carry_over_records.append(record)
+            seen_records.add(key)
+
     existing_records = parse_existing_actions(existing_text, owner_aliases)
     existing_keys = {normalize_action_for_key(record, owner_aliases) for record in existing_records}
     pending_lines = [
@@ -50,13 +60,19 @@ def render_actions_note(
         for record in unique_records
         if normalize_action_for_key(record, owner_aliases) not in existing_keys
     ]
+    carry_over_lines = [
+        render_action_line(record, owner_aliases)
+        for record in unique_carry_over_records
+        if normalize_action_for_key(record, owner_aliases) not in existing_keys
+    ]
 
     if not existing_text.strip():
-        if not pending_lines:
+        if not pending_lines and not carry_over_lines:
             return ""
         return _build_actions_note(
             title=title,
             this_week_lines=pending_lines,
+            carry_over_lines=carry_over_lines,
             longer_term_lines=[],
             preamble_lines=[],
         )
@@ -80,6 +96,14 @@ def parse_existing_actions(existing_text: str, owner_aliases: dict[str, list[str
         if record is not None:
             records.append(record)
     return records
+
+
+def parse_incomplete_actions(existing_text: str, owner_aliases: dict[str, list[str]]) -> list[ActionRecord]:
+    return [
+        record
+        for record in parse_existing_actions(existing_text, owner_aliases)
+        if record.raw_line is not None and UNCHECKED_CHECKBOX_PATTERN.match(record.raw_line)
+    ]
 
 
 def normalize_action_for_key(record: ActionRecord, owner_aliases: dict[str, list[str]]) -> str:
@@ -129,26 +153,34 @@ def _parse_action_line(raw_line: str, owner_aliases: dict[str, list[str]]) -> Ac
 def _append_pending_actions(*, existing_text: str, title: str, pending_lines: list[str]) -> str:
     lines = existing_text.splitlines()
     this_week_index = _find_heading_index(lines, THIS_WEEK_HEADING)
+    carry_over_index = _find_heading_index(lines, CARRY_OVER_HEADING)
     longer_term_index = _find_heading_index(lines, LONGER_TERM_HEADING)
 
-    if this_week_index is not None and longer_term_index is not None and this_week_index < longer_term_index:
-        insert_at = longer_term_index
+    next_section_index = None
+    if carry_over_index is not None and this_week_index is not None and this_week_index < carry_over_index:
+        next_section_index = carry_over_index
+    elif longer_term_index is not None and this_week_index is not None and this_week_index < longer_term_index:
+        next_section_index = longer_term_index
+
+    if this_week_index is not None and next_section_index is not None:
+        insert_at = next_section_index
         while insert_at > this_week_index + 1 and not lines[insert_at - 1].strip():
             insert_at -= 1
-        updated_lines = lines[:insert_at] + pending_lines + [""] + lines[longer_term_index:]
+        updated_lines = lines[:insert_at] + pending_lines + [""] + lines[next_section_index:]
         return "\n".join(updated_lines).rstrip() + "\n"
 
-    preamble_lines, this_week_lines, longer_term_lines = _extract_actions_note_parts(existing_text)
+    preamble_lines, this_week_lines, carry_over_lines, longer_term_lines = _extract_actions_note_parts(existing_text)
     this_week_lines.extend(pending_lines)
     return _build_actions_note(
         title=title,
         this_week_lines=this_week_lines,
+        carry_over_lines=carry_over_lines,
         longer_term_lines=longer_term_lines,
         preamble_lines=preamble_lines,
     )
 
 
-def _extract_actions_note_parts(existing_text: str) -> tuple[list[str], list[str], list[str]]:
+def _extract_actions_note_parts(existing_text: str) -> tuple[list[str], list[str], list[str], list[str]]:
     lines = existing_text.splitlines()
     if lines and lines[0].startswith("# "):
         lines = lines[1:]
@@ -156,14 +188,27 @@ def _extract_actions_note_parts(existing_text: str) -> tuple[list[str], list[str
         lines = lines[1:]
 
     this_week_index = _find_heading_index(lines, THIS_WEEK_HEADING)
+    carry_over_index = _find_heading_index(lines, CARRY_OVER_HEADING)
     longer_term_index = _find_heading_index(lines, LONGER_TERM_HEADING)
     open_actions_index = _find_heading_index(lines, OPEN_ACTIONS_HEADING)
+
+    if (
+        this_week_index is not None
+        and carry_over_index is not None
+        and longer_term_index is not None
+        and this_week_index < carry_over_index < longer_term_index
+    ):
+        preamble_lines = _strip_edge_blank_lines(lines[:this_week_index])
+        this_week_lines = _strip_edge_blank_lines(lines[this_week_index + 1 : carry_over_index])
+        carry_over_lines = _strip_edge_blank_lines(lines[carry_over_index + 1 : longer_term_index])
+        longer_term_lines = _strip_edge_blank_lines(lines[longer_term_index + 1 :])
+        return preamble_lines, this_week_lines, carry_over_lines, longer_term_lines
 
     if this_week_index is not None and longer_term_index is not None and this_week_index < longer_term_index:
         preamble_lines = _strip_edge_blank_lines(lines[:this_week_index])
         this_week_lines = _strip_edge_blank_lines(lines[this_week_index + 1 : longer_term_index])
         longer_term_lines = _strip_edge_blank_lines(lines[longer_term_index + 1 :])
-        return preamble_lines, this_week_lines, longer_term_lines
+        return preamble_lines, this_week_lines, [], longer_term_lines
 
     fallback_longer_term_lines: list[str] = []
     body_lines = lines
@@ -184,6 +229,7 @@ def _extract_actions_note_parts(existing_text: str) -> tuple[list[str], list[str
     return (
         _strip_edge_blank_lines(fallback_preamble_lines),
         _strip_edge_blank_lines(fallback_this_week_lines),
+        [],
         fallback_longer_term_lines,
     )
 
@@ -192,6 +238,7 @@ def _build_actions_note(
     *,
     title: str,
     this_week_lines: list[str],
+    carry_over_lines: list[str],
     longer_term_lines: list[str],
     preamble_lines: list[str],
 ) -> str:
@@ -201,6 +248,9 @@ def _build_actions_note(
     parts.append(THIS_WEEK_HEADING)
     if this_week_lines:
         parts.append("\n".join(_strip_edge_blank_lines(this_week_lines)))
+    parts.append(CARRY_OVER_HEADING)
+    if carry_over_lines:
+        parts.append("\n".join(_strip_edge_blank_lines(carry_over_lines)))
     parts.append(LONGER_TERM_HEADING)
     if longer_term_lines:
         parts.append("\n".join(_strip_edge_blank_lines(longer_term_lines)))

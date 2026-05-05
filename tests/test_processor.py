@@ -157,11 +157,13 @@ class MeetingProcessorTests(unittest.TestCase):
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn("# Actions — Week of 2026-03-09", actions_text)
             self.assertIn("## This Week", actions_text)
+            self.assertIn("## Carry Over Items", actions_text)
             self.assertIn("## Longer-Term / In Progress", actions_text)
             self.assertIn(
                 "## This Week\n\n"
                 "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
                 "[[2026-03-12 - Teams - Platform Sync.md]]\n\n"
+                "## Carry Over Items\n\n"
                 "## Longer-Term / In Progress",
                 actions_text,
             )
@@ -177,6 +179,8 @@ class MeetingProcessorTests(unittest.TestCase):
                 "# Actions — Week of 2026-03-09\n\n"
                 "## This Week\n\n"
                 "- [ ] Existing item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n\n"
+                "## Carry Over Items\n\n"
+                "- [ ] Preserve this carry-over item (Owner: Matthew Rouser) — Source: 2026-03-03 [[carry.md]]\n\n"
                 "## Longer-Term / In Progress\n\n"
                 "- [ ] Preserve this longer-term item (Owner: Matthew Rouser) — Source: 2026-03-08 [[long.md]]\n",
                 encoding="utf-8",
@@ -194,6 +198,14 @@ class MeetingProcessorTests(unittest.TestCase):
                 "- [ ] Existing item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n"
                 "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
                 "[[2026-03-12 - Teams - Platform Sync.md]]\n\n"
+                "## Carry Over Items",
+                actions_text,
+            )
+            self.assertIn(
+                "- [ ] Preserve this carry-over item (Owner: Matthew Rouser) — Source: 2026-03-03 [[carry.md]]",
+                actions_text,
+            )
+            self.assertIn(
                 "## Longer-Term / In Progress",
                 actions_text,
             )
@@ -201,6 +213,45 @@ class MeetingProcessorTests(unittest.TestCase):
                 "- [ ] Preserve this longer-term item (Owner: Matthew Rouser) — Source: 2026-03-08 [[long.md]]",
                 actions_text,
             )
+
+    def test_new_actions_file_carries_forward_unfinished_previous_week_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            actions_dir = vault / "07_Actions"
+            actions_dir.mkdir(parents=True)
+            (actions_dir / "2026-03-09.md").write_text(
+                "# Actions — Week of 2026-03-09\n\n"
+                "## This Week\n\n"
+                "- [ ] Carry this forward (Owner: Matthew Rouser) — Source: 2026-03-10 [[carry.md]]\n"
+                "- [x] Completed item (Owner: Matthew Rouser) — Source: 2026-03-10 [[done.md]]\n\n"
+                "## Carry Over Items\n\n"
+                "- [ ] Existing carry-over item (Owner: Matthew Rouser) — Source: 2026-03-03 [[older.md]]\n\n"
+                "## Longer-Term / In Progress\n\n"
+                "- [ ] Longer-term item (Owner: Matthew Rouser) — Source: 2026-03-08 [[long.md]]\n",
+                encoding="utf-8",
+            )
+            source = intake_dir / "2026-03-18 - Teams - Platform Sync.md"
+            source.write_text("Action: Matthew will ship the update by Friday.\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            processor.process_all_unprocessed()
+
+            actions_text = (actions_dir / "2026-03-16.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "## This Week\n\n"
+                "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-18 "
+                "[[2026-03-18 - Teams - Platform Sync.md]]\n\n"
+                "## Carry Over Items\n\n"
+                "- [ ] Carry this forward (Owner: Matthew Rouser) — Source: 2026-03-10 [[carry.md]]\n"
+                "- [ ] Existing carry-over item (Owner: Matthew Rouser) — Source: 2026-03-03 [[older.md]]\n"
+                "- [ ] Longer-term item (Owner: Matthew Rouser) — Source: 2026-03-08 [[long.md]]\n\n"
+                "## Longer-Term / In Progress\n",
+                actions_text,
+            )
+            self.assertNotIn("Completed item", actions_text)
 
     def test_processes_vtt_without_modifying_raw_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

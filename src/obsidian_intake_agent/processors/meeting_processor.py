@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from os.path import relpath
 from pathlib import Path
 
 from ..config import Config
-from ..rendering.action_renderer import ActionRecord, render_actions_note
+from ..rendering.action_renderer import ActionRecord, parse_incomplete_actions, render_actions_note
 from ..rendering.meeting_renderer import (
     render_extracted_meeting_note,
     render_meeting_note,
@@ -271,17 +271,28 @@ class MeetingProcessor:
             meeting_date=meeting_date,
             canonical_basename=canonical_basename,
         )
+        carry_over_records = (
+            self._load_carry_over_records(meeting_week) if action_records and not existing_actions.strip() else []
+        )
         actions_note = render_actions_note(
             monday=meeting_week,
             action_records=action_records,
             owner_aliases=self.action_owner_aliases,
             existing_text=existing_actions,
+            carry_over_records=carry_over_records,
         )
         return ActionNoteUpdate(
             path=actions_note_path,
             content=actions_note,
             changed=bool(actions_note) and actions_note != existing_actions,
         )
+
+    def _load_carry_over_records(self, meeting_week: date) -> list[ActionRecord]:
+        previous_actions_path = self.actions_path / f"{(meeting_week - timedelta(days=7)).isoformat()}.md"
+        if not previous_actions_path.exists():
+            return []
+        previous_actions = previous_actions_path.read_text(encoding="utf-8")
+        return parse_incomplete_actions(previous_actions, self.action_owner_aliases)
 
     def _should_include_action_owner(self, owner: str | None) -> bool:
         normalized_owner = self._normalize_owner(owner)
