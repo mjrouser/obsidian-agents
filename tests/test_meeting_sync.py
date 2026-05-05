@@ -10,6 +10,8 @@ from urllib.error import HTTPError
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
+    LocalIntakeTranscriptDiscoveryClient,
+    MeetingArtifact,
     MeetingAttendee,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
@@ -157,6 +159,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         )
         self.assertEqual(bundle_note.identity_path.parent, Path("/tmp/vault/00_Intake/_meeting_sync/identities"))
         self.assertEqual(bundle_note.identity_path.suffix, ".json")
+        self.assertIsNone(bundle_note.processor_input_path)
+        self.assertIsNone(bundle_note.processor_input_source_name)
         self.assertEqual(bundle_note.attendance_confidence, "calendar_invite_only")
         self.assertIn("Known from calendar invite; attendance not guaranteed.", bundle_note.source_limitations)
         self.assertIn('outlook_event_id: "evt-1"', bundle_note.content)
@@ -203,6 +207,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn(f"would_write_meeting_identity: {bundle_note.identity_path}", rendered)
         self.assertIn("bundle_attendance_confidence: calendar_invite_only", rendered)
         self.assertIn("bundle_source_limitation: Known from calendar invite; attendance not guaranteed.", rendered)
+        self.assertNotIn("would_process_intake_file:", rendered)
 
     def test_rendered_plan_includes_processable_gap_summary(self) -> None:
         now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
@@ -233,6 +238,162 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("meeting_sync_processable_missing_chat: 1", rendered)
         self.assertIn("meeting_sync_processable_missing_recap: 1", rendered)
         self.assertIn("meeting_sync_processable_calendar_only: 1", rendered)
+        self.assertIn("meeting_sync_processable_vtt_available: 0", rendered)
+        self.assertIn("meeting_sync_processable_vtt_not_attempted: 1", rendered)
+        self.assertIn("meeting_sync_processable_chat_permission_blocked: 0", rendered)
+
+    def test_rendered_plan_includes_source_status_breakdown_and_limitations(self) -> None:
+        now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(
+                meetings=(
+                    _meeting(
+                        event_id="evt-1",
+                        subject="Platform Sync",
+                        join_url=(
+                            "https://teams.microsoft.com/l/meetup-join/"
+                            "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                        ),
+                        online_meeting_provider="teamsForBusiness",
+                        discovered_artifacts=(
+                            MeetingArtifact(
+                                source_name="Teams .vtt transcript",
+                                status="missing",
+                                detail="No transcript file was published for this meeting.",
+                            ),
+                            MeetingArtifact(
+                                source_name="Teams transcript text",
+                                status="available",
+                                detail="Transcript text was discovered from a future Teams sync source.",
+                            ),
+                            MeetingArtifact(
+                                source_name="Teams meeting chat",
+                                status="permission_blocked",
+                                detail="Graph chat message access is not granted.",
+                            ),
+                        ),
+                    ),
+                )
+            ),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=now,
+        )
+
+        rendered = render_transcript_sync_plan(plan)
+        bundle_note = plan.items[0].intake_bundle_note
+        assert bundle_note is not None
+
+        self.assertIn("meeting_sync_processable_vtt_missing: 1", rendered)
+        self.assertIn("meeting_sync_processable_transcript_text_available: 1", rendered)
+        self.assertIn("meeting_sync_processable_chat_permission_blocked: 1", rendered)
+        self.assertIn("meeting_sync_processable_recap_not_attempted: 1", rendered)
+        self.assertIn(
+            "source_pending: Teams .vtt transcript=missing (No transcript file was published for this meeting.)",
+            rendered,
+        )
+        self.assertIn(
+            "source_pending: Teams meeting chat=permission_blocked (Graph chat message access is not granted.)",
+            rendered,
+        )
+        self.assertEqual(bundle_note.sources_used, ("Teams transcript text", "Outlook calendar metadata"))
+        self.assertIn("Teams .vtt transcript was not available.", bundle_note.source_limitations)
+        self.assertIn("Permission blocked retrieval of Teams meeting chat.", bundle_note.source_limitations)
+        self.assertIn("Copilot recap / AI summary was not retrieved yet.", bundle_note.source_limitations)
+
+    def test_local_transcript_discovery_marks_matching_vtt_as_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            rendered = render_transcript_sync_plan(plan)
+            bundle_note = plan.items[0].intake_bundle_note
+            assert bundle_note is not None
+
+            self.assertEqual(plan.items[0].bundle.source_status("Teams .vtt transcript"), "available")
+            self.assertIn("meeting_sync_processable_vtt_available: 1", rendered)
+            self.assertEqual(
+                plan.items[0].bundle.artifact_paths("Teams .vtt transcript"),
+                (transcript_path,),
+            )
+            self.assertIn(f"source_available: Teams .vtt transcript ({transcript_path})", rendered)
+            self.assertEqual(
+                bundle_note.sources_used,
+                ("Teams .vtt transcript", "Outlook calendar metadata"),
+            )
+            self.assertEqual(bundle_note.processor_input_path, transcript_path)
+            self.assertEqual(bundle_note.processor_input_source_name, "Teams .vtt transcript")
+            self.assertNotIn("Teams .vtt transcript was not retrieved yet.", bundle_note.source_limitations)
+            self.assertIn(f"- Matched Path: `{transcript_path}`", bundle_note.content)
+            self.assertIn(f"- Preferred Input: `{transcript_path}`", bundle_note.content)
+            self.assertIn("- Preferred Source: Teams .vtt transcript", bundle_note.content)
+
+    def test_local_transcript_discovery_marks_matching_markdown_transcript_as_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.md"
+            transcript_path.write_text("Transcript text\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            rendered = render_transcript_sync_plan(plan)
+            bundle_note = plan.items[0].intake_bundle_note
+            assert bundle_note is not None
+
+            self.assertEqual(plan.items[0].bundle.source_status("Teams transcript text"), "available")
+            self.assertEqual(plan.items[0].bundle.source_status("Teams .vtt transcript"), "missing")
+            self.assertEqual(
+                plan.items[0].bundle.artifact_paths("Teams transcript text"),
+                (transcript_path,),
+            )
+            self.assertIn("meeting_sync_processable_transcript_text_available: 1", rendered)
+            self.assertIn("meeting_sync_processable_vtt_missing: 1", rendered)
+            self.assertIn(f"- Matched Path: `{transcript_path}`", bundle_note.content)
+            self.assertEqual(bundle_note.processor_input_path, transcript_path)
+            self.assertEqual(bundle_note.processor_input_source_name, "Teams transcript text")
+            self.assertIn(f"- Preferred Input: `{transcript_path}`", bundle_note.content)
+            self.assertIn("- Preferred Source: Teams transcript text", bundle_note.content)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -350,6 +511,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         rendered = render_intake_bundle_note(
             meeting=meeting,
             bundle=plan.items[0].bundle,
+            processor_input_path=bundle_note.processor_input_path,
+            processor_input_source_name=bundle_note.processor_input_source_name,
             attendance_confidence=bundle_note.attendance_confidence,
             sources_used=bundle_note.sources_used,
             source_limitations=bundle_note.source_limitations,
@@ -362,6 +525,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn("  - Priya <priya@example.com> (required, accepted)", rendered)
         self.assertIn("## Source", rendered)
         self.assertIn("## Artifact Plan", rendered)
+        self.assertIn("## Processor Handoff", rendered)
+        self.assertIn("- Preferred Input: None yet", rendered)
 
     def test_render_outlook_metadata_sidecar_renders_expected_json(self) -> None:
         meeting = _meeting(
@@ -393,6 +558,35 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertIn('"outlook_event_id": "evt-9"', rendered)
         self.assertIn('"teams_meeting_id": "19:meeting_delivery@thread.v2"', rendered)
         self.assertIn('"email": "priya@example.com"', rendered)
+
+    def test_render_outlook_metadata_sidecar_includes_matched_artifact_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            meeting = _meeting(
+                event_id="evt-9",
+                subject="Delivery Review",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            rendered = render_outlook_metadata_sidecar(meeting=meeting, bundle=plan.items[0].bundle)
+
+            self.assertIn('"artifacts": [', rendered)
+            self.assertIn('"processor_handoff": {', rendered)
+            self.assertIn(f'"preferred_input_path": "{transcript_path}"', rendered)
+            self.assertIn('"preferred_input_source_name": "Teams .vtt transcript"', rendered)
+            self.assertIn('"source_name": "Teams .vtt transcript"', rendered)
+            self.assertIn(f'"matched_paths": [\n        "{transcript_path}"', rendered)
 
     def test_render_meeting_identity_sidecar_renders_expected_json(self) -> None:
         meeting = _meeting(
@@ -618,6 +812,7 @@ def _meeting(
     event_type: str | None = None,
     join_url: str | None = None,
     online_meeting_provider: str | None = None,
+    discovered_artifacts: tuple[MeetingArtifact, ...] = (),
 ) -> OutlookMeetingCandidate:
     return OutlookMeetingCandidate(
         event_id=event_id,
@@ -632,6 +827,7 @@ def _meeting(
         event_type=event_type,
         join_url=join_url,
         online_meeting_provider=online_meeting_provider,
+        discovered_artifacts=discovered_artifacts,
     )
 
 
