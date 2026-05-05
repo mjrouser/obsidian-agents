@@ -295,6 +295,43 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(second_result.written_count, 0)
             self.assertEqual(second_result.skipped_existing_count, 1)
 
+    def test_planning_skips_meeting_when_bundle_note_already_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            existing_bundle = intake_root / "2026-05-04 - Teams - Platform Sync (bundle).md"
+            existing_bundle.write_text("existing bundle\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.process_count, 0)
+            self.assertEqual(plan.skip_count, 1)
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertEqual(plan.items[0].intake_bundle_note.path, existing_bundle)
+            self.assertEqual(plan.items[0].reasons, ("Skipped meeting because intake bundle already exists.",))
+
+            rendered = render_transcript_sync_plan(plan)
+            self.assertIn("meeting_sync_would_process: 0", rendered)
+            self.assertIn("meeting_sync_would_skip: 1", rendered)
+            self.assertIn("reason: Skipped meeting because intake bundle already exists.", rendered)
+
     def test_render_bundle_write_result_lists_written_and_skipped_paths(self) -> None:
         result = BundleWriteResult(
             written_paths=(Path("/tmp/a.md"),),
