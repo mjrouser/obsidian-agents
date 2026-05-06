@@ -560,6 +560,53 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             ),
         )
 
+    def test_graph_client_uses_event_body_for_teams_join_url_when_online_meeting_is_missing(self) -> None:
+        requested_urls: list[str] = []
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            requested_urls.append(url)
+            self.assertEqual(token, "token")
+            return {
+                "value": [
+                    {
+                        "id": "evt-body-link",
+                        "subject": "Body Link Sync",
+                        "start": {"dateTime": "2026-05-04T13:00:00", "timeZone": "UTC"},
+                        "end": {"dateTime": "2026-05-04T13:30:00", "timeZone": "UTC"},
+                        "isCancelled": False,
+                        "isAllDay": False,
+                        "onlineMeetingProvider": "unknown",
+                        "onlineMeeting": None,
+                        "body": {
+                            "content": (
+                                "Microsoft Teams meeting "
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_body123%40thread.v2/0?context=%7B%7D"
+                            ),
+                        },
+                        "bodyPreview": "Microsoft Teams meeting",
+                        "type": "singleInstance",
+                    }
+                ]
+            }
+
+        client = GraphOutlookMeetingDiscoveryClient(
+            access_token="token",
+            api_base_url="https://graph.example/v1.0",
+            fetch_json=fetch_json,
+        )
+
+        snapshot = client.list_recently_ended_meetings(
+            since=date(2026, 5, 1),
+            now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+        )
+
+        self.assertIn("body", requested_urls[0])
+        self.assertEqual(len(snapshot.meetings), 1)
+        meeting = snapshot.meetings[0]
+        self.assertTrue(meeting.is_teams_meeting())
+        self.assertEqual(meeting.teams_meeting_id(), "19:meeting_body123@thread.v2")
+
     def test_graph_client_returns_permission_warning(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
             access_token="token",

@@ -378,7 +378,7 @@ class GraphOutlookMeetingDiscoveryClient:
                 "$top": "200",
                 "$select": (
                     "id,subject,start,end,isCancelled,isAllDay,showAs,responseStatus,"
-                    "onlineMeetingProvider,onlineMeeting,bodyPreview,categories,organizer,type,attendees"
+                    "onlineMeetingProvider,onlineMeeting,body,bodyPreview,categories,organizer,type,attendees"
                 ),
             }
         )
@@ -1242,7 +1242,7 @@ def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
     if isinstance(categories, list):
         category_values = tuple(str(item) for item in categories)
     attendee_values = _parse_graph_attendees(payload.get("attendees"))
-    body_preview = _optional_string(str(payload.get("bodyPreview") or ""))
+    body_text = _graph_event_body_text(payload.get("body")) or _optional_string(str(payload.get("bodyPreview") or ""))
     return OutlookMeetingCandidate(
         event_id=str(payload["id"]),
         subject=str(payload.get("subject") or "(untitled meeting)"),
@@ -1256,10 +1256,16 @@ def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
         event_type=_optional_string(str(payload.get("type") or "")),
         online_meeting_provider=online_meeting_provider,
         join_url=join_url,
-        body_text=body_preview,
+        body_text=body_text,
         categories=category_values,
         show_as=_optional_string(str(payload.get("showAs") or "")),
     )
+
+
+def _graph_event_body_text(raw_value: object) -> str | None:
+    if not isinstance(raw_value, dict):
+        return None
+    return _optional_string(str(raw_value.get("content") or ""))
 
 
 def _parse_graph_attendees(raw_value: object) -> tuple[MeetingAttendee, ...]:
