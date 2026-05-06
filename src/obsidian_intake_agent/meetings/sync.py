@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
@@ -16,8 +18,8 @@ from ..utils.text import normalize_whitespace
 ARTIFACT_SOURCE_PRIORITY = (
     "Teams .vtt transcript",
     "Teams transcript text",
-    "Teams meeting chat",
     "Copilot recap / AI summary",
+    "Teams meeting chat",
     "Outlook calendar metadata",
     "Manual / semi-manual intake",
 )
@@ -37,6 +39,7 @@ ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
     "not_attempted",
 )
 RAW_TRANSCRIPTS_DIR = "Raw Transcripts"
+FALLBACKS_DIR = "Fallbacks"
 
 
 class GraphOnlineMeetingNotFoundError(ValueError):
@@ -269,11 +272,14 @@ class ChainedMeetingArtifactDiscoveryClient:
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
         artifacts: dict[str, MeetingArtifact] = {}
+        current_meeting = meeting
         for client in self._clients:
-            for artifact in client.discover_artifacts(meeting=meeting):
+            discovered = client.discover_artifacts(meeting=current_meeting)
+            for artifact in discovered:
                 existing = artifacts.get(artifact.source_name)
                 if existing is None or _should_replace_artifact(existing=existing, candidate=artifact):
                     artifacts[artifact.source_name] = artifact
+            current_meeting = replace(current_meeting, discovered_artifacts=tuple(artifacts.values()))
         return tuple(artifacts.values())
 
 
@@ -540,21 +546,39 @@ class GraphTranscriptDownloadClient:
         *,
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
-        target_path = self._intake_root / _transcript_relative_path(meeting)
-        if target_path.exists():
+        vtt_target_path = self._intake_root / _transcript_relative_path(meeting)
+        if vtt_target_path.exists():
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
                     "available",
-                    f"Transcript file already exists: {target_path}",
-                    matched_paths=(target_path,),
+                    f"Transcript file already exists: {vtt_target_path}",
+                    matched_paths=(vtt_target_path,),
+                ),
+            )
+        transcript_text_target_path = self._intake_root / _transcript_text_relative_path(meeting)
+        if transcript_text_target_path.exists():
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph .vtt transcript has not been downloaded for this meeting.",
+                ),
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "available",
+                    f"Transcript text file already exists: {transcript_text_target_path}",
+                    matched_paths=(transcript_text_target_path,),
                 ),
             )
 
         join_url = meeting.detected_join_url()
         if join_url is None:
             detail = "Outlook metadata did not include a Teams join URL."
-            return (MeetingArtifact("Teams .vtt transcript", "not_attempted", detail),)
+            return (
+                MeetingArtifact("Teams .vtt transcript", "not_attempted", detail),
+                MeetingArtifact("Teams transcript text", "not_attempted", detail),
+            )
 
         try:
             online_meeting_id = _resolve_graph_online_meeting_id(
@@ -568,11 +592,16 @@ class GraphTranscriptDownloadClient:
             payload = self._fetch_json(transcripts_url, self._access_token)
             transcript_ids = _graph_transcript_ids(payload)
         except HTTPError as exc:
-            return (self._http_error_artifact(exc, action="discovery"),)
+            return self._paired_artifacts_from_http_error(exc, action="discovery")
         except GraphOnlineMeetingNotFoundError:
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
+                    "missing",
+                    "Graph did not find an online meeting record for this Outlook event.",
+                ),
+                MeetingArtifact(
+                    "Teams transcript text",
                     "missing",
                     "Graph did not find an online meeting record for this Outlook event.",
                 ),
@@ -581,6 +610,11 @@ class GraphTranscriptDownloadClient:
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
+                    "not_attempted",
+                    f"Graph transcript discovery failed: {exc}",
+                ),
+                MeetingArtifact(
+                    "Teams transcript text",
                     "not_attempted",
                     f"Graph transcript discovery failed: {exc}",
                 ),
@@ -593,6 +627,11 @@ class GraphTranscriptDownloadClient:
                     "missing",
                     "Graph transcript discovery returned no transcript records.",
                 ),
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "missing",
+                    "Graph transcript discovery returned no transcript records.",
+                ),
             )
 
         transcript_id = transcript_ids[0]
@@ -602,7 +641,60 @@ class GraphTranscriptDownloadClient:
         try:
             content = self._fetch_bytes(content_url, self._access_token)
         except HTTPError as exc:
-            return (self._http_error_artifact(exc, action="content download"),)
+            if exc.code != 404:
+                return self._paired_artifacts_from_http_error(exc, action="content download")
+            metadata_content_url = (
+                f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
+            )
+            try:
+                metadata_content = self._fetch_bytes(metadata_content_url, self._access_token)
+            except HTTPError as metadata_exc:
+                if metadata_exc.code == 404:
+                    return (
+                        MeetingArtifact(
+                            "Teams .vtt transcript",
+                            "missing",
+                            "Graph did not find transcript content for this Teams meeting.",
+                        ),
+                        MeetingArtifact(
+                            "Teams transcript text",
+                            "missing",
+                            "Graph did not find transcript metadata content for this Teams meeting.",
+                        ),
+                    )
+                return self._paired_artifacts_from_http_error(metadata_exc, action="metadata content download")
+            except URLError as metadata_exc:
+                return (
+                    MeetingArtifact(
+                        "Teams .vtt transcript",
+                        "missing",
+                        "Graph did not find transcript content for this Teams meeting.",
+                    ),
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "not_attempted",
+                        f"Graph transcript metadata content download failed: {metadata_exc}",
+                    ),
+                )
+
+            transcript_text_target_path.parent.mkdir(parents=True, exist_ok=True)
+            transcript_text_target_path.write_text(
+                _transcript_markdown_from_metadata_content(metadata_content),
+                encoding="utf-8",
+            )
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph did not find transcript content for this Teams meeting.",
+                ),
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "available",
+                    f"Downloaded Graph transcript metadata content for transcript ID {transcript_id}.",
+                    matched_paths=(transcript_text_target_path,),
+                ),
+            )
         except URLError as exc:
             return (
                 MeetingArtifact(
@@ -610,16 +702,21 @@ class GraphTranscriptDownloadClient:
                     "not_attempted",
                     f"Graph transcript content download failed: {exc}",
                 ),
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "not_attempted",
+                    f"Graph transcript content download failed: {exc}",
+                ),
             )
 
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_bytes(_normalized_vtt_bytes(content))
+        vtt_target_path.parent.mkdir(parents=True, exist_ok=True)
+        vtt_target_path.write_bytes(_normalized_vtt_bytes(content))
         return (
             MeetingArtifact(
                 "Teams .vtt transcript",
                 "available",
                 f"Downloaded Graph transcript content for transcript ID {transcript_id}.",
-                matched_paths=(target_path,),
+                matched_paths=(vtt_target_path,),
             ),
         )
 
@@ -646,6 +743,310 @@ class GraphTranscriptDownloadClient:
                 error,
                 default=f"Graph transcript {action} failed with HTTP {error.code}.",
             ),
+        )
+
+    def _paired_artifacts_from_http_error(self, error: HTTPError, *, action: str) -> tuple[MeetingArtifact, ...]:
+        vtt_artifact = self._http_error_artifact(error, action=action)
+        return (
+            vtt_artifact,
+            MeetingArtifact(
+                "Teams transcript text",
+                vtt_artifact.status,
+                vtt_artifact.detail,
+            ),
+        )
+
+
+class GraphMeetingFallbackSummaryClient:
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        intake_root: Path,
+        api_base_url: str = "https://graph.microsoft.com/v1.0",
+        user_id: str | None = None,
+        fetch_json: Callable[[str, str], dict[str, object]] | None = None,
+    ) -> None:
+        self._access_token = access_token
+        self._intake_root = intake_root
+        self._api_base_url = api_base_url.rstrip("/")
+        self._graph_user_path = f"/users/{quote(user_id, safe='')}" if user_id else "/me"
+        self._copilot_user_id = user_id
+        self._fetch_json = fetch_json or _fetch_graph_json
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        if _meeting_has_transcript_source(meeting):
+            return (
+                MeetingArtifact(
+                    "Copilot recap / AI summary",
+                    "not_attempted",
+                    "Transcript-priority source is already available; recap fallback was not needed.",
+                ),
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    "Transcript-priority source is already available; chat fallback was not needed.",
+                ),
+            )
+
+        fallback_path = self._intake_root / _fallback_summary_relative_path(meeting)
+        if fallback_path.exists():
+            return (
+                MeetingArtifact(
+                    "Copilot recap / AI summary",
+                    "available",
+                    f"Fallback summary file already exists: {fallback_path}",
+                    matched_paths=(fallback_path,),
+                ),
+            )
+
+        join_url = meeting.detected_join_url()
+        if join_url is None:
+            detail = "Outlook metadata did not include a Teams join URL."
+            return (
+                MeetingArtifact("Copilot recap / AI summary", "not_attempted", detail),
+                MeetingArtifact("Teams meeting chat", "not_attempted", detail),
+            )
+
+        try:
+            online_meeting_id = _resolve_graph_online_meeting_id(
+                api_base_url=self._api_base_url,
+                user_path=self._graph_user_path,
+                access_token=self._access_token,
+                join_url=join_url,
+                fetch_json=self._fetch_json,
+            )
+        except HTTPError as exc:
+            recap_artifact = self._graph_fallback_http_error_artifact(
+                exc,
+                source_name="Copilot recap / AI summary",
+                action="online meeting lookup",
+            )
+            return (
+                recap_artifact,
+                MeetingArtifact("Teams meeting chat", "not_attempted", "Recap lookup did not complete."),
+            )
+        except GraphOnlineMeetingNotFoundError:
+            return (
+                MeetingArtifact(
+                    "Copilot recap / AI summary",
+                    "missing",
+                    "Graph did not find an online meeting record for this Outlook event.",
+                ),
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    "No online meeting record was available for meeting chat lookup.",
+                ),
+            )
+        except (URLError, ValueError) as exc:
+            return (
+                MeetingArtifact(
+                    "Copilot recap / AI summary",
+                    "not_attempted",
+                    f"Graph recap discovery failed: {exc}",
+                ),
+                MeetingArtifact("Teams meeting chat", "not_attempted", "Recap lookup did not complete."),
+            )
+
+        try:
+            user_id = self._copilot_user_id or _resolve_graph_me_user_id(
+                api_base_url=self._api_base_url,
+                access_token=self._access_token,
+                fetch_json=self._fetch_json,
+            )
+            ai_insight = self._latest_ai_insight(user_id=user_id, online_meeting_id=online_meeting_id)
+        except HTTPError as exc:
+            recap_artifact = self._graph_fallback_http_error_artifact(
+                exc,
+                source_name="Copilot recap / AI summary",
+                action="recap discovery",
+            )
+            return (
+                recap_artifact,
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    "Chat lookup was skipped because no recap was available.",
+                ),
+            )
+        except (URLError, ValueError) as exc:
+            return (
+                MeetingArtifact(
+                    "Copilot recap / AI summary",
+                    "not_attempted",
+                    f"Graph recap discovery failed: {exc}",
+                ),
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    "Chat lookup was skipped because no recap was available.",
+                ),
+            )
+
+        if ai_insight is None:
+            return (
+                MeetingArtifact(
+                    "Copilot recap / AI summary",
+                    "missing",
+                    "Graph recap discovery returned no AI insights for this meeting.",
+                ),
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    "Chat lookup was skipped because no recap was available.",
+                ),
+            )
+
+        chat_artifact, chat_messages = self._meeting_chat_artifact(
+            online_meeting_id=online_meeting_id,
+        )
+        fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        fallback_path.write_text(
+            _render_fallback_summary_markdown(
+                meeting=meeting,
+                ai_insight=ai_insight,
+                chat_messages=chat_messages,
+                chat_artifact=chat_artifact,
+            ),
+            encoding="utf-8",
+        )
+        return (
+            MeetingArtifact(
+                "Copilot recap / AI summary",
+                "available",
+                "Downloaded Copilot recap fallback summary and wrote a local processor input.",
+                matched_paths=(fallback_path,),
+            ),
+            chat_artifact,
+        )
+
+    def _latest_ai_insight(self, *, user_id: str, online_meeting_id: str) -> dict[str, object] | None:
+        list_url = (
+            f"{self._api_base_url}/copilot/users/{quote(user_id, safe='')}/onlineMeetings/"
+            f"{_graph_resource_path_id(online_meeting_id)}/aiInsights"
+        )
+        payload = self._fetch_json(list_url, self._access_token)
+        items = _graph_value_items(payload)
+        if not items:
+            return None
+        latest_item = items[-1]
+        insight_id = _optional_string(str(latest_item.get("id") or ""))
+        if insight_id is None:
+            raise ValueError("Graph recap discovery did not return an aiInsight id.")
+        detail_url = f"{list_url}/{_graph_resource_path_id(insight_id)}"
+        detail_payload = self._fetch_json(detail_url, self._access_token)
+        if not isinstance(detail_payload, dict):
+            raise ValueError("Graph recap detail response was not an object.")
+        return detail_payload
+
+    def _meeting_chat_artifact(
+        self,
+        *,
+        online_meeting_id: str,
+    ) -> tuple[MeetingArtifact, tuple[dict[str, str], ...]]:
+        try:
+            payload = self._fetch_json(
+                f"{self._api_base_url}{self._graph_user_path}/onlineMeetings/{_graph_resource_path_id(online_meeting_id)}"
+                "?$select=chatInfo",
+                self._access_token,
+            )
+            thread_id = _graph_chat_thread_id(payload)
+        except HTTPError as exc:
+            return (
+                self._graph_fallback_http_error_artifact(
+                    exc,
+                    source_name="Teams meeting chat",
+                    action="chat discovery",
+                ),
+                (),
+            )
+        except (URLError, ValueError) as exc:
+            return (
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    f"Graph chat discovery failed: {exc}",
+                ),
+                (),
+            )
+
+        if thread_id is None:
+            return (
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "missing",
+                    "Graph online meeting metadata did not include chatInfo.threadId.",
+                ),
+                (),
+            )
+
+        try:
+            payload = self._fetch_json(
+                f"{self._api_base_url}/chats/{_graph_resource_path_id(thread_id)}/messages?"
+                + urlencode({"$top": "50", "$orderby": "createdDateTime desc"}),
+                self._access_token,
+            )
+            messages = _graph_chat_messages(payload)
+        except HTTPError as exc:
+            return (
+                self._graph_fallback_http_error_artifact(
+                    exc,
+                    source_name="Teams meeting chat",
+                    action="chat message retrieval",
+                ),
+                (),
+            )
+        except (URLError, ValueError) as exc:
+            return (
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "not_attempted",
+                    f"Graph chat message retrieval failed: {exc}",
+                ),
+                (),
+            )
+
+        if not messages:
+            return (
+                MeetingArtifact(
+                    "Teams meeting chat",
+                    "missing",
+                    "Graph meeting chat retrieval returned no readable messages.",
+                ),
+                (),
+            )
+
+        return (
+            MeetingArtifact(
+                "Teams meeting chat",
+                "available",
+                f"Fetched {len(messages)} Teams meeting chat message(s) to enrich the fallback summary.",
+            ),
+            tuple(messages),
+        )
+
+    def _graph_fallback_http_error_artifact(
+        self,
+        error: HTTPError,
+        *,
+        source_name: str,
+        action: str,
+    ) -> MeetingArtifact:
+        if error.code in {401, 403}:
+            status: ArtifactStatus = "permission_blocked"
+        elif error.code == 404:
+            status = "missing"
+        else:
+            status = "not_attempted"
+        return MeetingArtifact(
+            source_name,
+            status,
+            _graph_http_error_detail(error, default=f"Graph {action} failed with HTTP {error.code}."),
         )
 
 
@@ -1077,6 +1478,16 @@ def _transcript_relative_path(meeting: OutlookMeetingCandidate) -> Path:
     return Path(RAW_TRANSCRIPTS_DIR) / _transcript_basename(meeting)
 
 
+def _transcript_text_relative_path(meeting: OutlookMeetingCandidate) -> Path:
+    title = _normalized_bundle_title(meeting.subject)
+    return Path(RAW_TRANSCRIPTS_DIR) / f"{meeting.start_at.date().isoformat()} - Teams - {title}.md"
+
+
+def _fallback_summary_relative_path(meeting: OutlookMeetingCandidate) -> Path:
+    title = _normalized_bundle_title(meeting.subject)
+    return Path(FALLBACKS_DIR) / f"{meeting.start_at.date().isoformat()} - Teams - {title} (fallback).md"
+
+
 def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
     title = _normalized_bundle_title(meeting.subject)
     return f"{meeting.start_at.date().isoformat()} - Teams - {title} (outlook).json"
@@ -1121,7 +1532,12 @@ def _artifact_limitation(artifact: MeetingArtifact) -> str:
 
 
 def _preferred_processor_input(bundle: MeetingSourceBundle) -> tuple[Path | None, str | None]:
-    for source_name in ("Teams .vtt transcript", "Teams transcript text", "Manual / semi-manual intake"):
+    for source_name in (
+        "Teams .vtt transcript",
+        "Teams transcript text",
+        "Copilot recap / AI summary",
+        "Manual / semi-manual intake",
+    ):
         artifact = bundle.artifact(source_name)
         if artifact is None or artifact.status != "available" or not artifact.matched_paths:
             continue
@@ -1254,6 +1670,20 @@ def _resolve_graph_online_meeting_id(
     return meeting_id
 
 
+def _resolve_graph_me_user_id(
+    *,
+    api_base_url: str,
+    access_token: str,
+    fetch_json: Callable[[str, str], dict[str, object]],
+) -> str:
+    payload = fetch_json(f"{api_base_url}/me?$select=id", access_token)
+    raw_id = payload.get("id") if isinstance(payload, dict) else None
+    user_id = _optional_string(str(raw_id or ""))
+    if user_id is None:
+        raise ValueError("Graph /me lookup did not return a user id.")
+    return user_id
+
+
 def _escape_graph_odata_literal(value: str) -> str:
     return value.replace("'", "''")
 
@@ -1300,6 +1730,237 @@ def _fetch_graph_bytes(url: str, access_token: str) -> bytes:
 
 def _normalized_vtt_bytes(content: bytes) -> bytes:
     return content if content.endswith(b"\n") else content + b"\n"
+
+
+def _transcript_markdown_from_metadata_content(content: bytes) -> str:
+    lines: list[str] = []
+    for raw_line in content.decode("utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped == "WEBVTT" or "-->" in stripped:
+            continue
+        if stripped.isdigit():
+            continue
+        speaker, spoken_text = _metadata_content_line_parts(stripped)
+        if spoken_text is None:
+            continue
+        if speaker:
+            lines.append(f"{speaker}: {spoken_text}")
+        else:
+            lines.append(spoken_text)
+    rendered = "\n".join(lines).strip()
+    return f"{rendered}\n" if rendered else ""
+
+
+def _metadata_content_line_parts(line: str) -> tuple[str | None, str | None]:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return _vtt_voice_line_parts(line)
+    if not isinstance(payload, dict):
+        return None, None
+    spoken_text = _optional_string(str(payload.get("spokenText") or ""))
+    if spoken_text is None:
+        return None, None
+    speaker_name = _optional_string(str(payload.get("speakerName") or ""))
+    return speaker_name, spoken_text
+
+
+def _vtt_voice_line_parts(line: str) -> tuple[str | None, str | None]:
+    if line.startswith("<v ") and ">" in line and "</v>" in line:
+        speaker_name = _optional_string(line[3 : line.index(">")].strip())
+        spoken_text = _optional_string(line[line.index(">") + 1 : line.rindex("</v>")].strip())
+        return speaker_name, spoken_text
+    return None, _optional_string(line)
+
+
+def _graph_chat_thread_id(payload: dict[str, object]) -> str | None:
+    raw_chat_info = payload.get("chatInfo")
+    if not isinstance(raw_chat_info, dict):
+        return None
+    return _optional_string(str(raw_chat_info.get("threadId") or ""))
+
+
+def _graph_chat_messages(payload: dict[str, object]) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for item in reversed(_graph_value_items(payload)):
+        body = item.get("body")
+        if not isinstance(body, dict):
+            continue
+        content = _chat_message_text(body.get("content"))
+        if content is None:
+            continue
+        sender = _graph_chat_message_sender(item.get("from"))
+        messages.append(
+            {
+                "sender": sender or "Unknown",
+                "text": content,
+            }
+        )
+    return messages
+
+
+def _graph_chat_message_sender(raw_value: object) -> str | None:
+    if not isinstance(raw_value, dict):
+        return None
+    for key in ("user", "application", "device"):
+        payload = raw_value.get(key)
+        if not isinstance(payload, dict):
+            continue
+        display_name = _optional_string(str(payload.get("displayName") or ""))
+        if display_name is not None:
+            return display_name
+    return None
+
+
+def _chat_message_text(raw_value: object) -> str | None:
+    if raw_value is None:
+        return None
+    text = re.sub(r"<[^>]+>", " ", html.unescape(str(raw_value)))
+    normalized = normalize_whitespace(text)
+    return normalized or None
+
+
+def _meeting_has_transcript_source(meeting: OutlookMeetingCandidate) -> bool:
+    for artifact in meeting.discovered_artifacts:
+        if artifact.source_name in {"Teams .vtt transcript", "Teams transcript text"} and artifact.status == "available":
+            return True
+    return False
+
+
+def _render_fallback_summary_markdown(
+    *,
+    meeting: OutlookMeetingCandidate,
+    ai_insight: dict[str, object],
+    chat_messages: tuple[dict[str, str], ...],
+    chat_artifact: MeetingArtifact,
+) -> str:
+    lines = [
+        f"# {meeting.start_at.date().isoformat()} - Teams - {_normalized_bundle_title(meeting.subject)}",
+        "",
+        "## Context",
+        f"- Subject: {meeting.subject}",
+        f"- Start: {meeting.start_at.isoformat()}",
+        f"- End: {meeting.end_at.isoformat()}",
+        f"- Organizer: {meeting.organizer or 'Unknown'}",
+        f"- Your Response: {meeting.response_status or 'Unknown'}",
+        "",
+        "## Summary",
+    ]
+    meeting_notes = _graph_meeting_notes(ai_insight)
+    if meeting_notes:
+        lines.extend(meeting_notes)
+    else:
+        lines.append("- No AI-generated meeting notes were returned.")
+
+    lines.extend(["", "## Action Items"])
+    action_items = _graph_ai_action_items(ai_insight)
+    if action_items:
+        lines.extend(action_items)
+    else:
+        lines.append("- No AI-generated action items were returned.")
+
+    lines.extend(["", "## Mentions"])
+    mentions = _graph_ai_mentions(ai_insight)
+    if mentions:
+        lines.extend(mentions)
+    else:
+        lines.append("- No AI-generated mentions were returned.")
+
+    lines.extend(["", "## Meeting Chat"])
+    if chat_messages:
+        for message in chat_messages:
+            lines.append(f"- {message['sender']}: {message['text']}")
+    else:
+        if chat_artifact.detail:
+            lines.append(f"- {chat_artifact.status}: {chat_artifact.detail}")
+        else:
+            lines.append("- No meeting chat context was available.")
+
+    lines.extend(
+        [
+            "",
+            "## Source",
+            "- Source Used: Copilot recap / AI summary",
+        ]
+    )
+    if chat_artifact.status == "available":
+        lines.append("- Source Used: Teams meeting chat")
+    lines.append("- Source Used: Outlook calendar metadata")
+    lines.append("- Attendance Confidence: partial_visibility")
+    lines.append("- Source Limitation: Fallback artifact synthesized from summary-oriented meeting sources, not a verbatim transcript.")
+    return "\n".join(lines) + "\n"
+
+
+def _graph_meeting_notes(ai_insight: dict[str, object]) -> list[str]:
+    raw_notes = ai_insight.get("meetingNotes")
+    if not isinstance(raw_notes, list):
+        return []
+    lines: list[str] = []
+    for note in raw_notes:
+        if not isinstance(note, dict):
+            continue
+        title = _optional_string(str(note.get("title") or ""))
+        text = _optional_string(str(note.get("text") or ""))
+        if title and text:
+            lines.append(f"- {title}: {text}")
+        elif title:
+            lines.append(f"- {title}")
+        elif text:
+            lines.append(f"- {text}")
+        subpoints = note.get("subpoints")
+        if isinstance(subpoints, list):
+            for subpoint in subpoints:
+                if not isinstance(subpoint, dict):
+                    continue
+                sub_title = _optional_string(str(subpoint.get("title") or ""))
+                sub_text = _optional_string(str(subpoint.get("text") or ""))
+                if sub_title and sub_text:
+                    lines.append(f"- {sub_title}: {sub_text}")
+                elif sub_title:
+                    lines.append(f"- {sub_title}")
+                elif sub_text:
+                    lines.append(f"- {sub_text}")
+    return lines
+
+
+def _graph_ai_action_items(ai_insight: dict[str, object]) -> list[str]:
+    raw_items = ai_insight.get("actionItems")
+    if not isinstance(raw_items, list):
+        return []
+    lines: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        owner = _optional_string(str(item.get("ownerDisplayName") or ""))
+        title = _optional_string(str(item.get("title") or ""))
+        text = _optional_string(str(item.get("text") or ""))
+        if owner and text:
+            lines.append(f"- {owner} to {text}")
+        elif owner and title:
+            lines.append(f"- {owner} to {title}")
+        elif text:
+            lines.append(f"- [ ] {text}")
+        elif title:
+            lines.append(f"- [ ] {title}")
+    return lines
+
+
+def _graph_ai_mentions(ai_insight: dict[str, object]) -> list[str]:
+    raw_viewpoint = ai_insight.get("viewpoint")
+    if not isinstance(raw_viewpoint, dict):
+        return []
+    raw_mentions = raw_viewpoint.get("mentionEvents")
+    if not isinstance(raw_mentions, list):
+        return []
+    lines: list[str] = []
+    for mention in raw_mentions:
+        if not isinstance(mention, dict):
+            continue
+        utterance = _optional_string(str(mention.get("transcriptUtterance") or ""))
+        if utterance is None:
+            continue
+        lines.append(f"- {utterance}")
+    return lines
 
 
 def _graph_value_items(payload: dict[str, object]) -> list[dict[str, object]]:

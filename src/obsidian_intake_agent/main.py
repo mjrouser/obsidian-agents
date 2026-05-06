@@ -9,6 +9,7 @@ from pathlib import Path
 from .config import Config
 from .meetings import (
     ChainedMeetingArtifactDiscoveryClient,
+    GraphMeetingFallbackSummaryClient,
     GraphOutlookMeetingDiscoveryClient,
     GraphTranscriptDiscoveryClient,
     GraphTranscriptDownloadClient,
@@ -323,14 +324,27 @@ def _build_meeting_artifact_discovery_client(
     if not token:
         return local_client
     if download_transcripts:
-        return GraphTranscriptDownloadClient(
-            access_token=token,
-            intake_root=config.vault_path / config.intake_dir,
-            api_base_url=config.outlook_graph_api_base_url,
+        return ChainedMeetingArtifactDiscoveryClient(
+            GraphTranscriptDownloadClient(
+                access_token=token,
+                intake_root=config.vault_path / config.intake_dir,
+                api_base_url=config.outlook_graph_api_base_url,
+            ),
+            GraphMeetingFallbackSummaryClient(
+                access_token=token,
+                intake_root=config.vault_path / config.intake_dir,
+                api_base_url=config.outlook_graph_api_base_url,
+            ),
+            local_client,
         )
     return ChainedMeetingArtifactDiscoveryClient(
         GraphTranscriptDiscoveryClient(
             access_token=token,
+            api_base_url=config.outlook_graph_api_base_url,
+        ),
+        GraphMeetingFallbackSummaryClient(
+            access_token=token,
+            intake_root=config.vault_path / config.intake_dir,
             api_base_url=config.outlook_graph_api_base_url,
         ),
         local_client,

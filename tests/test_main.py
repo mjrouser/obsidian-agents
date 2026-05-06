@@ -19,7 +19,6 @@ from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
-    GraphTranscriptDownloadClient,
     LocalIntakeTranscriptDiscoveryClient,
     TranscriptSyncPlan,
     UnconfiguredOutlookMeetingDiscoveryClient,
@@ -340,7 +339,10 @@ class MainCliTests(unittest.TestCase):
             vault.mkdir(parents=True)
             config_path = _write_config(repo, vault)
 
-            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
                 exit_code = main(
                     [
                         "--config",
@@ -638,7 +640,7 @@ class MainCliTests(unittest.TestCase):
             with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
                 client = _build_meeting_artifact_discovery_client(config, download_transcripts=True)
 
-            self.assertIsInstance(client, GraphTranscriptDownloadClient)
+            self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
 
 
 def _write_config(
