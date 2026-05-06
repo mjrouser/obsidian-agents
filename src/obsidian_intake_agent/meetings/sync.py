@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from ..utils.text import normalize_whitespace
@@ -254,6 +254,21 @@ class NoopMeetingArtifactDiscoveryClient:
         return ()
 
 
+class ChainedMeetingArtifactDiscoveryClient:
+    def __init__(self, *clients: MeetingArtifactDiscoveryClient) -> None:
+        self._clients = clients
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        artifacts: list[MeetingArtifact] = []
+        for client in self._clients:
+            artifacts.extend(client.discover_artifacts(meeting=meeting))
+        return tuple(artifacts)
+
+
 class LocalIntakeTranscriptDiscoveryClient:
     def __init__(self, *, intake_root: Path) -> None:
         self._intake_root = intake_root
@@ -387,6 +402,86 @@ class GraphOutlookMeetingDiscoveryClient:
         return MeetingDiscoverySnapshot(
             meetings=tuple(meetings),
             provider_label="graph_outlook_calendar",
+        )
+
+
+class GraphTranscriptDiscoveryClient:
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        api_base_url: str = "https://graph.microsoft.com/v1.0",
+        user_id: str | None = None,
+        fetch_json: Callable[[str, str], dict[str, object]] | None = None,
+    ) -> None:
+        self._access_token = access_token
+        self._api_base_url = api_base_url.rstrip("/")
+        self._user_path = f"/users/{quote(user_id, safe='')}" if user_id else "/me"
+        self._fetch_json = fetch_json or _fetch_graph_json
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        teams_meeting_id = meeting.teams_meeting_id()
+        if teams_meeting_id is None:
+            detail = "Outlook metadata did not include a Teams online meeting ID."
+            return (MeetingArtifact("Teams transcript text", "not_attempted", detail),)
+
+        encoded_meeting_id = quote(teams_meeting_id, safe="")
+        url = f"{self._api_base_url}{self._user_path}/onlineMeetings/{encoded_meeting_id}/transcripts"
+        try:
+            payload = self._fetch_json(url, self._access_token)
+            transcript_ids = _graph_transcript_ids(payload)
+        except HTTPError as exc:
+            if exc.code in {401, 403}:
+                return (
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "permission_blocked",
+                        f"Graph transcript discovery failed with HTTP {exc.code}.",
+                    ),
+                )
+            if exc.code == 404:
+                return (
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "missing",
+                        "Graph did not find transcripts for this Teams meeting.",
+                    ),
+                )
+            return (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "not_attempted",
+                    f"Graph transcript discovery failed with HTTP {exc.code}.",
+                ),
+            )
+        except (URLError, ValueError) as exc:
+            return (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "not_attempted",
+                    f"Graph transcript discovery failed: {exc}",
+                ),
+            )
+
+        if not transcript_ids:
+            return (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "missing",
+                    "Graph transcript discovery returned no transcript records.",
+                ),
+            )
+        rendered_ids = ", ".join(transcript_ids)
+        return (
+            MeetingArtifact(
+                "Teams transcript text",
+                "available",
+                f"Graph transcript metadata available for transcript ID(s): {rendered_ids}; content download is deferred.",
+            ),
         )
 
 
@@ -963,6 +1058,20 @@ def _graph_value_items(payload: dict[str, object]) -> list[dict[str, object]]:
         if isinstance(item, dict):
             items.append(item)
     return items
+
+
+def _graph_transcript_ids(payload: dict[str, object]) -> tuple[str, ...]:
+    raw_items = payload.get("value")
+    if not isinstance(raw_items, list):
+        raise ValueError("Graph transcript response did not contain a value list.")
+    transcript_ids: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        transcript_id = _optional_string(str(item.get("id") or ""))
+        if transcript_id is not None:
+            transcript_ids.append(transcript_id)
+    return tuple(transcript_ids)
 
 
 def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:

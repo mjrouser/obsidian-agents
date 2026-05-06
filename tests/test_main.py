@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from obsidian_intake_agent.config import Config
-from obsidian_intake_agent.main import _build_meeting_discovery_client, main
+from obsidian_intake_agent.main import _build_meeting_artifact_discovery_client, _build_meeting_discovery_client, main
 from obsidian_intake_agent.meetings import (
     BundleExecutionResult,
     BundleExecutionResultItem,
@@ -17,7 +17,9 @@ from obsidian_intake_agent.meetings import (
     BundleProcessingPlanItem,
     BundleProcessorHandoff,
     BundleWriteResult,
+    ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
+    LocalIntakeTranscriptDiscoveryClient,
     TranscriptSyncPlan,
     UnconfiguredOutlookMeetingDiscoveryClient,
 )
@@ -533,6 +535,32 @@ class MainCliTests(unittest.TestCase):
                 client = _build_meeting_discovery_client(config)
 
             self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
+
+    def test_build_meeting_artifact_discovery_client_uses_local_only_without_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {}, clear=True):
+                client = _build_meeting_artifact_discovery_client(config)
+
+            self.assertIsInstance(client, LocalIntakeTranscriptDiscoveryClient)
+
+    def test_build_meeting_artifact_discovery_client_chains_graph_and_local_with_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
+                client = _build_meeting_artifact_discovery_client(config)
+
+            self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
 
 
 def _write_config(
