@@ -156,6 +156,10 @@ Current implementation status in this repo:
   existing intake processor versus blocked by calendar-only state, missing local
   files, or intake artifacts the current processor would skip as already
   processed.
+- `obsidian-agent meetings process-bundles --execute` now uses that same
+  readiness contract to process only ready bundles through the existing intake
+  processor and reports per-bundle `processed`, `skipped`, or `failed` results
+  without attempting blocked bundles.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
