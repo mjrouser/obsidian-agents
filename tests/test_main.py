@@ -11,6 +11,11 @@ from unittest.mock import patch
 from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.main import _build_meeting_discovery_client, main
 from obsidian_intake_agent.meetings import (
+    BundleExecutionResult,
+    BundleExecutionResultItem,
+    BundleMetadataRecord,
+    BundleProcessingPlanItem,
+    BundleProcessorHandoff,
     BundleWriteResult,
     GraphOutlookMeetingDiscoveryClient,
     TranscriptSyncPlan,
@@ -294,6 +299,20 @@ class MainCliTests(unittest.TestCase):
 
             self.assertEqual(exc.exception.code, 2)
 
+            with self.assertRaises(SystemExit) as both_exc:
+                main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "process-bundles",
+                        "--dry-run",
+                        "--execute",
+                    ]
+                )
+
+            self.assertEqual(both_exc.exception.code, 2)
+
     def test_meetings_sync_transcripts_prints_dry_run_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -423,6 +442,71 @@ class MainCliTests(unittest.TestCase):
                 "reason: Bundle is still calendar-only, so there is no processor-ready transcript artifact yet.",
                 output,
             )
+
+    def test_meetings_process_bundles_execute_prints_execution_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            ready_input = intake_root / "2026-05-04 - Teams - Platform Sync.vtt"
+            fake_result = BundleExecutionResult(
+                executed_at=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+                bundle_root=intake_root,
+                items=(
+                    BundleExecutionResultItem(
+                        status="processed",
+                        plan_item=BundleProcessingPlanItem(
+                            decision="ready",
+                            metadata=BundleMetadataRecord(
+                                metadata_path=intake_root / "2026-05-04 - Teams - Platform Sync (outlook).json",
+                                bundle_note_path=intake_root / "2026-05-04 - Teams - Platform Sync (bundle).md",
+                                event_id="evt-1",
+                                subject="Platform Sync",
+                                source_type="outlook_calendar_metadata",
+                                processor_handoff=BundleProcessorHandoff(
+                                    preferred_input_path=ready_input,
+                                    preferred_input_source_name="Teams .vtt transcript",
+                                ),
+                                artifacts=(),
+                            ),
+                            reasons=(
+                                "Bundle has a processor-ready local artifact and can be handed to the existing intake processor.",
+                            ),
+                        ),
+                        reasons=("Bundle preferred input was processed successfully.",),
+                        canonical_note_path=vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md",
+                    ),
+                ),
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.build_bundle_processing_plan") as plan_mock,
+                patch(
+                    "obsidian_intake_agent.main.execute_bundle_processing_plan", return_value=fake_result
+                ) as execute_mock,
+                patch("obsidian_intake_agent.main.auto_commit_repo") as commit_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "process-bundles",
+                        "--execute",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            plan_mock.assert_called_once()
+            execute_mock.assert_called_once()
+            commit_mock.assert_not_called()
+            output = stdout.getvalue()
+            self.assertIn("meeting_bundle_process_mode: execute", output)
+            self.assertIn("meeting_bundle_process_processed: 1", output)
+            self.assertIn("canonical_output_file:", output)
 
     def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

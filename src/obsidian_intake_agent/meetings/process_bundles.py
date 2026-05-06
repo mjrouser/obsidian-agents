@@ -6,10 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from ..processors.meeting_processor import MeetingProcessor
+from ..processors.meeting_processor import MeetingProcessor, ProcessResult
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 BundleProcessDecision = Literal["ready", "blocked"]
+BundleExecutionStatus = Literal["processed", "skipped", "failed"]
 PROCESSOR_SUPPORTED_EXTENSIONS = {".md", ".docx", ".vtt"}
 
 
@@ -72,6 +73,39 @@ class BundleProcessingPlan:
     @property
     def blocked_count(self) -> int:
         return sum(1 for item in self.items if item.decision == "blocked")
+
+
+@dataclass(slots=True, frozen=True)
+class BundleExecutionResultItem:
+    status: BundleExecutionStatus
+    plan_item: BundleProcessingPlanItem
+    reasons: tuple[str, ...]
+    canonical_note_path: Path | None = None
+    actions_file_path: Path | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class BundleExecutionResult:
+    executed_at: datetime
+    bundle_root: Path
+    items: tuple[BundleExecutionResultItem, ...]
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def candidate_count(self) -> int:
+        return len(self.items)
+
+    @property
+    def processed_count(self) -> int:
+        return sum(1 for item in self.items if item.status == "processed")
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(1 for item in self.items if item.status == "skipped")
+
+    @property
+    def failed_count(self) -> int:
+        return sum(1 for item in self.items if item.status == "failed")
 
 
 def build_bundle_processing_plan(
@@ -159,6 +193,82 @@ def render_bundle_processing_plan(plan: BundleProcessingPlan) -> str:
                 "  would_run: "
                 f".venv/bin/obsidian-agent process {item.metadata.processor_handoff.preferred_input_path} --dry-run"
             )
+        for reason in item.reasons:
+            lines.append(f"  reason: {reason}")
+    return "\n".join(lines)
+
+
+def execute_bundle_processing_plan(
+    plan: BundleProcessingPlan,
+    *,
+    processor: MeetingProcessor,
+) -> BundleExecutionResult:
+    items: list[BundleExecutionResultItem] = []
+    for plan_item in plan.items:
+        if plan_item.decision != "ready":
+            items.append(
+                BundleExecutionResultItem(
+                    status="skipped",
+                    plan_item=plan_item,
+                    reasons=plan_item.reasons,
+                )
+            )
+            continue
+        preferred_input = plan_item.metadata.processor_handoff.preferred_input_path
+        if preferred_input is None:
+            items.append(
+                BundleExecutionResultItem(
+                    status="skipped",
+                    plan_item=plan_item,
+                    reasons=("Ready bundle did not include a preferred processor input path at execution time.",),
+                )
+            )
+            continue
+        try:
+            process_result = processor.process_file(preferred_input, dry_run=False)
+        except Exception as exc:
+            items.append(
+                BundleExecutionResultItem(
+                    status="failed",
+                    plan_item=plan_item,
+                    reasons=(f"Processor execution failed: {exc}",),
+                )
+            )
+            continue
+        items.append(_execution_result_item_from_process_result(plan_item=plan_item, process_result=process_result))
+    return BundleExecutionResult(
+        executed_at=datetime.now().astimezone(),
+        bundle_root=plan.bundle_root,
+        items=tuple(items),
+        warnings=plan.warnings,
+    )
+
+
+def render_bundle_execution_result(result: BundleExecutionResult) -> str:
+    lines = [
+        "meeting_bundle_process_mode: execute",
+        f"meeting_bundle_process_executed_at: {result.executed_at.isoformat()}",
+        f"meeting_bundle_process_bundle_root: {result.bundle_root}",
+        f"meeting_bundle_process_candidates: {result.candidate_count}",
+        f"meeting_bundle_process_processed: {result.processed_count}",
+        f"meeting_bundle_process_skipped: {result.skipped_count}",
+        f"meeting_bundle_process_failed: {result.failed_count}",
+    ]
+    for warning in result.warnings:
+        lines.append(f"meeting_bundle_process_warning: {warning}")
+    for item in result.items:
+        metadata = item.plan_item.metadata
+        lines.append(f'meeting_bundle_item: {item.status} event_id="{metadata.event_id}" subject="{metadata.subject}"')
+        lines.append(f"  outlook_metadata: {metadata.metadata_path}")
+        lines.append(f"  bundle_note: {metadata.bundle_note_path}")
+        if metadata.processor_handoff.preferred_input_path is not None:
+            lines.append(f"  preferred_input: {metadata.processor_handoff.preferred_input_path}")
+        if metadata.processor_handoff.preferred_input_source_name is not None:
+            lines.append(f"  preferred_source: {metadata.processor_handoff.preferred_input_source_name}")
+        if item.canonical_note_path is not None:
+            lines.append(f"  canonical_output_file: {item.canonical_note_path}")
+        if item.actions_file_path is not None:
+            lines.append(f"  actions_output_file: {item.actions_file_path}")
         for reason in item.reasons:
             lines.append(f"  reason: {reason}")
     return "\n".join(lines)
@@ -282,3 +392,29 @@ def _artifact_status_or_default(value: object) -> ArtifactStatus:
     if value in {"available", "missing", "permission_blocked", "not_attempted"}:
         return cast(ArtifactStatus, value)
     return "not_attempted"
+
+
+def _execution_result_item_from_process_result(
+    *,
+    plan_item: BundleProcessingPlanItem,
+    process_result: ProcessResult,
+) -> BundleExecutionResultItem:
+    if process_result.processed:
+        return BundleExecutionResultItem(
+            status="processed",
+            plan_item=plan_item,
+            reasons=("Bundle preferred input was processed successfully.",),
+            canonical_note_path=process_result.canonical_note_path,
+            actions_file_path=process_result.actions_file_path,
+        )
+    if process_result.skip_reason is not None:
+        return BundleExecutionResultItem(
+            status="skipped",
+            plan_item=plan_item,
+            reasons=(f"Processor skipped preferred input: {process_result.skip_reason}.",),
+        )
+    return BundleExecutionResultItem(
+        status="failed",
+        plan_item=plan_item,
+        reasons=("Processor returned without processing but did not provide a skip reason.",),
+    )
