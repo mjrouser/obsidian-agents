@@ -164,6 +164,12 @@ Write only planned intake bundle notes, without downloading artifacts yet:
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --write-bundles
 ```
 
+Dry-run which written meeting bundles are ready to feed into the existing processor:
+
+```bash
+obsidian-agent meetings process-bundles --dry-run
+```
+
 With Graph discovery enabled:
 
 ```bash
@@ -212,7 +218,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Codex CLI calls use `codex_timeout_seconds` so watcher and weekly automation fail clearly instead of hanging indefinitely.
 - For `launchd` jobs, prefer an absolute `codex_exec_cmd` path in `config.yaml` because `launchd` does not reliably inherit your interactive shell `PATH`.
 - The Monday actions note is created or updated in `vault_path/07_Actions`.
-- Weekly action notes use `## This Week` and `## Longer-Term / In Progress`; automated inserts always go under `This Week`.
+- Weekly action notes use `## This Week`, `## Carry Over Items`, and `## Longer-Term / In Progress`; new weekly notes seed `Carry Over Items` from the previous week's unfinished items, and automated inserts always go under `This Week`.
 - Weekly reviews are written to `vault_path/09_Weekly Reviews` as separate files:
 - `YYYY-MM-DD Weekly Briefing.md`
 - `YYYY-MM-DD Weekly Wrap.md`
@@ -239,7 +245,22 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   and Teams meeting ID so repeated polling can skip already-imported meetings
   even if the bundle filename later changes. Dry-run output now includes top-level
   counts for processable meetings that are still missing `.vtt`, transcript text,
-  chat, recap, or any non-calendar source.
+  chat, recap, or any non-calendar source. The planner also now reports explicit
+  per-source retrieval states for `.vtt`, transcript text, chat, and recap:
+  `available`, `missing`, `permission_blocked`, or `not_attempted`. When the
+  local intake folder exists, the planner now actively probes `00_Intake` for
+  canonical date/title-matched `.vtt`, `.md`, and `.docx` transcript artifacts
+  before falling back to `missing` or `not_attempted`, and it preserves those
+  exact matched artifact paths in the bundle note artifact plan plus the raw
+  Outlook metadata sidecar. When one of those transcript artifacts is available,
+  the bundle contract now also records a preferred processor input path/source
+  so the next ingestion step can feed the existing processor directly.
+- `obsidian-agent meetings process-bundles` currently requires `--dry-run` and
+  reads the written Outlook metadata sidecars in `00_Intake` to report which
+  synced meeting bundles are actually ready for the existing `process` command.
+  The dry run distinguishes ready bundles from blocked ones, including
+  calendar-only bundles, missing local transcript files, and handoffs the
+  current intake processor would skip as already processed.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

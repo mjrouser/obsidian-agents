@@ -137,12 +137,30 @@ Current implementation status in this repo:
   already-imported meetings even if meeting titles or bundle filenames change.
 - Dry-run output now rolls up processable meetings by remaining source gaps so
   the polling summary can show how many meetings are still calendar-only versus
-  missing transcript, chat, or recap artifacts.
+  missing transcript, chat, or recap artifacts, and it now breaks those source
+  states down explicitly as `available`, `missing`, `permission_blocked`, or
+  `not_attempted` for each processable meeting source.
+- The planner now performs a real local discovery pass for transcript artifacts
+  already sitting in `00_Intake`, marking canonical date/title-matched `.vtt`,
+  `.md`, and `.docx` files as available transcript sources before any network
+  retrieval is added.
+- When local transcript discovery finds a match, the planner now carries the
+  exact local artifact path forward into the bundle note artifact plan and the
+  raw Outlook metadata sidecar so later ingestion steps can reuse the same
+  source file without rediscovering it.
+- The bundle contract now also records a preferred processor handoff input when
+  one of those local transcript artifacts is available, including the selected
+  source type and exact file path the next ingestion step should process.
+- `obsidian-agent meetings process-bundles --dry-run` now reads those written
+  Outlook metadata sidecars and reports which bundles are ready to hand to the
+  existing intake processor versus blocked by calendar-only state, missing local
+  files, or intake artifacts the current processor would skip as already
+  processed.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
-- Transcript download, chat export, recap retrieval, and `00_Intake` writes are
-  still future work.
+- Transcript download from Teams/Graph plus chat and recap retrieval are still
+  future work.
 
 ## Extraction Standard
 

@@ -9,8 +9,11 @@ from pathlib import Path
 from .config import Config
 from .meetings import (
     GraphOutlookMeetingDiscoveryClient,
+    LocalIntakeTranscriptDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
+    build_bundle_processing_plan,
     build_transcript_sync_plan,
+    render_bundle_processing_plan,
     render_bundle_write_result,
     render_transcript_sync_plan,
     write_planned_bundle_notes,
@@ -98,6 +101,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="write_bundles",
         help="Write planned intake bundle notes into the intake folder without downloading artifacts.",
     )
+    process_bundles_parser = meetings_subparsers.add_parser(
+        "process-bundles",
+        help="Dry-run which synced meeting bundles are ready for the existing intake processor.",
+    )
+    process_bundles_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print which bundle handoffs are ready without processing any files.",
+    )
 
     return parser
 
@@ -166,15 +179,27 @@ def main(argv: list[str] | None = None) -> int:
                     "`obsidian-agent meetings sync-transcripts` requires exactly one of `--dry-run` or `--write-bundles`."
                 )
             since = date.fromisoformat(args.since)
-            plan = build_transcript_sync_plan(
+            sync_plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(
+                    intake_root=config.vault_path / config.intake_dir,
+                ),
                 since=since,
                 intake_root=config.vault_path / config.intake_dir,
             )
             mode = "write-bundles" if args.write_bundles else "dry-run"
-            print(render_transcript_sync_plan(plan, mode=mode))
+            print(render_transcript_sync_plan(sync_plan, mode=mode))
             if args.write_bundles:
-                print(render_bundle_write_result(write_planned_bundle_notes(plan)))
+                print(render_bundle_write_result(write_planned_bundle_notes(sync_plan)))
+            return 0
+        if args.meetings_command == "process-bundles":
+            if not args.dry_run:
+                parser.error("`obsidian-agent meetings process-bundles` currently requires `--dry-run`.")
+            bundle_plan = build_bundle_processing_plan(
+                intake_root=config.vault_path / config.intake_dir,
+                processor=processor,
+            )
+            print(render_bundle_processing_plan(bundle_plan))
             return 0
 
     parser.error("Unknown command.")

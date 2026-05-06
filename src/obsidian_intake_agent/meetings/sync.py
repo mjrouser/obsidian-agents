@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -24,6 +24,18 @@ ARTIFACT_SOURCE_PRIORITY = (
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 PlanDecision = Literal["process", "skip"]
+SYNC_SOURCE_SUMMARY_FIELDS = (
+    ("Teams .vtt transcript", "vtt"),
+    ("Teams transcript text", "transcript_text"),
+    ("Teams meeting chat", "chat"),
+    ("Copilot recap / AI summary", "recap"),
+)
+ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
+    "available",
+    "missing",
+    "permission_blocked",
+    "not_attempted",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -31,6 +43,7 @@ class MeetingArtifact:
     source_name: str
     status: ArtifactStatus
     detail: str | None = None
+    matched_paths: tuple[Path, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -67,6 +80,7 @@ class OutlookMeetingCandidate:
     body_text: str | None = None
     categories: tuple[str, ...] = ()
     show_as: str | None = None
+    discovered_artifacts: tuple[MeetingArtifact, ...] = ()
 
     def detected_join_url(self) -> str | None:
         explicit = _optional_string(self.join_url)
@@ -127,12 +141,26 @@ class MeetingSourceBundle:
                 return artifact.status
         return None
 
+    def artifact(self, source_name: str) -> MeetingArtifact | None:
+        for artifact in self.artifacts:
+            if artifact.source_name == source_name:
+                return artifact
+        return None
+
+    def artifact_paths(self, source_name: str) -> tuple[Path, ...]:
+        artifact = self.artifact(source_name)
+        if artifact is None:
+            return ()
+        return artifact.matched_paths
+
 
 @dataclass(slots=True, frozen=True)
 class PlannedIntakeBundleNote:
     path: Path
     metadata_path: Path
     identity_path: Path
+    processor_input_path: Path | None
+    processor_input_source_name: str | None
     attendance_confidence: str
     sources_used: tuple[str, ...]
     source_limitations: tuple[str, ...]
@@ -206,6 +234,87 @@ class MeetingDiscoveryClient(Protocol):
         since: date,
         now: datetime,
     ) -> MeetingDiscoverySnapshot: ...
+
+
+class MeetingArtifactDiscoveryClient(Protocol):
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]: ...
+
+
+class NoopMeetingArtifactDiscoveryClient:
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        del meeting
+        return ()
+
+
+class LocalIntakeTranscriptDiscoveryClient:
+    def __init__(self, *, intake_root: Path) -> None:
+        self._intake_root = intake_root
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        if not self._intake_root.exists():
+            detail = f"Local intake root does not exist: {self._intake_root}"
+            return (
+                MeetingArtifact("Teams .vtt transcript", "not_attempted", detail),
+                MeetingArtifact("Teams transcript text", "not_attempted", detail),
+            )
+
+        matching_paths = tuple(self._matching_intake_paths(meeting))
+        return (
+            self._artifact_for_matches(
+                source_name="Teams .vtt transcript",
+                matches=tuple(path for path in matching_paths if path.suffix.lower() == ".vtt"),
+                missing_detail="No local .vtt intake file matched the meeting date/title.",
+            ),
+            self._artifact_for_matches(
+                source_name="Teams transcript text",
+                matches=tuple(path for path in matching_paths if path.suffix.lower() in {".md", ".docx"}),
+                missing_detail="No local transcript-text intake file matched the meeting date/title.",
+            ),
+        )
+
+    def _artifact_for_matches(
+        self,
+        *,
+        source_name: str,
+        matches: tuple[Path, ...],
+        missing_detail: str,
+    ) -> MeetingArtifact:
+        if not matches:
+            return MeetingArtifact(source_name, "missing", missing_detail)
+        rendered_matches = ", ".join(str(path) for path in matches)
+        return MeetingArtifact(
+            source_name,
+            "available",
+            f"Matched local intake artifact(s): {rendered_matches}",
+            matched_paths=matches,
+        )
+
+    def _matching_intake_paths(self, meeting: OutlookMeetingCandidate) -> tuple[Path, ...]:
+        expected_stem = f"{meeting.start_at.date().isoformat()} - Teams - {_normalized_bundle_title(meeting.subject)}"
+        matches: list[Path] = []
+        for path in self._intake_root.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.relative_to(self._intake_root).parts[:1] == ("_meeting_sync",):
+                continue
+            if path.stem != expected_stem:
+                continue
+            if path.suffix.lower() not in {".vtt", ".md", ".docx"}:
+                continue
+            matches.append(path)
+        return tuple(sorted(matches))
 
 
 class UnconfiguredOutlookMeetingDiscoveryClient:
@@ -284,13 +393,22 @@ class GraphOutlookMeetingDiscoveryClient:
 def build_transcript_sync_plan(
     *,
     client: MeetingDiscoveryClient,
+    artifact_discovery_client: MeetingArtifactDiscoveryClient | None = None,
     since: date,
     intake_root: Path | None = None,
     now: datetime | None = None,
 ) -> TranscriptSyncPlan:
     generated_at = now or datetime.now().astimezone()
     snapshot = client.list_recently_ended_meetings(since=since, now=generated_at)
-    items = tuple(_plan_item(meeting, now=generated_at, intake_root=intake_root) for meeting in snapshot.meetings)
+    effective_artifact_discovery_client = artifact_discovery_client or NoopMeetingArtifactDiscoveryClient()
+    items = tuple(
+        _plan_item(
+            _discover_meeting_artifacts(meeting, artifact_discovery_client=effective_artifact_discovery_client),
+            now=generated_at,
+            intake_root=intake_root,
+        )
+        for meeting in snapshot.meetings
+    )
     return TranscriptSyncPlan(
         since=since,
         generated_at=generated_at,
@@ -325,6 +443,12 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             f"meeting_sync_processable_calendar_only: {_count_process_items_with_only_calendar_metadata(process_items)}",
         ]
     )
+    for source_name, summary_key in SYNC_SOURCE_SUMMARY_FIELDS:
+        for status in ARTIFACT_STATUS_SUMMARY_SEQUENCE:
+            lines.append(
+                f"meeting_sync_processable_{summary_key}_{status}: "
+                f"{_count_process_items_with_source_status(process_items, source_name, status)}"
+            )
     for item in plan.items:
         meeting = item.meeting
         lines.append(f'meeting_sync_item: {item.decision} event_id="{meeting.event_id}" subject="{meeting.subject}"')
@@ -336,13 +460,22 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             lines.append(f"  would_write_bundle: {item.intake_bundle_note.path}")
             lines.append(f"  would_write_outlook_metadata: {item.intake_bundle_note.metadata_path}")
             lines.append(f"  would_write_meeting_identity: {item.intake_bundle_note.identity_path}")
+            if item.intake_bundle_note.processor_input_path is not None:
+                lines.append(f"  would_process_intake_file: {item.intake_bundle_note.processor_input_path}")
+            if item.intake_bundle_note.processor_input_source_name is not None:
+                lines.append(f"  processor_input_source: {item.intake_bundle_note.processor_input_source_name}")
             lines.append(f"  bundle_attendance_confidence: {item.intake_bundle_note.attendance_confidence}")
             for source_name in item.intake_bundle_note.sources_used:
                 lines.append(f"  bundle_source_used: {source_name}")
             for limitation in item.intake_bundle_note.source_limitations:
                 lines.append(f"  bundle_source_limitation: {limitation}")
         for source_name in item.bundle.available_sources():
-            lines.append(f"  source_available: {source_name}")
+            artifact = item.bundle.artifact(source_name)
+            if artifact and artifact.matched_paths:
+                rendered_paths = ", ".join(str(path) for path in artifact.matched_paths)
+                lines.append(f"  source_available: {source_name} ({rendered_paths})")
+            else:
+                lines.append(f"  source_available: {source_name}")
         for artifact in item.bundle.artifacts:
             if artifact.status != "available":
                 detail_suffix = f" ({artifact.detail})" if artifact.detail else ""
@@ -421,8 +554,30 @@ def _count_process_items_missing_source(
     return sum(1 for item in items if item.bundle.source_status(source_name) != "available")
 
 
+def _count_process_items_with_source_status(
+    items: tuple[TranscriptSyncPlanItem, ...],
+    source_name: str,
+    status: ArtifactStatus,
+) -> int:
+    return sum(1 for item in items if item.bundle.source_status(source_name) == status)
+
+
 def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSyncPlanItem, ...]) -> int:
     return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
+
+
+def _discover_meeting_artifacts(
+    meeting: OutlookMeetingCandidate,
+    *,
+    artifact_discovery_client: MeetingArtifactDiscoveryClient,
+) -> OutlookMeetingCandidate:
+    discovered_artifacts = artifact_discovery_client.discover_artifacts(meeting=meeting)
+    if not discovered_artifacts:
+        return meeting
+    existing = {artifact.source_name: artifact for artifact in meeting.discovered_artifacts}
+    for artifact in discovered_artifacts:
+        existing[artifact.source_name] = artifact
+    return replace(meeting, discovered_artifacts=tuple(existing.values()))
 
 
 def _plan_item(
@@ -466,13 +621,20 @@ def _plan_item(
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
-    reasons.append("Dry-run only: transcript, chat, recap, and bundle-note writes are not implemented yet.")
+    reasons.append(
+        "Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first."
+    )
     return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons), intake_bundle_note)
 
 
 def _build_source_bundle(meeting: OutlookMeetingCandidate) -> MeetingSourceBundle:
+    discovered_artifacts = {artifact.source_name: artifact for artifact in meeting.discovered_artifacts}
     artifacts = []
     for source_name in ARTIFACT_SOURCE_PRIORITY:
+        discovered = discovered_artifacts.get(source_name)
+        if discovered is not None:
+            artifacts.append(discovered)
+            continue
         if source_name == "Outlook calendar metadata":
             artifacts.append(
                 MeetingArtifact(
@@ -510,9 +672,12 @@ def _build_intake_bundle_note(
     identity_path = intake_root / _meeting_identity_relative_path(meeting)
     attendance_confidence, source_limitations = _bundle_transparency(bundle)
     sources_used = tuple(bundle.available_sources())
+    processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
     content = render_intake_bundle_note(
         meeting=meeting,
         bundle=bundle,
+        processor_input_path=processor_input_path,
+        processor_input_source_name=processor_input_source_name,
         attendance_confidence=attendance_confidence,
         sources_used=sources_used,
         source_limitations=source_limitations,
@@ -528,6 +693,8 @@ def _build_intake_bundle_note(
         path=path,
         metadata_path=metadata_path,
         identity_path=identity_path,
+        processor_input_path=processor_input_path,
+        processor_input_source_name=processor_input_source_name,
         attendance_confidence=attendance_confidence,
         sources_used=sources_used,
         source_limitations=source_limitations,
@@ -541,6 +708,8 @@ def render_intake_bundle_note(
     *,
     meeting: OutlookMeetingCandidate,
     bundle: MeetingSourceBundle,
+    processor_input_path: Path | None,
+    processor_input_source_name: str | None,
     attendance_confidence: str,
     sources_used: tuple[str, ...],
     source_limitations: tuple[str, ...],
@@ -604,6 +773,21 @@ def render_intake_bundle_note(
     for artifact in bundle.artifacts:
         detail = f" ({artifact.detail})" if artifact.detail else ""
         lines.append(f"- {artifact.source_name}: {artifact.status}{detail}")
+        for matched_path in artifact.matched_paths:
+            lines.append(f"  - Matched Path: `{matched_path}`")
+    lines.extend(
+        [
+            "",
+            "## Processor Handoff",
+        ]
+    )
+    if processor_input_path is not None and processor_input_source_name is not None:
+        lines.append(f"- Preferred Input: `{processor_input_path}`")
+        lines.append(f"- Preferred Source: {processor_input_source_name}")
+        lines.append(f"- Suggested Dry Run: `.venv/bin/obsidian-agent process {processor_input_path} --dry-run`")
+    else:
+        lines.append("- Preferred Input: None yet")
+        lines.append("- Preferred Source: None yet")
     return "\n".join(lines)
 
 
@@ -637,11 +821,30 @@ def _normalized_bundle_title(value: str) -> str:
 def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, ...]]:
     if bundle.available_sources() == ["Outlook calendar metadata"]:
         limitations = ["Known from calendar invite; attendance not guaranteed."]
-        for source_name in bundle.pending_sources():
-            limitations.append(f"{source_name} was not retrieved yet.")
+        for artifact in bundle.artifacts:
+            if artifact.status == "available":
+                continue
+            limitations.append(_artifact_limitation(artifact))
         return "calendar_invite_only", tuple(limitations)
-    limitations = [f"{source_name} was not retrieved yet." for source_name in bundle.pending_sources()]
+    limitations = [_artifact_limitation(artifact) for artifact in bundle.artifacts if artifact.status != "available"]
     return "partial_visibility", tuple(limitations)
+
+
+def _artifact_limitation(artifact: MeetingArtifact) -> str:
+    if artifact.status == "missing":
+        return f"{artifact.source_name} was not available."
+    if artifact.status == "permission_blocked":
+        return f"Permission blocked retrieval of {artifact.source_name}."
+    return f"{artifact.source_name} was not retrieved yet."
+
+
+def _preferred_processor_input(bundle: MeetingSourceBundle) -> tuple[Path | None, str | None]:
+    for source_name in ("Teams .vtt transcript", "Teams transcript text", "Manual / semi-manual intake"):
+        artifact = bundle.artifact(source_name)
+        if artifact is None or artifact.status != "available" or not artifact.matched_paths:
+            continue
+        return artifact.matched_paths[0], artifact.source_name
+    return None, None
 
 
 def render_outlook_metadata_sidecar(
@@ -649,6 +852,7 @@ def render_outlook_metadata_sidecar(
     meeting: OutlookMeetingCandidate,
     bundle: MeetingSourceBundle,
 ) -> str:
+    processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
     payload = {
         "source_type": "outlook_calendar_metadata",
         "outlook_event_id": meeting.event_id,
@@ -674,6 +878,19 @@ def render_outlook_metadata_sidecar(
             }
             for attendee in meeting.attendees
         ],
+        "artifacts": [
+            {
+                "source_name": artifact.source_name,
+                "status": artifact.status,
+                "detail": artifact.detail,
+                "matched_paths": [str(path) for path in artifact.matched_paths],
+            }
+            for artifact in bundle.artifacts
+        ],
+        "processor_handoff": {
+            "preferred_input_path": str(processor_input_path) if processor_input_path is not None else None,
+            "preferred_input_source_name": processor_input_source_name,
+        },
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 
