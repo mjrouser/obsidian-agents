@@ -245,12 +245,18 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   `--dry-run`, `--write-bundles`, or `--download-transcripts`. `--dry-run` and
   `--write-bundles` plan candidate meetings from Outlook metadata without
   downloading transcripts. `--download-transcripts` downloads available Teams
-  `.vtt` transcript content into `00_Intake/Raw Transcripts`, writes matching
-  bundle notes, and records the downloaded transcript as the preferred processor
-  handoff. If a Graph bearer token is not configured, the command returns a
-  warning-only plan instead of discovered meetings. For meetings that would be
-  processed, the plan reports the intake bundle note path and source-transparency
-  metadata.
+  `.vtt` transcript content into `00_Intake/Raw Transcripts`. When Graph
+  transcript content is unavailable but transcript `metadataContent` is
+  available, the same command falls back to writing a local Markdown transcript
+  artifact in `00_Intake/Raw Transcripts` and records that file as the
+  preferred processor handoff. When neither transcript-quality source is
+  available, the sync path now tries a Copilot AI recap before chat, writes any
+  recap-based fallback handoff to `00_Intake/Fallbacks`, and uses meeting chat
+  only as supplemental context for that fallback note rather than as a
+  standalone processor source. If a Graph bearer token is not configured, the
+  command returns a warning-only plan instead of discovered meetings. For
+  meetings that would be processed, the plan reports the intake bundle note path
+  and source-transparency metadata.
   `--write-bundles` writes only those planned bundle notes and skips existing
   bundle files. If the
   planned bundle note already exists, the planner now reports that meeting as an
