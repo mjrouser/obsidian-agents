@@ -145,6 +145,9 @@ Current implementation status in this repo:
   missing transcript, chat, or recap artifacts, and it now breaks those source
   states down explicitly as `available`, `missing`, `permission_blocked`, or
   `not_attempted` for each processable meeting source.
+- Bundle source limitations now preserve the underlying retrieval detail from
+  Graph or local discovery, making permission failures and unpublished
+  transcripts visible without opening the raw metadata sidecar.
 - The planner now performs a real local discovery pass for transcript artifacts
   already sitting in `00_Intake`, marking canonical date/title-matched `.vtt`,
   `.md`, and `.docx` files as available transcript sources before any network

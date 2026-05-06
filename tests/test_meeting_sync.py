@@ -79,7 +79,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(plan.items[0].bundle.available_sources(), ["Outlook calendar metadata"])
         self.assertIsNone(plan.items[0].intake_bundle_note)
         self.assertIn(
-            "Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first.",
+            "Bundle output preserves artifact retrieval status for transcript, chat, and recap sources.",
             plan.items[0].reasons,
         )
 
@@ -300,9 +300,18 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             rendered,
         )
         self.assertEqual(bundle_note.sources_used, ("Teams transcript text", "Outlook calendar metadata"))
-        self.assertIn("Teams .vtt transcript was not available.", bundle_note.source_limitations)
-        self.assertIn("Permission blocked retrieval of Teams meeting chat.", bundle_note.source_limitations)
-        self.assertIn("Copilot recap / AI summary was not retrieved yet.", bundle_note.source_limitations)
+        self.assertIn(
+            "Teams .vtt transcript was not available: No transcript file was published for this meeting.",
+            bundle_note.source_limitations,
+        )
+        self.assertIn(
+            "Permission blocked retrieval of Teams meeting chat: Graph chat message access is not granted.",
+            bundle_note.source_limitations,
+        )
+        self.assertIn(
+            "Copilot recap / AI summary was not retrieved yet: Discovery-only dry run; artifact retrieval is deferred.",
+            bundle_note.source_limitations,
+        )
 
     def test_local_transcript_discovery_marks_matching_vtt_as_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -839,9 +839,7 @@ def _plan_item(
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
-    reasons.append(
-        "Transcript, chat, and recap retrieval are not implemented yet; current sync planning is metadata-first."
-    )
+    reasons.append("Bundle output preserves artifact retrieval status for transcript, chat, and recap sources.")
     return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons), intake_bundle_note)
 
 
@@ -1058,11 +1056,12 @@ def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, .
 
 
 def _artifact_limitation(artifact: MeetingArtifact) -> str:
+    detail = f": {artifact.detail}" if artifact.detail else "."
     if artifact.status == "missing":
-        return f"{artifact.source_name} was not available."
+        return f"{artifact.source_name} was not available{detail}"
     if artifact.status == "permission_blocked":
-        return f"Permission blocked retrieval of {artifact.source_name}."
-    return f"{artifact.source_name} was not retrieved yet."
+        return f"Permission blocked retrieval of {artifact.source_name}{detail}"
+    return f"{artifact.source_name} was not retrieved yet{detail}"
 
 
 def _preferred_processor_input(bundle: MeetingSourceBundle) -> tuple[Path | None, str | None]:
