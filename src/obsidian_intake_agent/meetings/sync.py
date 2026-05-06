@@ -39,6 +39,10 @@ ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
 RAW_TRANSCRIPTS_DIR = "Raw Transcripts"
 
 
+class GraphOnlineMeetingNotFoundError(ValueError):
+    pass
+
+
 @dataclass(slots=True, frozen=True)
 class MeetingArtifact:
     source_name: str
@@ -428,15 +432,23 @@ class GraphTranscriptDiscoveryClient:
         *,
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
-        teams_meeting_id = meeting.teams_meeting_id()
-        if teams_meeting_id is None:
-            detail = "Outlook metadata did not include a Teams online meeting ID."
+        join_url = meeting.detected_join_url()
+        if join_url is None:
+            detail = "Outlook metadata did not include a Teams join URL."
             return (MeetingArtifact("Teams transcript text", "not_attempted", detail),)
 
-        encoded_meeting_id = quote(teams_meeting_id, safe="")
-        url = f"{self._api_base_url}{self._user_path}/onlineMeetings/{encoded_meeting_id}/transcripts"
         try:
-            payload = self._fetch_json(url, self._access_token)
+            online_meeting_id = _resolve_graph_online_meeting_id(
+                api_base_url=self._api_base_url,
+                user_path=self._user_path,
+                access_token=self._access_token,
+                join_url=join_url,
+                fetch_json=self._fetch_json,
+            )
+            payload = self._fetch_json(
+                f"{self._api_base_url}{self._user_path}/onlineMeetings/{quote(online_meeting_id, safe='')}/transcripts",
+                self._access_token,
+            )
             transcript_ids = _graph_transcript_ids(payload)
         except HTTPError as exc:
             if exc.code in {401, 403}:
@@ -460,6 +472,14 @@ class GraphTranscriptDiscoveryClient:
                     "Teams transcript text",
                     "not_attempted",
                     f"Graph transcript discovery failed with HTTP {exc.code}.",
+                ),
+            )
+        except GraphOnlineMeetingNotFoundError:
+            return (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "missing",
+                    "Graph did not find an online meeting record for this Outlook event.",
                 ),
             )
         except (URLError, ValueError) as exc:
@@ -523,18 +543,34 @@ class GraphTranscriptDownloadClient:
                 ),
             )
 
-        teams_meeting_id = meeting.teams_meeting_id()
-        if teams_meeting_id is None:
-            detail = "Outlook metadata did not include a Teams online meeting ID."
+        join_url = meeting.detected_join_url()
+        if join_url is None:
+            detail = "Outlook metadata did not include a Teams join URL."
             return (MeetingArtifact("Teams .vtt transcript", "not_attempted", detail),)
 
-        encoded_meeting_id = quote(teams_meeting_id, safe="")
-        transcripts_url = f"{self._api_base_url}{self._user_path}/onlineMeetings/{encoded_meeting_id}/transcripts"
         try:
+            online_meeting_id = _resolve_graph_online_meeting_id(
+                api_base_url=self._api_base_url,
+                user_path=self._user_path,
+                access_token=self._access_token,
+                join_url=join_url,
+                fetch_json=self._fetch_json,
+            )
+            transcripts_url = (
+                f"{self._api_base_url}{self._user_path}/onlineMeetings/{quote(online_meeting_id, safe='')}/transcripts"
+            )
             payload = self._fetch_json(transcripts_url, self._access_token)
             transcript_ids = _graph_transcript_ids(payload)
         except HTTPError as exc:
             return (self._http_error_artifact(exc, action="discovery"),)
+        except GraphOnlineMeetingNotFoundError:
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph did not find an online meeting record for this Outlook event.",
+                ),
+            )
         except (URLError, ValueError) as exc:
             return (
                 MeetingArtifact(
@@ -1162,9 +1198,52 @@ def _extract_teams_meeting_id(join_url: str) -> str | None:
     marker = "/l/meetup-join/"
     if marker not in path:
         return None
-    encoded = path.split(marker, 1)[1].split("/", 1)[0]
-    decoded = unquote(encoded).strip()
-    return decoded or None
+    encoded_segment = path.split(marker, 1)[1].split("/", 1)[0]
+    meeting_id = _optional_string(unquote(encoded_segment))
+    if meeting_id is None:
+        return None
+    if meeting_id.startswith("19:meeting_") and "@thread.v2" in meeting_id:
+        return meeting_id
+    return None
+
+
+def _resolve_graph_online_meeting_id(
+    *,
+    api_base_url: str,
+    user_path: str,
+    access_token: str,
+    join_url: str,
+    fetch_json: Callable[[str, str], dict[str, object]],
+) -> str:
+    lookup_url = (
+        f"{api_base_url}{user_path}/onlineMeetings?"
+        + urlencode(
+            {
+                "$filter": f"JoinWebUrl eq '{_escape_graph_odata_literal(join_url)}'",
+                "$select": "id",
+            }
+        )
+    )
+    payload = fetch_json(lookup_url, access_token)
+    try:
+        items = _graph_value_items(payload)
+    except ValueError as exc:
+        raise ValueError("Graph online meeting lookup response did not contain a value list.") from exc
+    if not items:
+        raise GraphOnlineMeetingNotFoundError("Graph did not find an online meeting record for this Outlook event.")
+    raw_id = items[0].get("id")
+    meeting_id = _optional_string(raw_id if isinstance(raw_id, str) else None)
+    if meeting_id is None:
+        raise ValueError("Graph online meeting lookup did not return an id.")
+    return meeting_id
+
+
+def _escape_graph_odata_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _is_graph_online_meeting_lookup_url(url: str) -> bool:
+    return "/onlineMeetings?" in url and ("$filter=JoinWebUrl" in url or "%24filter=JoinWebUrl" in url)
 
 
 def _fetch_graph_json(url: str, access_token: str) -> dict[str, object]:

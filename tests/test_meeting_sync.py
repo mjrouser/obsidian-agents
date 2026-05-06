@@ -627,6 +627,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         def fetch_json(url: str, token: str) -> dict[str, object]:
             requested_urls.append(url)
             self.assertEqual(token, "token")
+            if len(requested_urls) == 1:
+                return {"value": [{"id": "opaque-meeting-id"}]}
             return {"value": [{"id": "transcript-1"}, {"id": "transcript-2"}]}
 
         client = GraphTranscriptDiscoveryClient(
@@ -643,7 +645,12 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(
             requested_urls,
-            ["https://graph.example/v1.0/me/onlineMeetings/19%3Ameeting_graph123%40thread.v2/transcripts"],
+            [
+                "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
+                "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
+                "%3Fcontext%3D%257B%257D%27&%24select=id",
+                "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/transcripts",
+            ],
         )
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0].source_name, "Teams transcript text")
@@ -652,9 +659,18 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].matched_paths, ())
 
     def test_graph_transcript_discovery_marks_empty_transcript_list_missing(self) -> None:
+        requested_urls: list[str] = []
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            requested_urls.append(url)
+            if len(requested_urls) == 1:
+                return {"value": [{"id": "opaque-meeting-id"}]}
+            return {"value": []}
+
         client = GraphTranscriptDiscoveryClient(
             access_token="token",
-            fetch_json=lambda url, token: {"value": []},
+            api_base_url="https://graph.example/v1.0",
+            fetch_json=fetch_json,
         )
 
         artifacts = client.discover_artifacts(
@@ -666,6 +682,15 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             )
         )
 
+        self.assertEqual(
+            requested_urls,
+            [
+                "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
+                "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
+                "%3Fcontext%3D%257B%257D%27&%24select=id",
+                "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/transcripts",
+            ],
+        )
         self.assertEqual(artifacts[0].source_name, "Teams transcript text")
         self.assertEqual(artifacts[0].status, "missing")
         self.assertEqual(artifacts[0].detail, "Graph transcript discovery returned no transcript records.")
@@ -725,7 +750,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(artifacts[0].source_name, "Teams transcript text")
         self.assertEqual(artifacts[0].status, "not_attempted")
-        self.assertIn("Graph transcript response did not contain a value list.", artifacts[0].detail or "")
+        self.assertIn("Graph online meeting lookup response did not contain a value list.", artifacts[0].detail or "")
 
     def test_graph_transcript_discovery_does_not_attempt_without_teams_meeting_id(self) -> None:
         client = GraphTranscriptDiscoveryClient(
@@ -737,7 +762,39 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(artifacts[0].source_name, "Teams transcript text")
         self.assertEqual(artifacts[0].status, "not_attempted")
-        self.assertEqual(artifacts[0].detail, "Outlook metadata did not include a Teams online meeting ID.")
+        self.assertEqual(artifacts[0].detail, "Outlook metadata did not include a Teams join URL.")
+
+    def test_graph_transcript_discovery_marks_missing_when_online_meeting_lookup_finds_nothing(self) -> None:
+        requested_urls: list[str] = []
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            requested_urls.append(url)
+            return {"value": []}
+
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            api_base_url="https://graph.example/v1.0",
+            fetch_json=fetch_json,
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/meet/217922761958715?p=ytyUGXxNGsma23IKHs",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(
+            requested_urls,
+            [
+                "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
+                "https%3A%2F%2Fteams.microsoft.com%2Fmeet%2F217922761958715%3Fp%3DytyUGXxNGsma23IKHs%27&%24select=id"
+            ],
+        )
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(artifacts[0].detail, "Graph did not find an online meeting record for this Outlook event.")
 
     def test_graph_transcript_download_writes_vtt_and_marks_processor_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -748,6 +805,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             def fetch_json(url: str, token: str) -> dict[str, object]:
                 requested_json_urls.append(url)
                 self.assertEqual(token, "token")
+                if len(requested_json_urls) == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
                 return {"value": [{"id": "transcript 1"}]}
 
             def fetch_bytes(url: str, token: str) -> bytes:
@@ -773,13 +832,18 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
             self.assertEqual(
                 requested_json_urls,
-                ["https://graph.example/v1.0/me/onlineMeetings/19%3Ameeting_graph123%40thread.v2/transcripts"],
+                [
+                    "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
+                    "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
+                    "%3Fcontext%3D%257B%257D%27&%24select=id",
+                    "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/transcripts",
+                ],
             )
             self.assertEqual(
                 requested_content_urls,
                 [
                     "https://graph.example/v1.0/me/onlineMeetings/"
-                    "19%3Ameeting_graph123%40thread.v2/transcripts/transcript%201/content?%24format=text%2Fvtt"
+                    "opaque-meeting-id/transcripts/transcript%201/content?%24format=text%2Fvtt"
                 ],
             )
             self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
