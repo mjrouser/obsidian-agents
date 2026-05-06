@@ -164,6 +164,13 @@ Write only planned intake bundle notes, without downloading artifacts yet:
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --write-bundles
 ```
 
+Download available Teams `.vtt` transcripts into `00_Intake/Raw Transcripts`
+and write matching bundle notes:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
+```
+
 Dry-run which written meeting bundles are ready to feed into the existing processor:
 
 ```bash
@@ -234,13 +241,18 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - The watcher listens for both create and modify events, waits for the file to stop changing, and uses a per-file lock to avoid duplicate processing attempts.
 - Draft intake basenames such as `Untitled.md` and `Untitled 2.md` are ignored until you rename them.
 - `obsidian-agent run` currently requires `--once`.
-- `obsidian-agent meetings sync-transcripts` currently requires `--dry-run` and
-  `--write-bundles` as mutually exclusive modes. Both plan candidate meetings
-  from Outlook metadata without downloading transcripts yet. If a Graph bearer
-  token is not configured, the command returns a warning-only plan instead of
-  discovered meetings. For meetings that would be processed, the plan reports
-  the intake bundle note path and source-transparency metadata. `--write-bundles`
-  writes only those planned bundle notes and skips existing bundle files. If the
+- `obsidian-agent meetings sync-transcripts` currently requires exactly one of
+  `--dry-run`, `--write-bundles`, or `--download-transcripts`. `--dry-run` and
+  `--write-bundles` plan candidate meetings from Outlook metadata without
+  downloading transcripts. `--download-transcripts` downloads available Teams
+  `.vtt` transcript content into `00_Intake/Raw Transcripts`, writes matching
+  bundle notes, and records the downloaded transcript as the preferred processor
+  handoff. If a Graph bearer token is not configured, the command returns a
+  warning-only plan instead of discovered meetings. For meetings that would be
+  processed, the plan reports the intake bundle note path and source-transparency
+  metadata.
+  `--write-bundles` writes only those planned bundle notes and skips existing
+  bundle files. If the
   planned bundle note already exists, the planner now reports that meeting as an
   explicit skip so repeated polling runs stay quieter. Planned bundle notes now
   include Outlook organizer, attendee, response-status, and join-link context

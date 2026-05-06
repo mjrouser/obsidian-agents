@@ -103,7 +103,7 @@ Expected behavior:
 - Read completed Outlook meetings in the target window.
 - Skip non-meeting blocks unless explicitly configured otherwise.
 - Resolve Teams meeting identifiers from Outlook metadata.
-- Download available transcript content into `00_Intake`.
+- Download available transcript content into `00_Intake/Raw Transcripts`.
 - Preserve raw transcript artifacts and avoid duplicate downloads using stored
   transcript IDs.
 - Write a small sidecar/context file or processor context object with Outlook
@@ -132,6 +132,11 @@ Current implementation status in this repo:
   Outlook metadata JSON sidecar for each processable meeting, preserves
   existing bundle files, and backfills the metadata sidecar when a prior bundle
   note exists without it.
+- `obsidian-agent meetings sync-transcripts --download-transcripts` now
+  downloads available Teams `.vtt` transcript content from Microsoft Graph into
+  `00_Intake/Raw Transcripts`, preserves existing local transcript files, writes
+  matching bundle notes, and records the downloaded transcript path as the
+  preferred processor handoff.
 - The sync path also writes a hidden meeting identity marker keyed from
   Outlook event ID plus Teams meeting ID so future polling runs can recognize
   already-imported meetings even if meeting titles or bundle filenames change.
@@ -163,8 +168,7 @@ Current implementation status in this repo:
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
-- Transcript download from Teams/Graph plus chat and recap retrieval are still
-  future work.
+- Chat and recap retrieval are still future work.
 
 ## Extraction Standard
 

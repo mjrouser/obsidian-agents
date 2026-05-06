@@ -12,6 +12,7 @@ from obsidian_intake_agent.meetings import (
     ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
     GraphTranscriptDiscoveryClient,
+    GraphTranscriptDownloadClient,
     LocalIntakeTranscriptDiscoveryClient,
     MeetingArtifact,
     MeetingAttendee,
@@ -307,7 +308,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             intake_root.mkdir(parents=True)
-            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path = intake_root / "Raw Transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.parent.mkdir(parents=True)
             transcript_path.write_text("WEBVTT\n", encoding="utf-8")
 
             plan = build_transcript_sync_plan(
@@ -445,6 +447,35 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         bundle_note = plan.items[0].intake_bundle_note
         assert bundle_note is not None
         self.assertEqual(bundle_note.processor_input_source_name, "Teams transcript text")
+
+    def test_chained_artifact_discovery_preserves_permission_blocked_over_later_missing(self) -> None:
+        graph_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="permission_blocked",
+                    detail="Graph transcript content download failed with HTTP 403.",
+                ),
+            )
+        )
+        local_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="missing",
+                    detail="No local .vtt intake file matched the meeting date/title.",
+                ),
+            )
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(graph_client, local_client).discover_artifacts(
+            meeting=_meeting(event_id="evt-1", subject="Platform Sync")
+        )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+        self.assertEqual(artifacts[0].status, "permission_blocked")
+        self.assertEqual(artifacts[0].detail, "Graph transcript content download failed with HTTP 403.")
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -651,6 +682,117 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].source_name, "Teams transcript text")
         self.assertEqual(artifacts[0].status, "not_attempted")
         self.assertEqual(artifacts[0].detail, "Outlook metadata did not include a Teams online meeting ID.")
+
+    def test_graph_transcript_download_writes_vtt_and_marks_processor_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            requested_json_urls: list[str] = []
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                requested_json_urls.append(url)
+                self.assertEqual(token, "token")
+                return {"value": [{"id": "transcript 1"}]}
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Morgan>Hello</v>"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+            meeting = _meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+            artifacts = client.discover_artifacts(meeting=meeting)
+            transcript_path = intake_root / "Raw Transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
+
+            self.assertEqual(
+                requested_json_urls,
+                ["https://graph.example/v1.0/me/onlineMeetings/19%3Ameeting_graph123%40thread.v2/transcripts"],
+            )
+            self.assertEqual(
+                requested_content_urls,
+                [
+                    "https://graph.example/v1.0/me/onlineMeetings/"
+                    "19%3Ameeting_graph123%40thread.v2/transcripts/transcript%201/content?%24format=text%2Fvtt"
+                ],
+            )
+            self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
+            self.assertFalse((intake_root / "2026-05-04 - Teams - Platform Sync.vtt").exists())
+            self.assertEqual(
+                transcript_path.read_text(encoding="utf-8"),
+                "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Morgan>Hello</v>\n",
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=client,
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+            bundle_note = plan.items[0].intake_bundle_note
+            assert bundle_note is not None
+            self.assertEqual(bundle_note.processor_input_path, transcript_path)
+            self.assertEqual(bundle_note.processor_input_source_name, "Teams .vtt transcript")
+
+    def test_graph_transcript_download_reuses_existing_vtt_without_fetching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            transcript_path = intake_root / "Raw Transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                fetch_json=lambda url, token: self.fail("fetch_json should not be called for existing VTT"),
+                fetch_bytes=lambda url, token: self.fail("fetch_bytes should not be called for existing VTT"),
+            )
+
+            artifacts = client.discover_artifacts(
+                meeting=_meeting(
+                    event_id="evt-1",
+                    subject="Platform Sync",
+                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                    online_meeting_provider="teamsForBusiness",
+                )
+            )
+
+            self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
+
+    def test_graph_transcript_download_marks_content_permission_blocked(self) -> None:
+        client = GraphTranscriptDownloadClient(
+            access_token="token",
+            intake_root=Path("/tmp/00_Intake"),
+            fetch_json=lambda url, token: {"value": [{"id": "transcript-1"}]},
+            fetch_bytes=lambda url, token: (_ for _ in ()).throw(_SyntheticHTTPError(url, 403, "Forbidden")),
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+        self.assertEqual(artifacts[0].status, "permission_blocked")
+        self.assertEqual(artifacts[0].detail, "Graph transcript content download failed with HTTP 403.")
 
     def test_render_intake_bundle_note_renders_expected_sections(self) -> None:
         meeting = _meeting(

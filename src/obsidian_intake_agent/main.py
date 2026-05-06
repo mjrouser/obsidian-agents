@@ -11,6 +11,7 @@ from .meetings import (
     ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
     GraphTranscriptDiscoveryClient,
+    GraphTranscriptDownloadClient,
     LocalIntakeTranscriptDiscoveryClient,
     MeetingArtifactDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
@@ -106,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="write_bundles",
         help="Write planned intake bundle notes into the intake folder without downloading artifacts.",
     )
+    sync_parser.add_argument(
+        "--download-transcripts",
+        action="store_true",
+        dest="download_transcripts",
+        help="Download available Teams transcript files into intake and write the matching bundle notes.",
+    )
     process_bundles_parser = meetings_subparsers.add_parser(
         "process-bundles",
         help="Dry-run which synced meeting bundles are ready for the existing intake processor.",
@@ -185,20 +192,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "meetings":
         if args.meetings_command == "sync-transcripts":
-            if args.dry_run == args.write_bundles:
+            selected_modes = sum(
+                1 for selected in (args.dry_run, args.write_bundles, args.download_transcripts) if selected
+            )
+            if selected_modes != 1:
                 parser.error(
-                    "`obsidian-agent meetings sync-transcripts` requires exactly one of `--dry-run` or `--write-bundles`."
+                    "`obsidian-agent meetings sync-transcripts` requires exactly one of "
+                    "`--dry-run`, `--write-bundles`, or `--download-transcripts`."
                 )
             since = date.fromisoformat(args.since)
             sync_plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
-                artifact_discovery_client=_build_meeting_artifact_discovery_client(config),
+                artifact_discovery_client=_build_meeting_artifact_discovery_client(
+                    config,
+                    download_transcripts=args.download_transcripts,
+                ),
                 since=since,
                 intake_root=config.vault_path / config.intake_dir,
             )
-            mode = "write-bundles" if args.write_bundles else "dry-run"
+            mode = (
+                "download-transcripts"
+                if args.download_transcripts
+                else ("write-bundles" if args.write_bundles else "dry-run")
+            )
             print(render_transcript_sync_plan(sync_plan, mode=mode))
-            if args.write_bundles:
+            if args.write_bundles or args.download_transcripts:
                 print(render_bundle_write_result(write_planned_bundle_notes(sync_plan)))
             return 0
         if args.meetings_command == "process-bundles":
@@ -293,13 +311,26 @@ def _build_meeting_discovery_client(
     )
 
 
-def _build_meeting_artifact_discovery_client(config: Config) -> MeetingArtifactDiscoveryClient:
+def _build_meeting_artifact_discovery_client(
+    config: Config,
+    *,
+    download_transcripts: bool = False,
+) -> MeetingArtifactDiscoveryClient:
     local_client = LocalIntakeTranscriptDiscoveryClient(
         intake_root=config.vault_path / config.intake_dir,
     )
     token = os.environ.get(config.outlook_graph_access_token_env, "").strip()
     if not token:
         return local_client
+    if download_transcripts:
+        return ChainedMeetingArtifactDiscoveryClient(
+            GraphTranscriptDownloadClient(
+                access_token=token,
+                intake_root=config.vault_path / config.intake_dir,
+                api_base_url=config.outlook_graph_api_base_url,
+            ),
+            local_client,
+        )
     return ChainedMeetingArtifactDiscoveryClient(
         GraphTranscriptDiscoveryClient(
             access_token=token,

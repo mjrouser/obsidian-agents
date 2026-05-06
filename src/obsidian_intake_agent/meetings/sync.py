@@ -36,6 +36,7 @@ ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
     "permission_blocked",
     "not_attempted",
 )
+RAW_TRANSCRIPTS_DIR = "Raw Transcripts"
 
 
 @dataclass(slots=True, frozen=True)
@@ -263,10 +264,13 @@ class ChainedMeetingArtifactDiscoveryClient:
         *,
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
-        artifacts: list[MeetingArtifact] = []
+        artifacts: dict[str, MeetingArtifact] = {}
         for client in self._clients:
-            artifacts.extend(client.discover_artifacts(meeting=meeting))
-        return tuple(artifacts)
+            for artifact in client.discover_artifacts(meeting=meeting):
+                existing = artifacts.get(artifact.source_name)
+                if existing is None or _artifact_status_rank(artifact.status) >= _artifact_status_rank(existing.status):
+                    artifacts[artifact.source_name] = artifact
+        return tuple(artifacts.values())
 
 
 class LocalIntakeTranscriptDiscoveryClient:
@@ -485,6 +489,116 @@ class GraphTranscriptDiscoveryClient:
         )
 
 
+class GraphTranscriptDownloadClient:
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        intake_root: Path,
+        api_base_url: str = "https://graph.microsoft.com/v1.0",
+        user_id: str | None = None,
+        fetch_json: Callable[[str, str], dict[str, object]] | None = None,
+        fetch_bytes: Callable[[str, str], bytes] | None = None,
+    ) -> None:
+        self._access_token = access_token
+        self._intake_root = intake_root
+        self._api_base_url = api_base_url.rstrip("/")
+        self._user_path = f"/users/{quote(user_id, safe='')}" if user_id else "/me"
+        self._fetch_json = fetch_json or _fetch_graph_json
+        self._fetch_bytes = fetch_bytes or _fetch_graph_bytes
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        target_path = self._intake_root / _transcript_relative_path(meeting)
+        if target_path.exists():
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "available",
+                    f"Transcript file already exists: {target_path}",
+                    matched_paths=(target_path,),
+                ),
+            )
+
+        teams_meeting_id = meeting.teams_meeting_id()
+        if teams_meeting_id is None:
+            detail = "Outlook metadata did not include a Teams online meeting ID."
+            return (MeetingArtifact("Teams .vtt transcript", "not_attempted", detail),)
+
+        encoded_meeting_id = quote(teams_meeting_id, safe="")
+        transcripts_url = f"{self._api_base_url}{self._user_path}/onlineMeetings/{encoded_meeting_id}/transcripts"
+        try:
+            payload = self._fetch_json(transcripts_url, self._access_token)
+            transcript_ids = _graph_transcript_ids(payload)
+        except HTTPError as exc:
+            return (self._http_error_artifact(exc, action="discovery"),)
+        except (URLError, ValueError) as exc:
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "not_attempted",
+                    f"Graph transcript discovery failed: {exc}",
+                ),
+            )
+
+        if not transcript_ids:
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph transcript discovery returned no transcript records.",
+                ),
+            )
+
+        transcript_id = transcript_ids[0]
+        content_url = f"{transcripts_url}/{quote(transcript_id, safe='')}/content?" + urlencode({"$format": "text/vtt"})
+        try:
+            content = self._fetch_bytes(content_url, self._access_token)
+        except HTTPError as exc:
+            return (self._http_error_artifact(exc, action="content download"),)
+        except URLError as exc:
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "not_attempted",
+                    f"Graph transcript content download failed: {exc}",
+                ),
+            )
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(_normalized_vtt_bytes(content))
+        return (
+            MeetingArtifact(
+                "Teams .vtt transcript",
+                "available",
+                f"Downloaded Graph transcript content for transcript ID {transcript_id}.",
+                matched_paths=(target_path,),
+            ),
+        )
+
+    def _http_error_artifact(self, error: HTTPError, *, action: str) -> MeetingArtifact:
+        if error.code in {401, 403}:
+            return MeetingArtifact(
+                "Teams .vtt transcript",
+                "permission_blocked",
+                f"Graph transcript {action} failed with HTTP {error.code}.",
+            )
+        if error.code == 404:
+            return MeetingArtifact(
+                "Teams .vtt transcript",
+                "missing",
+                "Graph did not find transcript content for this Teams meeting.",
+            )
+        return MeetingArtifact(
+            "Teams .vtt transcript",
+            "not_attempted",
+            f"Graph transcript {action} failed with HTTP {error.code}.",
+        )
+
+
 def build_transcript_sync_plan(
     *,
     client: MeetingDiscoveryClient,
@@ -659,6 +773,15 @@ def _count_process_items_with_source_status(
 
 def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSyncPlanItem, ...]) -> int:
     return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
+
+
+def _artifact_status_rank(status: ArtifactStatus) -> int:
+    return {
+        "not_attempted": 0,
+        "missing": 1,
+        "permission_blocked": 2,
+        "available": 3,
+    }[status]
 
 
 def _discover_meeting_artifacts(
@@ -891,6 +1014,15 @@ def _bundle_note_basename(meeting: OutlookMeetingCandidate) -> str:
     return f"{meeting.start_at.date().isoformat()} - Teams - {title} (bundle).md"
 
 
+def _transcript_basename(meeting: OutlookMeetingCandidate) -> str:
+    title = _normalized_bundle_title(meeting.subject)
+    return f"{meeting.start_at.date().isoformat()} - Teams - {title}.vtt"
+
+
+def _transcript_relative_path(meeting: OutlookMeetingCandidate) -> Path:
+    return Path(RAW_TRANSCRIPTS_DIR) / _transcript_basename(meeting)
+
+
 def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
     title = _normalized_bundle_title(meeting.subject)
     return f"{meeting.start_at.date().isoformat()} - Teams - {title} (outlook).json"
@@ -1047,6 +1179,22 @@ def _fetch_graph_json(url: str, access_token: str) -> dict[str, object]:
     )
     with urlopen(request) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _fetch_graph_bytes(url: str, access_token: str) -> bytes:
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "text/vtt",
+        },
+    )
+    with urlopen(request) as response:
+        return response.read()
+
+
+def _normalized_vtt_bytes(content: bytes) -> bytes:
+    return content if content.endswith(b"\n") else content + b"\n"
 
 
 def _graph_value_items(payload: dict[str, object]) -> list[dict[str, object]]:
