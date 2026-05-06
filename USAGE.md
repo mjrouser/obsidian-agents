@@ -21,6 +21,25 @@ The app is designed to be safe to test before it writes anything.
 
 Use dry runs when changing config, prompts, dependencies, or parsing behavior.
 
+For meeting transcript sync, start with a dry run:
+
+```bash
+./.venv/bin/obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+```
+
+Then write bundle notes without downloading transcript files:
+
+```bash
+./.venv/bin/obsidian-agent meetings sync-transcripts --since 2026-05-01 --write-bundles
+```
+
+Or download available Teams `.vtt` transcripts into
+`00_Intake/Raw Transcripts` and write matching bundle notes:
+
+```bash
+./.venv/bin/obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
+```
+
 ## Daily Commands
 
 Run commands from the repository root:

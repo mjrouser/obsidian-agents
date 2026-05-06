@@ -19,6 +19,7 @@ from obsidian_intake_agent.meetings import (
     BundleWriteResult,
     ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
+    GraphTranscriptDownloadClient,
     LocalIntakeTranscriptDiscoveryClient,
     TranscriptSyncPlan,
     UnconfiguredOutlookMeetingDiscoveryClient,
@@ -289,6 +290,23 @@ class MainCliTests(unittest.TestCase):
 
             self.assertEqual(both_exc.exception.code, 2)
 
+            with self.assertRaises(SystemExit) as three_modes_exc:
+                main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                        "--write-bundles",
+                        "--download-transcripts",
+                    ]
+                )
+
+            self.assertEqual(three_modes_exc.exception.code, 2)
+
     def test_meetings_process_bundles_requires_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -397,6 +415,53 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("bundle_note_written:", output)
             self.assertIn("outlook_metadata_written:", output)
             self.assertIn("meeting_identity_written:", output)
+
+    def test_meetings_sync_transcripts_download_transcripts_prints_write_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            fake_plan = TranscriptSyncPlan(
+                since=date(2026, 5, 1),
+                generated_at=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+                provider_label="stub_outlook_calendar",
+                warning=None,
+                items=(),
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.build_transcript_sync_plan", return_value=fake_plan),
+                patch(
+                    "obsidian_intake_agent.main.write_planned_bundle_notes",
+                    return_value=BundleWriteResult(
+                        written_bundle_note_paths=(),
+                        written_metadata_paths=(),
+                        written_identity_paths=(),
+                        skipped_existing_bundle_note_paths=(),
+                        skipped_existing_metadata_paths=(),
+                        skipped_existing_identity_paths=(),
+                    ),
+                ) as write_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--download-transcripts",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            write_mock.assert_called_once_with(fake_plan)
+            self.assertIn("meeting_sync_mode: download-transcripts", output)
+            self.assertIn("meeting_sync_bundle_notes_written: 0", output)
 
     def test_meetings_process_bundles_prints_dry_run_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -561,6 +626,20 @@ class MainCliTests(unittest.TestCase):
                 client = _build_meeting_artifact_discovery_client(config)
 
             self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
+
+    def test_build_meeting_artifact_discovery_client_can_download_transcripts_with_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
+                client = _build_meeting_artifact_discovery_client(config, download_transcripts=True)
+
+            self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
+            self.assertTrue(any(isinstance(child, GraphTranscriptDownloadClient) for child in client._clients))
 
 
 def _write_config(
