@@ -8,8 +8,11 @@ from pathlib import Path
 
 from .config import Config
 from .meetings import (
+    ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
+    GraphTranscriptDiscoveryClient,
     LocalIntakeTranscriptDiscoveryClient,
+    MeetingArtifactDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
@@ -189,9 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             since = date.fromisoformat(args.since)
             sync_plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
-                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(
-                    intake_root=config.vault_path / config.intake_dir,
-                ),
+                artifact_discovery_client=_build_meeting_artifact_discovery_client(config),
                 since=since,
                 intake_root=config.vault_path / config.intake_dir,
             )
@@ -289,6 +290,22 @@ def _build_meeting_discovery_client(
     return GraphOutlookMeetingDiscoveryClient(
         access_token=token,
         api_base_url=config.outlook_graph_api_base_url,
+    )
+
+
+def _build_meeting_artifact_discovery_client(config: Config) -> MeetingArtifactDiscoveryClient:
+    local_client = LocalIntakeTranscriptDiscoveryClient(
+        intake_root=config.vault_path / config.intake_dir,
+    )
+    token = os.environ.get(config.outlook_graph_access_token_env, "").strip()
+    if not token:
+        return local_client
+    return ChainedMeetingArtifactDiscoveryClient(
+        GraphTranscriptDiscoveryClient(
+            access_token=token,
+            api_base_url=config.outlook_graph_api_base_url,
+        ),
+        local_client,
     )
 
 

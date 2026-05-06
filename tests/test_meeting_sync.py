@@ -9,7 +9,9 @@ from urllib.error import HTTPError
 
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
+    ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
+    GraphTranscriptDiscoveryClient,
     LocalIntakeTranscriptDiscoveryClient,
     MeetingArtifact,
     MeetingAttendee,
@@ -395,6 +397,55 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertIn(f"- Preferred Input: `{transcript_path}`", bundle_note.content)
             self.assertIn("- Preferred Source: Teams transcript text", bundle_note.content)
 
+    def test_chained_artifact_discovery_allows_later_clients_to_override_sources(self) -> None:
+        graph_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams transcript text",
+                    status="available",
+                    detail="Graph transcript metadata available.",
+                ),
+            )
+        )
+        local_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams transcript text",
+                    status="available",
+                    detail="Matched local intake artifact.",
+                    matched_paths=(Path("/tmp/2026-05-04 - Teams - Platform Sync.md"),),
+                ),
+            )
+        )
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(
+                meetings=(
+                    _meeting(
+                        event_id="evt-1",
+                        subject="Platform Sync",
+                        join_url=(
+                            "https://teams.microsoft.com/l/meetup-join/"
+                            "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                        ),
+                        online_meeting_provider="teamsForBusiness",
+                    ),
+                )
+            ),
+            artifact_discovery_client=ChainedMeetingArtifactDiscoveryClient(graph_client, local_client),
+            since=date(2026, 5, 1),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+        )
+
+        self.assertEqual(
+            plan.items[0].bundle.artifact_paths("Teams transcript text"),
+            (Path("/tmp/2026-05-04 - Teams - Platform Sync.md"),),
+        )
+        bundle_note = plan.items[0].intake_bundle_note
+        assert bundle_note is not None
+        self.assertEqual(bundle_note.processor_input_source_name, "Teams transcript text")
+
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
             access_token="token",
@@ -482,6 +533,124 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(snapshot.meetings, ())
         self.assertIn("HTTP 403", snapshot.warning or "")
+
+    def test_graph_transcript_discovery_marks_transcript_metadata_available(self) -> None:
+        requested_urls: list[str] = []
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            requested_urls.append(url)
+            self.assertEqual(token, "token")
+            return {"value": [{"id": "transcript-1"}, {"id": "transcript-2"}]}
+
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token", api_base_url="https://graph.example/v1.0", fetch_json=fetch_json
+        )
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(
+            requested_urls,
+            ["https://graph.example/v1.0/me/onlineMeetings/19%3Ameeting_graph123%40thread.v2/transcripts"],
+        )
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].source_name, "Teams transcript text")
+        self.assertEqual(artifacts[0].status, "available")
+        self.assertIn("transcript-1, transcript-2", artifacts[0].detail or "")
+        self.assertEqual(artifacts[0].matched_paths, ())
+
+    def test_graph_transcript_discovery_marks_empty_transcript_list_missing(self) -> None:
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            fetch_json=lambda url, token: {"value": []},
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(artifacts[0].source_name, "Teams transcript text")
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(artifacts[0].detail, "Graph transcript discovery returned no transcript records.")
+
+    def test_graph_transcript_discovery_marks_404_missing(self) -> None:
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            fetch_json=lambda url, token: (_ for _ in ()).throw(_SyntheticHTTPError(url, 404, "Not Found")),
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(artifacts[0].source_name, "Teams transcript text")
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(artifacts[0].detail, "Graph did not find transcripts for this Teams meeting.")
+
+    def test_graph_transcript_discovery_marks_permission_errors_blocked(self) -> None:
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            fetch_json=lambda url, token: (_ for _ in ()).throw(_SyntheticHTTPError(url, 403, "Forbidden")),
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(artifacts[0].source_name, "Teams transcript text")
+        self.assertEqual(artifacts[0].status, "permission_blocked")
+        self.assertEqual(artifacts[0].detail, "Graph transcript discovery failed with HTTP 403.")
+
+    def test_graph_transcript_discovery_marks_bad_payload_not_attempted(self) -> None:
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            fetch_json=lambda url, token: {"unexpected": []},
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(artifacts[0].source_name, "Teams transcript text")
+        self.assertEqual(artifacts[0].status, "not_attempted")
+        self.assertIn("Graph transcript response did not contain a value list.", artifacts[0].detail or "")
+
+    def test_graph_transcript_discovery_does_not_attempt_without_teams_meeting_id(self) -> None:
+        client = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            fetch_json=lambda url, token: self.fail("fetch_json should not be called without a Teams meeting ID"),
+        )
+
+        artifacts = client.discover_artifacts(meeting=_meeting(event_id="evt-1", subject="Platform Sync"))
+
+        self.assertEqual(artifacts[0].source_name, "Teams transcript text")
+        self.assertEqual(artifacts[0].status, "not_attempted")
+        self.assertEqual(artifacts[0].detail, "Outlook metadata did not include a Teams online meeting ID.")
 
     def test_render_intake_bundle_note_renders_expected_sections(self) -> None:
         meeting = _meeting(
@@ -798,6 +967,19 @@ class _StubMeetingDiscoveryClient:
             meetings=self.meetings,
             provider_label="stub_outlook_calendar",
         )
+
+
+@dataclass(slots=True)
+class _StubArtifactDiscoveryClient:
+    artifacts: tuple[MeetingArtifact, ...]
+
+    def discover_artifacts(
+        self,
+        *,
+        meeting: OutlookMeetingCandidate,
+    ) -> tuple[MeetingArtifact, ...]:
+        del meeting
+        return self.artifacts
 
 
 def _meeting(
