@@ -13,6 +13,8 @@ from .meetings import (
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
+    execute_bundle_processing_plan,
+    render_bundle_execution_result,
     render_bundle_processing_plan,
     render_bundle_write_result,
     render_transcript_sync_plan,
@@ -111,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help="Print which bundle handoffs are ready without processing any files.",
     )
+    process_bundles_parser.add_argument(
+        "--execute",
+        action="store_true",
+        dest="execute",
+        help="Process ready meeting bundle handoffs through the existing intake processor.",
+    )
 
     return parser
 
@@ -193,13 +201,29 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_bundle_write_result(write_planned_bundle_notes(sync_plan)))
             return 0
         if args.meetings_command == "process-bundles":
-            if not args.dry_run:
-                parser.error("`obsidian-agent meetings process-bundles` currently requires `--dry-run`.")
+            if args.dry_run == args.execute:
+                parser.error(
+                    "`obsidian-agent meetings process-bundles` requires exactly one of `--dry-run` or `--execute`."
+                )
             bundle_plan = build_bundle_processing_plan(
                 intake_root=config.vault_path / config.intake_dir,
                 processor=processor,
             )
-            print(render_bundle_processing_plan(bundle_plan))
+            if args.dry_run:
+                print(render_bundle_processing_plan(bundle_plan))
+                return 0
+            execution_result = execute_bundle_processing_plan(bundle_plan, processor=processor)
+            print(render_bundle_execution_result(execution_result))
+            if execution_result.processed_count > 0:
+                source_label = _vault_commit_source_label(
+                    [
+                        item.plan_item.metadata.processor_handoff.preferred_input_path.name
+                        for item in execution_result.items
+                        if item.status == "processed"
+                        and item.plan_item.metadata.processor_handoff.preferred_input_path is not None
+                    ]
+                )
+                _maybe_auto_commit(config, vault_source_name=source_label)
             return 0
 
     parser.error("Unknown command.")

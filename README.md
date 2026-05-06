@@ -170,6 +170,12 @@ Dry-run which written meeting bundles are ready to feed into the existing proces
 obsidian-agent meetings process-bundles --dry-run
 ```
 
+Process ready meeting bundles through the existing intake processor:
+
+```bash
+obsidian-agent meetings process-bundles --execute
+```
+
 With Graph discovery enabled:
 
 ```bash
@@ -256,11 +262,13 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   the bundle contract now also records a preferred processor input path/source
   so the next ingestion step can feed the existing processor directly.
 - `obsidian-agent meetings process-bundles` currently requires `--dry-run` and
-  reads the written Outlook metadata sidecars in `00_Intake` to report which
-  synced meeting bundles are actually ready for the existing `process` command.
-  The dry run distinguishes ready bundles from blocked ones, including
-  calendar-only bundles, missing local transcript files, and handoffs the
-  current intake processor would skip as already processed.
+  `--execute` as mutually exclusive modes. The dry run reads the written
+  Outlook metadata sidecars in `00_Intake` to report which synced meeting
+  bundles are actually ready for the existing `process` command. The execution
+  mode runs only those ready handoffs through the current intake processor and
+  reports per-bundle `processed`, `skipped`, and `failed` outcomes. Both modes
+  distinguish calendar-only bundles, missing local transcript files, and
+  handoffs the current intake processor would skip as already processed.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

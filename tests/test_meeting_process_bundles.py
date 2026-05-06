@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.meetings import (
@@ -13,9 +14,11 @@ from obsidian_intake_agent.meetings import (
     OutlookMeetingCandidate,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
+    execute_bundle_processing_plan,
+    render_bundle_execution_result,
     render_bundle_processing_plan,
 )
-from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor
+from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor, ProcessResult
 
 
 class BundleProcessingPlanTests(unittest.TestCase):
@@ -140,6 +143,126 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
             rendered = render_bundle_processing_plan(plan)
             self.assertIn("meeting_bundle_process_blocked_processor_skip: 1", rendered)
+
+    def test_execute_processes_ready_bundle_and_renders_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-execute", subject="Delivery Review"),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=intake_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 1)
+            self.assertEqual(result.skipped_count, 0)
+            self.assertEqual(result.failed_count, 0)
+            self.assertEqual(result.items[0].status, "processed")
+            self.assertIsNotNone(result.items[0].canonical_note_path)
+            rendered = render_bundle_execution_result(result)
+            self.assertIn("meeting_bundle_process_mode: execute", rendered)
+            self.assertIn("meeting_bundle_process_processed: 1", rendered)
+            self.assertIn("reason: Bundle preferred input was processed successfully.", rendered)
+
+    def test_execute_skips_blocked_bundle_without_calling_processor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-blocked", subject="Calendar Only Review"),
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=intake_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            with patch.object(processor, "process_file") as process_file_mock:
+                result = execute_bundle_processing_plan(plan, processor=processor)
+
+            process_file_mock.assert_not_called()
+            self.assertEqual(result.processed_count, 0)
+            self.assertEqual(result.skipped_count, 1)
+            self.assertEqual(result.items[0].reasons, plan.items[0].reasons)
+
+    def test_execute_reports_processor_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-fail", subject="Delivery Review"),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=intake_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            with patch.object(processor, "process_file", side_effect=RuntimeError("boom")):
+                result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 0)
+            self.assertEqual(result.failed_count, 1)
+            self.assertEqual(result.items[0].status, "failed")
+            self.assertEqual(result.items[0].reasons, ("Processor execution failed: boom",))
+
+    def test_execute_skips_when_processor_returns_skip_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-skip", subject="Delivery Review"),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=intake_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            with patch.object(
+                processor,
+                "process_file",
+                return_value=ProcessResult(processed=False, skip_reason="already processed"),
+            ):
+                result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 0)
+            self.assertEqual(result.skipped_count, 1)
+            self.assertEqual(result.items[0].reasons, ("Processor skipped preferred input: already processed.",))
 
 
 class _StubMeetingDiscoveryClient:

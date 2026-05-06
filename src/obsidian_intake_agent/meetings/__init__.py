@@ -1,10 +1,14 @@
 from .process_bundles import (
     BundleArtifactRecord,
+    BundleExecutionResult,
+    BundleExecutionResultItem,
     BundleMetadataRecord,
     BundleProcessingPlan,
     BundleProcessingPlanItem,
     BundleProcessorHandoff,
     build_bundle_processing_plan,
+    execute_bundle_processing_plan,
+    render_bundle_execution_result,
     render_bundle_processing_plan,
 )
 from .sync import (
@@ -38,6 +42,8 @@ __all__ = [
     "ARTIFACT_SOURCE_PRIORITY",
     "ArtifactStatus",
     "BundleArtifactRecord",
+    "BundleExecutionResult",
+    "BundleExecutionResultItem",
     "BundleMetadataRecord",
     "BundleProcessingPlan",
     "BundleProcessingPlanItem",
@@ -59,6 +65,8 @@ __all__ = [
     "UnconfiguredOutlookMeetingDiscoveryClient",
     "build_bundle_processing_plan",
     "build_transcript_sync_plan",
+    "execute_bundle_processing_plan",
+    "render_bundle_execution_result",
     "render_bundle_processing_plan",
     "render_bundle_write_result",
     "render_intake_bundle_note",
