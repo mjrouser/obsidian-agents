@@ -638,8 +638,7 @@ class MainCliTests(unittest.TestCase):
             with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
                 client = _build_meeting_artifact_discovery_client(config, download_transcripts=True)
 
-            self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
-            self.assertTrue(any(isinstance(child, GraphTranscriptDownloadClient) for child in client._clients))
+            self.assertIsInstance(client, GraphTranscriptDownloadClient)
 
 
 def _write_config(
