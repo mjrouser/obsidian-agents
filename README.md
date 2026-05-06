@@ -272,7 +272,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   exact matched artifact paths in the bundle note artifact plan plus the raw
   Outlook metadata sidecar. When one of those transcript artifacts is available,
   the bundle contract now also records a preferred processor input path/source
-  so the next ingestion step can feed the existing processor directly.
+  so the next ingestion step can feed the existing processor directly. Bundle
+  source limitations include the retrieval detail from Graph or local discovery
+  so permission blocks and unpublished transcripts are visible in the note.
 - `obsidian-agent meetings process-bundles` currently requires `--dry-run` and
   `--execute` as mutually exclusive modes. The dry run reads the written
   Outlook metadata sidecars in `00_Intake` to report which synced meeting
