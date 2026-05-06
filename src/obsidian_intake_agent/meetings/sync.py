@@ -272,7 +272,7 @@ class ChainedMeetingArtifactDiscoveryClient:
         for client in self._clients:
             for artifact in client.discover_artifacts(meeting=meeting):
                 existing = artifacts.get(artifact.source_name)
-                if existing is None or _artifact_status_rank(artifact.status) >= _artifact_status_rank(existing.status):
+                if existing is None or _should_replace_artifact(existing=existing, candidate=artifact):
                     artifacts[artifact.source_name] = artifact
         return tuple(artifacts.values())
 
@@ -364,7 +364,9 @@ class GraphOutlookMeetingDiscoveryClient:
     ) -> None:
         self._access_token = access_token
         self._api_base_url = api_base_url.rstrip("/")
-        self._fetch_json = fetch_json or _fetch_graph_json
+        self._fetch_json = fetch_json or (
+            lambda url, token: _fetch_graph_json(url, token, prefer_outlook_timezone=True)
+        )
 
     def list_recently_ended_meetings(
         self,
@@ -446,7 +448,7 @@ class GraphTranscriptDiscoveryClient:
                 fetch_json=self._fetch_json,
             )
             payload = self._fetch_json(
-                f"{self._api_base_url}{self._user_path}/onlineMeetings/{quote(online_meeting_id, safe='')}/transcripts",
+                f"{self._api_base_url}{self._user_path}/onlineMeetings/{_graph_resource_path_id(online_meeting_id)}/transcripts",
                 self._access_token,
             )
             transcript_ids = _graph_transcript_ids(payload)
@@ -456,7 +458,10 @@ class GraphTranscriptDiscoveryClient:
                     MeetingArtifact(
                         "Teams transcript text",
                         "permission_blocked",
-                        f"Graph transcript discovery failed with HTTP {exc.code}.",
+                        _graph_http_error_detail(
+                            exc,
+                            default=f"Graph transcript discovery failed with HTTP {exc.code}.",
+                        ),
                     ),
                 )
             if exc.code == 404:
@@ -471,7 +476,10 @@ class GraphTranscriptDiscoveryClient:
                 MeetingArtifact(
                     "Teams transcript text",
                     "not_attempted",
-                    f"Graph transcript discovery failed with HTTP {exc.code}.",
+                    _graph_http_error_detail(
+                        exc,
+                        default=f"Graph transcript discovery failed with HTTP {exc.code}.",
+                    ),
                 ),
             )
         except GraphOnlineMeetingNotFoundError:
@@ -556,9 +564,7 @@ class GraphTranscriptDownloadClient:
                 join_url=join_url,
                 fetch_json=self._fetch_json,
             )
-            transcripts_url = (
-                f"{self._api_base_url}{self._user_path}/onlineMeetings/{quote(online_meeting_id, safe='')}/transcripts"
-            )
+            transcripts_url = f"{self._api_base_url}{self._user_path}/onlineMeetings/{_graph_resource_path_id(online_meeting_id)}/transcripts"
             payload = self._fetch_json(transcripts_url, self._access_token)
             transcript_ids = _graph_transcript_ids(payload)
         except HTTPError as exc:
@@ -590,7 +596,9 @@ class GraphTranscriptDownloadClient:
             )
 
         transcript_id = transcript_ids[0]
-        content_url = f"{transcripts_url}/{quote(transcript_id, safe='')}/content?" + urlencode({"$format": "text/vtt"})
+        content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/content?" + urlencode(
+            {"$format": "text/vtt"}
+        )
         try:
             content = self._fetch_bytes(content_url, self._access_token)
         except HTTPError as exc:
@@ -620,7 +628,10 @@ class GraphTranscriptDownloadClient:
             return MeetingArtifact(
                 "Teams .vtt transcript",
                 "permission_blocked",
-                f"Graph transcript {action} failed with HTTP {error.code}.",
+                _graph_http_error_detail(
+                    error,
+                    default=f"Graph transcript {action} failed with HTTP {error.code}.",
+                ),
             )
         if error.code == 404:
             return MeetingArtifact(
@@ -631,7 +642,10 @@ class GraphTranscriptDownloadClient:
         return MeetingArtifact(
             "Teams .vtt transcript",
             "not_attempted",
-            f"Graph transcript {action} failed with HTTP {error.code}.",
+            _graph_http_error_detail(
+                error,
+                default=f"Graph transcript {action} failed with HTTP {error.code}.",
+            ),
         )
 
 
@@ -818,6 +832,12 @@ def _artifact_status_rank(status: ArtifactStatus) -> int:
         "permission_blocked": 2,
         "available": 3,
     }[status]
+
+
+def _should_replace_artifact(*, existing: MeetingArtifact, candidate: MeetingArtifact) -> bool:
+    if candidate.status == "available":
+        return existing.status != "available" or bool(candidate.matched_paths)
+    return False
 
 
 def _discover_meeting_artifacts(
@@ -1215,14 +1235,10 @@ def _resolve_graph_online_meeting_id(
     join_url: str,
     fetch_json: Callable[[str, str], dict[str, object]],
 ) -> str:
-    lookup_url = (
-        f"{api_base_url}{user_path}/onlineMeetings?"
-        + urlencode(
-            {
-                "$filter": f"JoinWebUrl eq '{_escape_graph_odata_literal(join_url)}'",
-                "$select": "id",
-            }
-        )
+    lookup_url = f"{api_base_url}{user_path}/onlineMeetings?" + urlencode(
+        {
+            "$filter": f"JoinWebUrl eq '{_escape_graph_odata_literal(join_url)}'",
+        }
     )
     payload = fetch_json(lookup_url, access_token)
     try:
@@ -1242,18 +1258,29 @@ def _escape_graph_odata_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _graph_resource_path_id(value: str) -> str:
+    return quote(value, safe=":@*")
+
+
 def _is_graph_online_meeting_lookup_url(url: str) -> bool:
     return "/onlineMeetings?" in url and ("$filter=JoinWebUrl" in url or "%24filter=JoinWebUrl" in url)
 
 
-def _fetch_graph_json(url: str, access_token: str) -> dict[str, object]:
+def _fetch_graph_json(
+    url: str,
+    access_token: str,
+    *,
+    prefer_outlook_timezone: bool = False,
+) -> dict[str, object]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
+    if prefer_outlook_timezone:
+        headers["Prefer"] = 'outlook.timezone="UTC"'
     request = Request(
         url,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/json",
-            "Prefer": 'outlook.timezone="UTC"',
-        },
+        headers=headers,
     )
     with urlopen(request) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -1397,8 +1424,50 @@ def _parse_graph_datetime(raw_value: object) -> datetime:
 
 def _graph_http_warning(error: HTTPError) -> str:
     if error.code in {401, 403}:
-        return (
-            f"Graph calendar discovery failed with HTTP {error.code}. "
-            "Check delegated calendar/transcript permissions and the bearer token."
+        return _graph_http_error_detail(
+            error,
+            default=(
+                f"Graph calendar discovery failed with HTTP {error.code}. "
+                "Check delegated calendar/transcript permissions and the bearer token."
+            ),
         )
-    return f"Graph calendar discovery failed with HTTP {error.code}."
+    return _graph_http_error_detail(
+        error,
+        default=f"Graph calendar discovery failed with HTTP {error.code}.",
+    )
+
+
+def _graph_http_error_detail(error: HTTPError, *, default: str) -> str:
+    message = _graph_http_error_message(error)
+    if message is None:
+        return default
+    return f"{default} Graph said: {message}"
+
+
+def _graph_http_error_message(error: HTTPError) -> str | None:
+    if error.fp is None:
+        return None
+    try:
+        body = error.fp.read()
+    except OSError:
+        return None
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        text = body.decode("utf-8", errors="ignore").strip()
+        return text or None
+    if not isinstance(payload, dict):
+        return None
+    top_level_message = _optional_string(payload.get("message") if isinstance(payload.get("message"), str) else None)
+    if top_level_message is not None:
+        return top_level_message
+    raw_error = payload.get("error")
+    if not isinstance(raw_error, dict):
+        return None
+    code = _optional_string(raw_error.get("code") if isinstance(raw_error.get("code"), str) else None)
+    message = _optional_string(raw_error.get("message") if isinstance(raw_error.get("message"), str) else None)
+    if code and message:
+        return f"{code}: {message}"
+    return message or code

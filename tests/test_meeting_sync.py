@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
+import json
 import tempfile
 import unittest
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 
 from obsidian_intake_agent.meetings import (
@@ -27,9 +30,63 @@ from obsidian_intake_agent.meetings import (
     render_transcript_sync_plan,
     write_planned_bundle_notes,
 )
+from obsidian_intake_agent.meetings import sync as meeting_sync_module
 
 
 class TranscriptSyncPlannerTests(unittest.TestCase):
+    def test_fetch_graph_json_omits_outlook_timezone_preference_by_default(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class _FakeResponse:
+            def __enter__(self) -> _FakeResponse:
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            def read(self) -> bytes:
+                return json.dumps({"value": []}).encode("utf-8")
+
+        def _fake_urlopen(request):
+            captured["prefer"] = request.headers.get("Prefer")
+            return _FakeResponse()
+
+        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+            payload = meeting_sync_module._fetch_graph_json(
+                "https://graph.microsoft.com/v1.0/me/onlineMeetings",
+                "token",
+            )
+
+        self.assertEqual(payload, {"value": []})
+        self.assertIsNone(captured["prefer"])
+
+    def test_fetch_graph_json_can_request_outlook_timezone_preference(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class _FakeResponse:
+            def __enter__(self) -> _FakeResponse:
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            def read(self) -> bytes:
+                return json.dumps({"value": []}).encode("utf-8")
+
+        def _fake_urlopen(request):
+            captured["prefer"] = request.headers.get("Prefer")
+            return _FakeResponse()
+
+        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+            payload = meeting_sync_module._fetch_graph_json(
+                "https://graph.microsoft.com/v1.0/me/calendarView",
+                "token",
+                prefer_outlook_timezone=True,
+            )
+
+        self.assertEqual(payload, {"value": []})
+        self.assertEqual(captured["prefer"], 'outlook.timezone="UTC"')
+
     def test_skips_canceled_declined_all_day_and_focus_without_meeting_content(self) -> None:
         now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
         plan = build_transcript_sync_plan(
@@ -486,6 +543,64 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].status, "permission_blocked")
         self.assertEqual(artifacts[0].detail, "Graph transcript content download failed with HTTP 403.")
 
+    def test_chained_artifact_discovery_preserves_graph_missing_detail_over_later_local_missing(self) -> None:
+        graph_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="missing",
+                    detail="Graph transcript discovery returned no transcript records.",
+                ),
+            )
+        )
+        local_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="missing",
+                    detail="No local .vtt intake file matched the meeting date/title.",
+                ),
+            )
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(graph_client, local_client).discover_artifacts(
+            meeting=_meeting(event_id="evt-1", subject="Platform Sync")
+        )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(artifacts[0].detail, "Graph transcript discovery returned no transcript records.")
+
+    def test_chained_artifact_discovery_preserves_graph_not_attempted_detail_over_later_local_missing(self) -> None:
+        graph_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="not_attempted",
+                    detail="Graph transcript discovery failed: timeout.",
+                ),
+            )
+        )
+        local_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="missing",
+                    detail="No local .vtt intake file matched the meeting date/title.",
+                ),
+            )
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(graph_client, local_client).discover_artifacts(
+            meeting=_meeting(event_id="evt-1", subject="Platform Sync")
+        )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+        self.assertEqual(artifacts[0].status, "not_attempted")
+        self.assertEqual(artifacts[0].detail, "Graph transcript discovery failed: timeout.")
+
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
             access_token="token",
@@ -648,7 +763,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             [
                 "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
                 "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
-                "%3Fcontext%3D%257B%257D%27&%24select=id",
+                "%3Fcontext%3D%257B%257D%27",
                 "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/transcripts",
             ],
         )
@@ -687,7 +802,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             [
                 "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
                 "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
-                "%3Fcontext%3D%257B%257D%27&%24select=id",
+                "%3Fcontext%3D%257B%257D%27",
                 "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/transcripts",
             ],
         )
@@ -790,7 +905,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             requested_urls,
             [
                 "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
-                "https%3A%2F%2Fteams.microsoft.com%2Fmeet%2F217922761958715%3Fp%3DytyUGXxNGsma23IKHs%27&%24select=id"
+                "https%3A%2F%2Fteams.microsoft.com%2Fmeet%2F217922761958715%3Fp%3DytyUGXxNGsma23IKHs%27"
             ],
         )
         self.assertEqual(artifacts[0].status, "missing")
@@ -835,7 +950,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 [
                     "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
                     "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
-                    "%3Fcontext%3D%257B%257D%27&%24select=id",
+                    "%3Fcontext%3D%257B%257D%27",
                     "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/transcripts",
                 ],
             )
@@ -866,6 +981,50 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             assert bundle_note is not None
             self.assertEqual(bundle_note.processor_input_path, transcript_path)
             self.assertEqual(bundle_note.processor_input_source_name, "Teams .vtt transcript")
+
+    def test_graph_transcript_download_preserves_opaque_online_meeting_id_path_characters(self) -> None:
+        requested_json_urls: list[str] = []
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            requested_json_urls.append(url)
+            self.assertEqual(token, "token")
+            if len(requested_json_urls) == 1:
+                return {
+                    "value": [
+                        {"id": "MSo1Yjk0ZTNiNC1lMWMyLTRmMGMtOGYyNi1lNTE4YTk5NjMyMjIqMCoqMTk6bWVldGluZ19hYmNAthread.v2"}
+                    ]
+                }
+            return {"value": []}
+
+        client = GraphTranscriptDownloadClient(
+            access_token="token",
+            intake_root=Path("/tmp/00_Intake"),
+            api_base_url="https://graph.example/v1.0",
+            fetch_json=fetch_json,
+            fetch_bytes=lambda url, token: self.fail("fetch_bytes should not be called when no transcripts exist"),
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(
+            requested_json_urls,
+            [
+                "https://graph.example/v1.0/me/onlineMeetings?%24filter=JoinWebUrl+eq+%27"
+                "https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253Ameeting_graph123%2540thread.v2%2F0"
+                "%3Fcontext%3D%257B%257D%27",
+                "https://graph.example/v1.0/me/onlineMeetings/"
+                "MSo1Yjk0ZTNiNC1lMWMyLTRmMGMtOGYyNi1lNTE4YTk5NjMyMjIqMCoqMTk6bWVldGluZ19hYmNAthread.v2/transcripts",
+            ],
+        )
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(artifacts[0].detail, "Graph transcript discovery returned no transcript records.")
 
     def test_graph_transcript_download_reuses_existing_vtt_without_fetching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -913,6 +1072,41 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
         self.assertEqual(artifacts[0].status, "permission_blocked")
         self.assertEqual(artifacts[0].detail, "Graph transcript content download failed with HTTP 403.")
+
+    def test_graph_transcript_download_includes_graph_400_message(self) -> None:
+        client = GraphTranscriptDownloadClient(
+            access_token="token",
+            intake_root=Path("/tmp/00_Intake"),
+            fetch_json=lambda url, token: (_ for _ in ()).throw(
+                _SyntheticHTTPError(
+                    url,
+                    400,
+                    "Bad Request",
+                    body={
+                        "error": {
+                            "code": "BadRequest",
+                            "message": "The requested online meeting identifier is invalid.",
+                        }
+                    },
+                )
+            ),
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
+        self.assertEqual(artifacts[0].status, "not_attempted")
+        self.assertEqual(
+            artifacts[0].detail,
+            "Graph transcript discovery failed with HTTP 400. Graph said: BadRequest: The requested online meeting identifier is invalid.",
+        )
 
     def test_render_intake_bundle_note_renders_expected_sections(self) -> None:
         meeting = _meeting(
@@ -1280,9 +1474,9 @@ if __name__ == "__main__":
 
 
 class _SyntheticHTTPError(HTTPError):
-    def __init__(self, url: str, code: int, message: str) -> None:
+    def __init__(self, url: str, code: int, message: str, body: dict[str, object] | None = None) -> None:
         self.url = url
         self.code = code
         self.msg = message
         self.hdrs = None
-        self.fp = None
+        self.fp = io.BytesIO(json.dumps(body).encode("utf-8")) if body is not None else None

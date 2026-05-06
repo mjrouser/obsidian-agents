@@ -323,13 +323,10 @@ def _build_meeting_artifact_discovery_client(
     if not token:
         return local_client
     if download_transcripts:
-        return ChainedMeetingArtifactDiscoveryClient(
-            GraphTranscriptDownloadClient(
-                access_token=token,
-                intake_root=config.vault_path / config.intake_dir,
-                api_base_url=config.outlook_graph_api_base_url,
-            ),
-            local_client,
+        return GraphTranscriptDownloadClient(
+            access_token=token,
+            intake_root=config.vault_path / config.intake_dir,
+            api_base_url=config.outlook_graph_api_base_url,
         )
     return ChainedMeetingArtifactDiscoveryClient(
         GraphTranscriptDiscoveryClient(
