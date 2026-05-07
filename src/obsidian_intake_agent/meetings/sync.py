@@ -40,6 +40,12 @@ ARTIFACT_STATUS_SUMMARY_SEQUENCE: tuple[ArtifactStatus, ...] = (
 )
 RAW_TRANSCRIPTS_DIR = "Raw Transcripts"
 FALLBACKS_DIR = "Fallbacks"
+BUNDLES_DIR = "bundles"
+BUNDLE_IDENTITIES_DIR = Path(BUNDLES_DIR) / "_meeting_sync" / "identities"
+BUNDLE_RAW_TRANSCRIPTS_DIR = Path(BUNDLES_DIR) / "raw_transcripts"
+BUNDLE_FALLBACKS_DIR = Path(BUNDLES_DIR) / "fallbacks"
+V1_INELIGIBLE_RESPONSE_STATUSES = frozenset({"declined", "none", "notresponded"})
+LOW_SIGNAL_SUBJECT_PATTERNS = (re.compile(r"\boffice\W*hours\b", re.IGNORECASE),)
 
 
 class GraphOnlineMeetingNotFoundError(ValueError):
@@ -343,7 +349,7 @@ class LocalIntakeTranscriptDiscoveryClient:
             if path.suffix.lower() not in {".vtt", ".md", ".docx"}:
                 continue
             matches.append(path)
-        return tuple(sorted(matches))
+        return tuple(sorted(matches, key=_matching_intake_path_sort_key))
 
 
 class UnconfiguredOutlookMeetingDiscoveryClient:
@@ -643,9 +649,7 @@ class GraphTranscriptDownloadClient:
         except HTTPError as exc:
             if exc.code != 404:
                 return self._paired_artifacts_from_http_error(exc, action="content download")
-            metadata_content_url = (
-                f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
-            )
+            metadata_content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
             try:
                 metadata_content = self._fetch_bytes(metadata_content_url, self._access_token)
             except HTTPError as metadata_exc:
@@ -779,7 +783,7 @@ class GraphMeetingFallbackSummaryClient:
         *,
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
-        if _meeting_has_transcript_source(meeting):
+        if _meeting_has_processor_ready_transcript_source(meeting):
             return (
                 MeetingArtifact(
                     "Copilot recap / AI summary",
@@ -795,6 +799,7 @@ class GraphMeetingFallbackSummaryClient:
 
         fallback_path = self._intake_root / _fallback_summary_relative_path(meeting)
         if fallback_path.exists():
+            chat_artifact = _chat_artifact_from_existing_fallback_summary(fallback_path)
             return (
                 MeetingArtifact(
                     "Copilot recap / AI summary",
@@ -802,6 +807,7 @@ class GraphMeetingFallbackSummaryClient:
                     f"Fallback summary file already exists: {fallback_path}",
                     matched_paths=(fallback_path,),
                 ),
+                chat_artifact,
             )
 
         join_url = meeting.detected_join_url()
@@ -1061,20 +1067,24 @@ def build_transcript_sync_plan(
     generated_at = now or datetime.now().astimezone()
     snapshot = client.list_recently_ended_meetings(since=since, now=generated_at)
     effective_artifact_discovery_client = artifact_discovery_client or NoopMeetingArtifactDiscoveryClient()
-    items = tuple(
-        _plan_item(
-            _discover_meeting_artifacts(meeting, artifact_discovery_client=effective_artifact_discovery_client),
-            now=generated_at,
-            intake_root=intake_root,
+    items: list[TranscriptSyncPlanItem] = []
+    for meeting in snapshot.meetings:
+        if _should_prefilter_artifact_discovery(meeting, now=generated_at, intake_root=intake_root):
+            items.append(_plan_item(meeting, now=generated_at, intake_root=intake_root))
+            continue
+        items.append(
+            _plan_item(
+                _discover_meeting_artifacts(meeting, artifact_discovery_client=effective_artifact_discovery_client),
+                now=generated_at,
+                intake_root=intake_root,
+            )
         )
-        for meeting in snapshot.meetings
-    )
     return TranscriptSyncPlan(
         since=since,
         generated_at=generated_at,
         provider_label=snapshot.provider_label,
         warning=snapshot.warning,
-        items=items,
+        items=tuple(items),
     )
 
 
@@ -1255,6 +1265,31 @@ def _discover_meeting_artifacts(
     return replace(meeting, discovered_artifacts=tuple(existing.values()))
 
 
+def _should_prefilter_artifact_discovery(
+    meeting: OutlookMeetingCandidate,
+    *,
+    now: datetime,
+    intake_root: Path | None,
+) -> bool:
+    if meeting.end_at > now:
+        return True
+    if meeting.is_cancelled:
+        return True
+    if _should_skip_for_v1_response_status(meeting):
+        return True
+    if _has_low_signal_subject(meeting):
+        return True
+    if meeting.is_all_day and not meeting.has_meeting_content():
+        return True
+    if meeting.is_focus_block() and not meeting.has_meeting_content():
+        return True
+    if not meeting.is_teams_meeting():
+        return True
+    if _meeting_identity_exists(meeting, intake_root=intake_root):
+        return True
+    return False
+
+
 def _plan_item(
     meeting: OutlookMeetingCandidate,
     *,
@@ -1273,9 +1308,12 @@ def _plan_item(
         reasons.append("Skipped canceled meeting.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
-    response_status = (meeting.response_status or "").strip().lower()
-    if response_status == "declined" and not meeting.has_meeting_content():
-        reasons.append("Skipped declined event because no meeting content was detected.")
+    if _should_skip_for_v1_response_status(meeting):
+        reasons.append(f"Skipped event because response status was {meeting.response_status or 'none'}.")
+        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
+
+    if _has_low_signal_subject(meeting):
+        reasons.append("Skipped low-signal office-hours event.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     if meeting.is_all_day and not meeting.has_meeting_content():
@@ -1340,8 +1378,9 @@ def _build_intake_bundle_note(
     if intake_root is None:
         return None
     basename = _bundle_note_basename(meeting)
-    path = intake_root / basename
-    metadata_path = intake_root / _outlook_metadata_basename(meeting)
+    bundles_root = intake_root / BUNDLES_DIR
+    path = bundles_root / basename
+    metadata_path = bundles_root / _outlook_metadata_basename(meeting)
     identity_path = intake_root / _meeting_identity_relative_path(meeting)
     attendance_confidence, source_limitations = _bundle_transparency(bundle)
     sources_used = tuple(bundle.available_sources())
@@ -1355,7 +1394,11 @@ def _build_intake_bundle_note(
         sources_used=sources_used,
         source_limitations=source_limitations,
     )
-    metadata_content = render_outlook_metadata_sidecar(meeting=meeting, bundle=bundle)
+    metadata_content = render_outlook_metadata_sidecar(
+        meeting=meeting,
+        bundle=bundle,
+        processed_marker_path=identity_path,
+    )
     identity_content = render_meeting_identity_sidecar(
         meeting=meeting,
         bundle=bundle,
@@ -1469,23 +1512,33 @@ def _bundle_note_basename(meeting: OutlookMeetingCandidate) -> str:
     return f"{meeting.start_at.date().isoformat()} - Teams - {title} (bundle).md"
 
 
+def _should_skip_for_v1_response_status(meeting: OutlookMeetingCandidate) -> bool:
+    response_status = (meeting.response_status or "none").strip().lower()
+    return response_status in V1_INELIGIBLE_RESPONSE_STATUSES
+
+
+def _has_low_signal_subject(meeting: OutlookMeetingCandidate) -> bool:
+    subject = meeting.subject.strip()
+    return any(pattern.search(subject) for pattern in LOW_SIGNAL_SUBJECT_PATTERNS)
+
+
 def _transcript_basename(meeting: OutlookMeetingCandidate) -> str:
     title = _normalized_bundle_title(meeting.subject)
     return f"{meeting.start_at.date().isoformat()} - Teams - {title}.vtt"
 
 
 def _transcript_relative_path(meeting: OutlookMeetingCandidate) -> Path:
-    return Path(RAW_TRANSCRIPTS_DIR) / _transcript_basename(meeting)
+    return BUNDLE_RAW_TRANSCRIPTS_DIR / _transcript_basename(meeting)
 
 
 def _transcript_text_relative_path(meeting: OutlookMeetingCandidate) -> Path:
     title = _normalized_bundle_title(meeting.subject)
-    return Path(RAW_TRANSCRIPTS_DIR) / f"{meeting.start_at.date().isoformat()} - Teams - {title}.md"
+    return BUNDLE_RAW_TRANSCRIPTS_DIR / f"{meeting.start_at.date().isoformat()} - Teams - {title}.md"
 
 
 def _fallback_summary_relative_path(meeting: OutlookMeetingCandidate) -> Path:
     title = _normalized_bundle_title(meeting.subject)
-    return Path(FALLBACKS_DIR) / f"{meeting.start_at.date().isoformat()} - Teams - {title} (fallback).md"
+    return BUNDLE_FALLBACKS_DIR / f"{meeting.start_at.date().isoformat()} - Teams - {title} (fallback).md"
 
 
 def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
@@ -1496,7 +1549,13 @@ def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
 def _meeting_identity_relative_path(meeting: OutlookMeetingCandidate) -> Path:
     identity_key = _meeting_identity_key(meeting)
     digest = hashlib.sha1(identity_key.encode("utf-8")).hexdigest()[:16]
-    return Path("_meeting_sync") / "identities" / f"{meeting.start_at.date().isoformat()}-{digest}.json"
+    return BUNDLE_IDENTITIES_DIR / f"{meeting.start_at.date().isoformat()}-{digest}.json"
+
+
+def _meeting_identity_exists(meeting: OutlookMeetingCandidate, *, intake_root: Path | None) -> bool:
+    if intake_root is None:
+        return False
+    return (intake_root / _meeting_identity_relative_path(meeting)).exists()
 
 
 def _meeting_identity_key(meeting: OutlookMeetingCandidate) -> str:
@@ -1541,18 +1600,46 @@ def _preferred_processor_input(bundle: MeetingSourceBundle) -> tuple[Path | None
         artifact = bundle.artifact(source_name)
         if artifact is None or artifact.status != "available" or not artifact.matched_paths:
             continue
-        return artifact.matched_paths[0], artifact.source_name
+        return _preferred_artifact_path(artifact.matched_paths), artifact.source_name
     return None, None
+
+
+def _bundle_source_type(preferred_input_source_name: str | None) -> str:
+    source_type_by_source_name = {
+        "Teams .vtt transcript": "teams_vtt_transcript",
+        "Teams transcript text": "teams_transcript_text",
+        "Copilot recap / AI summary": "copilot_recap_ai_summary",
+        "Manual / semi-manual intake": "manual_semi_manual_intake",
+    }
+    if preferred_input_source_name is None:
+        return "outlook_calendar_metadata"
+    return source_type_by_source_name.get(preferred_input_source_name, "outlook_calendar_metadata")
+
+
+def _preferred_artifact_path(paths: tuple[Path, ...]) -> Path:
+    return min(paths, key=_matching_intake_path_sort_key)
+
+
+def _matching_intake_path_sort_key(path: Path) -> tuple[int, str]:
+    normalized_parts = tuple(part.lower() for part in path.parts)
+    managed_prefix = (
+        BUNDLES_DIR.lower(),
+        "raw_transcripts",
+    )
+    is_managed_bundle_transcript = normalized_parts[-len(managed_prefix) - 1 : -1] == managed_prefix
+    return (0 if is_managed_bundle_transcript else 1, str(path))
 
 
 def render_outlook_metadata_sidecar(
     *,
     meeting: OutlookMeetingCandidate,
     bundle: MeetingSourceBundle,
+    processed_marker_path: Path | None = None,
 ) -> str:
     processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
     payload = {
-        "source_type": "outlook_calendar_metadata",
+        "source_type": _bundle_source_type(processor_input_source_name),
+        "identity_key": _meeting_identity_key(meeting),
         "outlook_event_id": meeting.event_id,
         "subject": meeting.subject,
         "start_at": meeting.start_at.isoformat(),
@@ -1589,6 +1676,7 @@ def render_outlook_metadata_sidecar(
             "preferred_input_path": str(processor_input_path) if processor_input_path is not None else None,
             "preferred_input_source_name": processor_input_source_name,
         },
+        "processed_marker_path": str(processed_marker_path) if processed_marker_path is not None else None,
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 
@@ -1820,11 +1908,69 @@ def _chat_message_text(raw_value: object) -> str | None:
     return normalized or None
 
 
-def _meeting_has_transcript_source(meeting: OutlookMeetingCandidate) -> bool:
+def _meeting_has_processor_ready_transcript_source(meeting: OutlookMeetingCandidate) -> bool:
     for artifact in meeting.discovered_artifacts:
-        if artifact.source_name in {"Teams .vtt transcript", "Teams transcript text"} and artifact.status == "available":
+        if (
+            artifact.source_name in {"Teams .vtt transcript", "Teams transcript text"}
+            and artifact.status == "available"
+            and artifact.matched_paths
+        ):
             return True
     return False
+
+
+def _chat_artifact_from_existing_fallback_summary(fallback_path: Path) -> MeetingArtifact:
+    try:
+        content = fallback_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return MeetingArtifact(
+            "Teams meeting chat",
+            "not_attempted",
+            f"Could not inspect existing fallback summary file for chat provenance: {exc}",
+        )
+
+    meeting_chat_section = _markdown_section(content, "Meeting Chat")
+    if meeting_chat_section:
+        first_bullet = next(
+            (line.strip() for line in meeting_chat_section.splitlines() if line.strip().startswith("- ")), None
+        )
+        if first_bullet is not None:
+            lowered = first_bullet.lower()
+            for status in ARTIFACT_STATUS_SUMMARY_SEQUENCE:
+                prefix = f"- {status}:"
+                if lowered.startswith(prefix):
+                    detail = first_bullet[len(prefix) :].strip() or None
+                    return MeetingArtifact(
+                        "Teams meeting chat",
+                        status,
+                        f"Recovered from existing fallback summary file: {detail}"
+                        if detail
+                        else "Recovered from existing fallback summary file.",
+                    )
+
+    source_section = _markdown_section(content, "Source")
+    if source_section and "- Source Used: Teams meeting chat" in source_section:
+        return MeetingArtifact(
+            "Teams meeting chat",
+            "available",
+            f"Recovered from existing fallback summary file: {fallback_path}",
+        )
+    return MeetingArtifact(
+        "Teams meeting chat",
+        "not_attempted",
+        f"Existing fallback summary file did not record Teams meeting chat provenance: {fallback_path}",
+    )
+
+
+def _markdown_section(content: str, heading: str) -> str | None:
+    pattern = re.compile(
+        rf"^## {re.escape(heading)}\n(?P<body>.*?)(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(content)
+    if match is None:
+        return None
+    return match.group("body")
 
 
 def _render_fallback_summary_markdown(
@@ -1887,7 +2033,9 @@ def _render_fallback_summary_markdown(
         lines.append("- Source Used: Teams meeting chat")
     lines.append("- Source Used: Outlook calendar metadata")
     lines.append("- Attendance Confidence: partial_visibility")
-    lines.append("- Source Limitation: Fallback artifact synthesized from summary-oriented meeting sources, not a verbatim transcript.")
+    lines.append(
+        "- Source Limitation: Fallback artifact synthesized from summary-oriented meeting sources, not a verbatim transcript."
+    )
     return "\n".join(lines) + "\n"
 
 

@@ -469,9 +469,10 @@ class MainCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
             vault = repo / "vault"
-            (vault / "00_Intake").mkdir(parents=True)
+            bundle_root = vault / "00_Intake" / "bundles"
+            bundle_root.mkdir(parents=True)
             config_path = _write_config(repo, vault)
-            (vault / "00_Intake" / "2026-05-04 - Teams - Platform Sync (outlook).json").write_text(
+            (bundle_root / "2026-05-04 - Teams - Platform Sync (outlook).json").write_text(
                 "\n".join(
                     [
                         "{",
@@ -505,11 +506,44 @@ class MainCliTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 0)
             self.assertIn("meeting_bundle_process_mode: dry-run", output)
+            self.assertIn(f"meeting_bundle_process_bundle_root: {bundle_root}", output)
             self.assertIn("meeting_bundle_process_candidates: 1", output)
             self.assertIn("meeting_bundle_process_blocked: 1", output)
             self.assertIn(
                 "reason: Bundle is still calendar-only, so there is no processor-ready transcript artifact yet.",
                 output,
+            )
+
+    def test_meetings_process_bundles_uses_bundle_staging_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            (vault / "00_Intake").mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch("obsidian_intake_agent.main.build_bundle_processing_plan") as plan_mock,
+                patch(
+                    "obsidian_intake_agent.main.render_bundle_processing_plan",
+                    return_value="meeting_bundle_process_mode: dry-run",
+                ),
+                patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "process-bundles",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            plan_mock.assert_called_once()
+            self.assertEqual(
+                plan_mock.call_args.kwargs["intake_root"],
+                vault / "00_Intake" / "bundles",
             )
 
     def test_meetings_process_bundles_execute_prints_execution_summary(self) -> None:
@@ -531,8 +565,11 @@ class MainCliTests(unittest.TestCase):
                             metadata=BundleMetadataRecord(
                                 metadata_path=intake_root / "2026-05-04 - Teams - Platform Sync (outlook).json",
                                 bundle_note_path=intake_root / "2026-05-04 - Teams - Platform Sync (bundle).md",
+                                processed_marker_path=None,
                                 event_id="evt-1",
                                 subject="Platform Sync",
+                                teams_meeting_id=None,
+                                identity_key=None,
                                 source_type="outlook_calendar_metadata",
                                 processor_handoff=BundleProcessorHandoff(
                                     preferred_input_path=ready_input,

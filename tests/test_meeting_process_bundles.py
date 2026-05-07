@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import date, datetime
@@ -37,7 +38,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
 
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=_processor_for_vault(vault),
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -65,7 +66,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
 
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=_processor_for_vault(vault),
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -98,7 +99,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
             transcript_path.unlink()
 
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=_processor_for_vault(vault),
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -130,7 +131,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
 
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=_processor_for_vault(vault),
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -143,6 +144,48 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
             rendered = render_bundle_processing_plan(plan)
             self.assertIn("meeting_bundle_process_blocked_processor_skip: 1", rendered)
+
+    def test_blocks_rerun_when_durable_processed_marker_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            bundle_root = intake_root / "bundles"
+            bundle_root.mkdir(parents=True)
+            transcript_path = bundle_root / "raw_transcripts" / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.parent.mkdir(parents=True, exist_ok=True)
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            processed_marker_path = bundle_root / "_meeting_sync" / "identities" / "evt-processed.json"
+            processed_marker_path.parent.mkdir(parents=True, exist_ok=True)
+            processed_marker_path.write_text(
+                '{"source_type": "meeting_bundle_processed"}\n',
+                encoding="utf-8",
+            )
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-processed", subject="Delivery Review"),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=bundle_root),
+            )
+
+            metadata_path = bundle_root / "2026-05-04 - Teams - Delivery Review (outlook).json"
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata_payload["processed_marker_path"] = str(processed_marker_path)
+            metadata_path.write_text(json.dumps(metadata_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=_processor_for_vault(vault),
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.ready_count, 0)
+            self.assertEqual(plan.blocked_count, 1)
+            self.assertEqual(
+                plan.items[0].reasons,
+                ("Durable processed marker indicates this bundle was already processed successfully.",),
+            )
+            rendered = render_bundle_processing_plan(plan)
+            self.assertIn("meeting_bundle_process_blocked: 1", rendered)
 
     def test_execute_processes_ready_bundle_and_renders_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -160,7 +203,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -190,7 +233,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -219,7 +262,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -248,7 +291,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
-                intake_root=intake_root,
+                intake_root=intake_root / "bundles",
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
             )
@@ -294,6 +337,7 @@ def _write_bundle_metadata_sidecar(
     )
     note = plan.items[0].intake_bundle_note
     assert note is not None
+    note.metadata_path.parent.mkdir(parents=True, exist_ok=True)
     note.metadata_path.write_text(note.metadata_content + "\n", encoding="utf-8")
     return note
 
@@ -337,6 +381,7 @@ def _meeting(
         end_at=datetime.fromisoformat("2026-05-04T13:30:00+00:00"),
         online_meeting_provider="teamsForBusiness",
         join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
+        response_status="accepted",
         discovered_artifacts=discovered_artifacts,
     )
 

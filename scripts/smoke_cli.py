@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,8 @@ from pathlib import Path
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
-    python_bin = repo_root / ".venv" / "bin" / "python"
+    repo_python_bin = repo_root / ".venv" / "bin" / "python"
+    python_bin = repo_python_bin if repo_python_bin.exists() else Path(sys.executable)
     with tempfile.TemporaryDirectory(prefix="obsidian-agent-smoke-") as tmp_dir:
         workspace = Path(tmp_dir)
         vault = workspace / "vault"
