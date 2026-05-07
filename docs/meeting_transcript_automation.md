@@ -103,11 +103,11 @@ Expected behavior:
 - Read completed Outlook meetings in the target window.
 - Skip non-meeting blocks unless explicitly configured otherwise.
 - Resolve Teams meeting identifiers from Outlook metadata.
-- Download available transcript content into `00_Intake/Raw Transcripts`.
+- Download available transcript content into
+  `00_Intake/bundles/raw_transcripts`.
 - Preserve raw transcript artifacts and avoid duplicate downloads using stored
   transcript IDs.
-- Write a small sidecar/context file or processor context object with Outlook
-  attendee metadata.
+- Write bundle notes plus Outlook metadata sidecars into `00_Intake/bundles`.
 - Let the existing intake processor create canonical notes and action updates.
 - In dry-run mode, print which meetings would import, which are missing
   transcripts, and which would be skipped as already imported.
@@ -128,18 +128,28 @@ Current implementation status in this repo:
   Teams meeting ID, organizer, attendee list, response status, and join-link
   context when available from Outlook metadata.
 - `obsidian-agent meetings sync-transcripts --write-bundles` now materializes
-  only those planned bundle notes into `00_Intake`, writes a sibling raw
-  Outlook metadata JSON sidecar for each processable meeting, preserves
+  only those planned bundle notes into `00_Intake/bundles`, writes a sibling
+  raw Outlook metadata JSON sidecar for each processable meeting, preserves
   existing bundle files, and backfills the metadata sidecar when a prior bundle
   note exists without it.
 - `obsidian-agent meetings sync-transcripts --download-transcripts` now
   downloads available Teams `.vtt` transcript content from Microsoft Graph into
-  `00_Intake/Raw Transcripts`, preserves existing local transcript files, writes
-  matching bundle notes, and records the downloaded transcript path as the
-  preferred processor handoff.
+  `00_Intake/bundles/raw_transcripts`, preserves existing local transcript
+  files, writes matching bundle notes, and records the downloaded transcript
+  path as the preferred processor handoff.
+- When transcript `metadataContent` exists without downloadable `.vtt` content,
+  the same sync path writes a Markdown transcript artifact into
+  `00_Intake/bundles/raw_transcripts` and uses that local file as the preferred
+  processor handoff.
+- When transcript-quality sources are missing, recap-based fallback artifacts
+  are staged under `00_Intake/bundles/fallbacks` and can become the preferred
+  processor handoff, with chat preserved only as supplemental context rather
+  than as a standalone processor source.
 - The sync path also writes a hidden meeting identity marker keyed from
-  Outlook event ID plus Teams meeting ID so future polling runs can recognize
-  already-imported meetings even if meeting titles or bundle filenames change.
+  Outlook event ID plus Teams meeting ID under
+  `00_Intake/bundles/_meeting_sync/identities` so future polling runs can
+  recognize already-imported meetings even if meeting titles or bundle
+  filenames change.
 - Dry-run output now rolls up processable meetings by remaining source gaps so
   the polling summary can show how many meetings are still calendar-only versus
   missing transcript, chat, or recap artifacts, and it now breaks those source
@@ -168,10 +178,21 @@ Current implementation status in this repo:
   readiness contract to process only ready bundles through the existing intake
   processor and reports per-bundle `processed`, `skipped`, or `failed` results
   without attempting blocked bundles.
+- After a successful `process-bundles --execute` run, the bundle executor
+  writes a durable processed marker in
+  `00_Intake/bundles/_meeting_sync/identities` and removes machine-managed
+  staging files for that meeting: the bundle note, the Outlook metadata
+  sidecar, and any bundle-managed transcript or fallback artifact under
+  `00_Intake/bundles/raw_transcripts` or `00_Intake/bundles/fallbacks`. It
+  does not delete unrelated intake files or manually managed transcript files.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
-- Chat and recap retrieval are still future work.
+- The v1 eligibility filter also treats `response_status` values of `declined`,
+  `none`, and `notResponded` as ineligible, and skips low-signal office-hours
+  subjects before artifact retrieval starts.
+- Direct chat retrieval and richer recap expansion are still future work beyond
+  the current fallback staging flow.
 
 ## Extraction Standard
 
