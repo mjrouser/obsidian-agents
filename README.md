@@ -164,8 +164,9 @@ Write only planned intake bundle notes, without downloading artifacts yet:
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --write-bundles
 ```
 
-Download available Teams `.vtt` transcripts into `00_Intake/Raw Transcripts`
-and write matching bundle notes:
+Download available Teams `.vtt` transcripts into
+`00_Intake/bundles/raw_transcripts` and write matching bundle notes into
+`00_Intake/bundles`:
 
 ```bash
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
@@ -245,50 +246,62 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   `--dry-run`, `--write-bundles`, or `--download-transcripts`. `--dry-run` and
   `--write-bundles` plan candidate meetings from Outlook metadata without
   downloading transcripts. `--download-transcripts` downloads available Teams
-  `.vtt` transcript content into `00_Intake/Raw Transcripts`. When Graph
+  `.vtt` transcript content into `00_Intake/bundles/raw_transcripts`. When Graph
   transcript content is unavailable but transcript `metadataContent` is
   available, the same command falls back to writing a local Markdown transcript
-  artifact in `00_Intake/Raw Transcripts` and records that file as the
+  artifact in `00_Intake/bundles/raw_transcripts` and records that file as the
   preferred processor handoff. When neither transcript-quality source is
   available, the sync path now tries a Copilot AI recap before chat, writes any
-  recap-based fallback handoff to `00_Intake/Fallbacks`, and uses meeting chat
-  only as supplemental context for that fallback note rather than as a
-  standalone processor source. If a Graph bearer token is not configured, the
-  command returns a warning-only plan instead of discovered meetings. For
+  recap-based fallback handoff to `00_Intake/bundles/fallbacks`, and uses
+  meeting chat only as supplemental context for that fallback note rather than
+  as a standalone processor source. If a Graph bearer token is not configured,
+  the command returns a warning-only plan instead of discovered meetings. For
   meetings that would be processed, the plan reports the intake bundle note path
   and source-transparency metadata.
-  `--write-bundles` writes only those planned bundle notes and skips existing
-  bundle files. If the
-  planned bundle note already exists, the planner now reports that meeting as an
-  explicit skip so repeated polling runs stay quieter. Planned bundle notes now
-  include Outlook organizer, attendee, response-status, and join-link context
-  when Graph discovery provides it. `--write-bundles` also writes a sibling
-  Outlook metadata sidecar JSON file for each processable meeting and will
-  backfill that sidecar when an older bundle note exists without it. The sync
-  path now also writes a hidden identity marker keyed from the Outlook event ID
-  and Teams meeting ID so repeated polling can skip already-imported meetings
-  even if the bundle filename later changes. Dry-run output now includes top-level
-  counts for processable meetings that are still missing `.vtt`, transcript text,
-  chat, recap, or any non-calendar source. The planner also now reports explicit
-  per-source retrieval states for `.vtt`, transcript text, chat, and recap:
-  `available`, `missing`, `permission_blocked`, or `not_attempted`. When the
-  local intake folder exists, the planner now actively probes `00_Intake` for
-  canonical date/title-matched `.vtt`, `.md`, and `.docx` transcript artifacts
-  before falling back to `missing` or `not_attempted`, and it preserves those
-  exact matched artifact paths in the bundle note artifact plan plus the raw
-  Outlook metadata sidecar. When one of those transcript artifacts is available,
-  the bundle contract now also records a preferred processor input path/source
-  so the next ingestion step can feed the existing processor directly. Bundle
+  `--write-bundles` writes only those planned bundle notes into
+  `00_Intake/bundles` and skips existing bundle files. If the planned bundle
+  note already exists, the planner now reports that meeting as an explicit skip
+  so repeated polling runs stay quieter. Planned bundle notes now include
+  Outlook organizer, attendee, response-status, and join-link context when
+  Graph discovery provides it. `--write-bundles` also writes a sibling Outlook
+  metadata sidecar JSON file for each processable meeting and will backfill
+  that sidecar when an older bundle note exists without it. The sync path now
+  also writes a hidden identity marker under `00_Intake/bundles/_meeting_sync`
+  keyed from the Outlook event ID and Teams meeting ID so repeated polling can
+  skip already-imported meetings even if the bundle filename later changes.
+  Dry-run output now includes top-level counts for processable meetings that
+  are still missing `.vtt`, transcript text, chat, recap, or any non-calendar
+  source. The planner also now reports explicit per-source retrieval states for
+  `.vtt`, transcript text, chat, and recap: `available`, `missing`,
+  `permission_blocked`, or `not_attempted`. When the local intake folder
+  exists, the planner now actively probes `00_Intake` for canonical
+  date/title-matched `.vtt`, `.md`, and `.docx` transcript artifacts before
+  falling back to `missing` or `not_attempted`, and it preserves those exact
+  matched artifact paths in the bundle note artifact plan plus the raw Outlook
+  metadata sidecar. When one of those transcript artifacts is available, the
+  bundle contract now also records a preferred processor input path/source so
+  the next ingestion step can feed the existing processor directly. Bundle
   source limitations include the retrieval detail from Graph or local discovery
-  so permission blocks and unpublished transcripts are visible in the note.
+  so permission blocks and unpublished transcripts are visible in the note. The
+  sync planner prefilters meetings that are not yet eligible for bundle
+  ingestion, including canceled meetings, non-Teams events, not-yet-ended
+  events, declined or no-response meetings, low-signal office-hours subjects,
+  all-day or focus blocks without meeting content, and meetings whose bundle
+  identity marker already exists.
 - `obsidian-agent meetings process-bundles` currently requires `--dry-run` and
   `--execute` as mutually exclusive modes. The dry run reads the written
-  Outlook metadata sidecars in `00_Intake` to report which synced meeting
-  bundles are actually ready for the existing `process` command. The execution
-  mode runs only those ready handoffs through the current intake processor and
-  reports per-bundle `processed`, `skipped`, and `failed` outcomes. Both modes
-  distinguish calendar-only bundles, missing local transcript files, and
-  handoffs the current intake processor would skip as already processed.
+  Outlook metadata sidecars in `00_Intake/bundles` to report which synced
+  meeting bundles are actually ready for the existing `process` command. The
+  execution mode runs only those ready handoffs through the current intake
+  processor and reports per-bundle `processed`, `skipped`, and `failed`
+  outcomes. On successful processing, the execution step writes a durable
+  processed marker under `00_Intake/bundles/_meeting_sync/identities` and
+  removes the machine-managed bundle note, Outlook metadata sidecar, and any
+  machine-managed artifacts under `00_Intake/bundles/raw_transcripts` or
+  `00_Intake/bundles/fallbacks`, while leaving unrelated intake files alone.
+  Both modes distinguish calendar-only bundles, missing local transcript files,
+  permission-blocked retrieval, and handoffs the current intake processor would
+  skip as already processed.
 - In dry-run mode, planned writes are printed and no files are changed.
 
 ## Automation Setup

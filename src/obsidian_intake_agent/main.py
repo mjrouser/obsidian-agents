@@ -106,17 +106,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-bundles",
         action="store_true",
         dest="write_bundles",
-        help="Write planned intake bundle notes into the intake folder without downloading artifacts.",
+        help="Write planned intake bundle notes and Outlook metadata sidecars into 00_Intake/bundles without downloading artifacts.",
     )
     sync_parser.add_argument(
         "--download-transcripts",
         action="store_true",
         dest="download_transcripts",
-        help="Download available Teams transcript files into intake and write the matching bundle notes.",
+        help="Download available Teams transcript files into 00_Intake/bundles/raw_transcripts and write matching bundle notes in 00_Intake/bundles.",
     )
     process_bundles_parser = meetings_subparsers.add_parser(
         "process-bundles",
-        help="Dry-run which synced meeting bundles are ready for the existing intake processor.",
+        help="Dry-run which synced meeting bundles in 00_Intake/bundles are ready for the existing intake processor.",
     )
     process_bundles_parser.add_argument(
         "--dry-run",
@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                     "`obsidian-agent meetings process-bundles` requires exactly one of `--dry-run` or `--execute`."
                 )
             bundle_plan = build_bundle_processing_plan(
-                intake_root=config.vault_path / config.intake_dir,
+                intake_root=config.vault_path / config.intake_dir / "bundles",
                 processor=processor,
             )
             if args.dry_run:

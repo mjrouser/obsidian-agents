@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +14,7 @@ ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_atte
 BundleProcessDecision = Literal["ready", "blocked"]
 BundleExecutionStatus = Literal["processed", "skipped", "failed"]
 PROCESSOR_SUPPORTED_EXTENSIONS = {".md", ".docx", ".vtt"}
+MACHINE_MANAGED_BUNDLE_DIR_NAMES = ("raw_transcripts", "fallbacks")
 
 
 @dataclass(slots=True, frozen=True)
@@ -32,8 +35,11 @@ class BundleProcessorHandoff:
 class BundleMetadataRecord:
     metadata_path: Path
     bundle_note_path: Path
+    processed_marker_path: Path | None
     event_id: str
     subject: str
+    teams_meeting_id: str | None
+    identity_key: str | None
     source_type: str | None
     processor_handoff: BundleProcessorHandoff
     artifacts: tuple[BundleArtifactRecord, ...]
@@ -235,6 +241,35 @@ def execute_bundle_processing_plan(
                 )
             )
             continue
+        if process_result.processed:
+            try:
+                processed_marker_path = _write_durable_processed_marker(
+                    metadata=plan_item.metadata,
+                    process_result=process_result,
+                    cleanup_paths=_bundle_cleanup_paths(plan_item.metadata),
+                )
+            except OSError as exc:
+                items.append(
+                    BundleExecutionResultItem(
+                        status="failed",
+                        plan_item=plan_item,
+                        reasons=(f"Bundle processed successfully but could not write durable processed marker: {exc}",),
+                        canonical_note_path=process_result.canonical_note_path,
+                        actions_file_path=process_result.actions_file_path,
+                    )
+                )
+                continue
+            removed_paths, cleanup_errors = _cleanup_bundle_staging(metadata=plan_item.metadata)
+            items.append(
+                _execution_result_item_from_process_result(
+                    plan_item=plan_item,
+                    process_result=process_result,
+                    processed_marker_path=processed_marker_path,
+                    removed_paths=removed_paths,
+                    cleanup_errors=cleanup_errors,
+                )
+            )
+            continue
         items.append(_execution_result_item_from_process_result(plan_item=plan_item, process_result=process_result))
     return BundleExecutionResult(
         executed_at=datetime.now().astimezone(),
@@ -282,6 +317,10 @@ def _plan_bundle_processing_item(
     reasons: list[str] = []
     preferred_input = metadata.processor_handoff.preferred_input_path
 
+    if metadata.processed_marker_path is not None and metadata.processed_marker_path.exists():
+        reasons.append("Durable processed marker indicates this bundle was already processed successfully.")
+        return BundleProcessingPlanItem(decision="blocked", metadata=metadata, reasons=tuple(reasons))
+
     if preferred_input is None:
         reasons.append("Missing preferred processor input path in bundle metadata.")
         if metadata.available_sources() == ("Outlook calendar metadata",):
@@ -325,6 +364,7 @@ def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:
     handoff_payload = raw_handoff if isinstance(raw_handoff, dict) else {}
     preferred_input_path = _path_or_none(handoff_payload.get("preferred_input_path"))
     preferred_input_source_name = _string_or_none(handoff_payload.get("preferred_input_source_name"))
+    processed_marker_path = _path_or_none(payload.get("processed_marker_path"))
 
     raw_artifacts = payload.get("artifacts")
     artifacts: list[BundleArtifactRecord] = []
@@ -349,8 +389,11 @@ def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:
     return BundleMetadataRecord(
         metadata_path=metadata_path,
         bundle_note_path=metadata_path.with_name(metadata_path.name.replace(" (outlook).json", " (bundle).md")),
+        processed_marker_path=processed_marker_path,
         event_id=_string_or_default(payload.get("outlook_event_id"), metadata_path.stem),
         subject=_string_or_default(payload.get("subject"), metadata_path.stem),
+        teams_meeting_id=_string_or_none(payload.get("teams_meeting_id")),
+        identity_key=_string_or_none(payload.get("identity_key")),
         source_type=_string_or_none(payload.get("source_type")),
         processor_handoff=BundleProcessorHandoff(
             preferred_input_path=preferred_input_path,
@@ -398,12 +441,22 @@ def _execution_result_item_from_process_result(
     *,
     plan_item: BundleProcessingPlanItem,
     process_result: ProcessResult,
+    processed_marker_path: Path | None = None,
+    removed_paths: tuple[Path, ...] = (),
+    cleanup_errors: tuple[str, ...] = (),
 ) -> BundleExecutionResultItem:
     if process_result.processed:
+        reasons = ["Bundle preferred input was processed successfully."]
+        if processed_marker_path is not None:
+            reasons.append(f"Durable processed marker written to {processed_marker_path}.")
+        if removed_paths:
+            reasons.append("Removed bundle staging paths: " + ", ".join(str(path) for path in removed_paths) + ".")
+        for cleanup_error in cleanup_errors:
+            reasons.append(f"Bundle staging cleanup warning: {cleanup_error}")
         return BundleExecutionResultItem(
             status="processed",
             plan_item=plan_item,
-            reasons=("Bundle preferred input was processed successfully.",),
+            reasons=tuple(reasons),
             canonical_note_path=process_result.canonical_note_path,
             actions_file_path=process_result.actions_file_path,
         )
@@ -418,3 +471,118 @@ def _execution_result_item_from_process_result(
         plan_item=plan_item,
         reasons=("Processor returned without processing but did not provide a skip reason.",),
     )
+
+
+def _write_durable_processed_marker(
+    *,
+    metadata: BundleMetadataRecord,
+    process_result: ProcessResult,
+    cleanup_paths: tuple[Path, ...],
+) -> Path | None:
+    if metadata.processed_marker_path is None:
+        return None
+    marker_path = metadata.processed_marker_path
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "source_type": "meeting_bundle_processed",
+        "processed_at": datetime.now().astimezone().isoformat(),
+        "outlook_event_id": metadata.event_id,
+        "subject": metadata.subject,
+        "teams_meeting_id": metadata.teams_meeting_id,
+        "identity_key": metadata.identity_key,
+        "bundle_note_path": str(metadata.bundle_note_path),
+        "outlook_metadata_path": str(metadata.metadata_path),
+        "preferred_input_path": (
+            str(metadata.processor_handoff.preferred_input_path)
+            if metadata.processor_handoff.preferred_input_path is not None
+            else None
+        ),
+        "preferred_input_source_name": metadata.processor_handoff.preferred_input_source_name,
+        "canonical_note_path": (
+            str(process_result.canonical_note_path) if process_result.canonical_note_path is not None else None
+        ),
+        "actions_file_path": str(process_result.actions_file_path)
+        if process_result.actions_file_path is not None
+        else None,
+        "cleanup_paths": [str(path) for path in cleanup_paths],
+        "artifacts": [
+            {
+                "source_name": artifact.source_name,
+                "status": artifact.status,
+                "detail": artifact.detail,
+                "matched_paths": [str(path) for path in artifact.matched_paths],
+            }
+            for artifact in metadata.artifacts
+        ],
+    }
+    _write_json_atomically(marker_path, payload)
+    return marker_path
+
+
+def _cleanup_bundle_staging(metadata: BundleMetadataRecord) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    removed_paths: list[Path] = []
+    cleanup_errors: list[str] = []
+    for path in _bundle_cleanup_paths(metadata):
+        if not path.exists():
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            cleanup_errors.append(f"{path}: {exc}")
+            continue
+        removed_paths.append(path)
+    return tuple(removed_paths), tuple(cleanup_errors)
+
+
+def _bundle_cleanup_paths(metadata: BundleMetadataRecord) -> tuple[Path, ...]:
+    seen: set[Path] = set()
+    cleanup_paths = [metadata.bundle_note_path, metadata.metadata_path]
+    preferred_input = metadata.processor_handoff.preferred_input_path
+    if preferred_input is not None and _is_machine_managed_bundle_artifact(preferred_input, metadata):
+        cleanup_paths.append(preferred_input)
+    for artifact in metadata.artifacts:
+        for matched_path in artifact.matched_paths:
+            if _is_machine_managed_bundle_artifact(matched_path, metadata):
+                cleanup_paths.append(matched_path)
+    ordered_paths: list[Path] = []
+    for path in cleanup_paths:
+        if metadata.processed_marker_path is not None and path == metadata.processed_marker_path:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        ordered_paths.append(path)
+    return tuple(ordered_paths)
+
+
+def _is_machine_managed_bundle_artifact(path: Path, metadata: BundleMetadataRecord) -> bool:
+    root = metadata.metadata_path.parent
+    try:
+        relative_path = path.relative_to(root)
+    except ValueError:
+        return False
+    return relative_path.parts[:1] in {(dir_name,) for dir_name in MACHINE_MANAGED_BUNDLE_DIR_NAMES}
+
+
+def _write_json_atomically(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
