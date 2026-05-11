@@ -4,6 +4,7 @@ import io
 import json
 import tempfile
 import unittest
+from base64 import urlsafe_b64encode
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -1050,6 +1051,36 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(snapshot.meetings, ())
         self.assertIn("HTTP 403", snapshot.warning or "")
+
+    def test_graph_client_warns_before_calendar_call_when_token_lacks_calendar_scope(self) -> None:
+        def encode_jwt_part(payload: dict[str, object]) -> str:
+            encoded = urlsafe_b64encode(json.dumps(payload).encode()).decode()
+            return encoded.rstrip("=")
+
+        token = ".".join(
+            (
+                encode_jwt_part({"alg": "none"}),
+                encode_jwt_part({"aud": "https://graph.microsoft.com/", "scp": "User.Read"}),
+                "signature",
+            )
+        )
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            self.fail("Graph calendar endpoint should not be called when token scopes are known to be insufficient.")
+
+        client = GraphOutlookMeetingDiscoveryClient(
+            access_token=token,
+            fetch_json=fetch_json,
+        )
+
+        snapshot = client.list_recently_ended_meetings(
+            since=date(2026, 5, 1),
+            now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+        )
+
+        self.assertEqual(snapshot.meetings, ())
+        self.assertIn("Graph token is missing delegated Microsoft Graph calendar permission", snapshot.warning or "")
+        self.assertIn("Calendars.Read", snapshot.warning or "")
 
     def test_graph_transcript_discovery_marks_transcript_metadata_available(self) -> None:
         requested_urls: list[str] = []
