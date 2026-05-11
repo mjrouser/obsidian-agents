@@ -185,6 +185,10 @@ Current implementation status in this repo:
   sidecar, and any bundle-managed transcript or fallback artifact under
   `00_Intake/bundles/raw_transcripts` or `00_Intake/bundles/fallbacks`. It
   does not delete unrelated intake files or manually managed transcript files.
+- `obsidian-agent meetings process-bundles --execute --validation` uses the
+  same readiness contract and source-selection behavior, but redirects generated
+  canonical meeting notes and Matthew-owned action updates into
+  `99_Test Notes/Meetings` and `99_Test Notes/Actions`.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
   focus-without-content, non-Teams, meetings whose identity marker already
   exists, and not-yet-ended events with explicit reasons.
@@ -193,6 +197,20 @@ Current implementation status in this repo:
   subjects before artifact retrieval starts.
 - Direct chat retrieval and richer recap expansion are still future work beyond
   the current fallback staging flow.
+
+## Live Validation Lane
+
+Use validation mode after inspecting a dry-run window when you want to process a
+small representative sample without updating production meeting notes or weekly
+actions.
+
+```bash
+obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run
+obsidian-agent meetings process-bundles --execute --validation
+```
+
+This mode preserves transcript, fallback, and filtering semantics. Only the
+canonical outputs are redirected into `99_Test Notes/`.
 
 ## Extraction Standard
 

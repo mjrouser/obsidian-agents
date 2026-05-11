@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from os.path import relpath
 from pathlib import Path
+from typing import Literal
 
 from ..config import Config
 from ..rendering.action_renderer import ActionRecord, parse_incomplete_actions, render_actions_note
@@ -22,6 +23,8 @@ from .md_reader import ActionItem, extract_markdown_action_items, read_markdown
 from .meeting_metadata import normalize_meeting_metadata
 from .vtt_extractor import action_items_from_extracted, extract_vtt_meeting_data, normalize_extracted_meeting_data
 from .vtt_reader import read_vtt
+
+OutputMode = Literal["normal", "validation"]
 
 
 @dataclass(slots=True)
@@ -52,15 +55,26 @@ class ActionNoteUpdate:
 
 
 class MeetingProcessor:
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, *, output_mode: OutputMode = "normal") -> None:
         self.config = config
+        self.output_mode = output_mode
         self.vault_path = config.vault_path
         self.intake_path = self.vault_path / config.intake_dir
-        self.meetings_path = self.vault_path / config.meetings_dir
-        self.actions_path = self.vault_path / config.actions_dir
+        self.meetings_path = self._resolve_meetings_path()
+        self.actions_path = self._resolve_actions_path()
         self.archive_path = self.vault_path / config.archive_intake_dir
         self.action_owner_aliases = config.action_owner_aliases or {}
         self.intake_state = IntakeState(intake_path=self.intake_path, archive_path=self.archive_path)
+
+    def _resolve_meetings_path(self) -> Path:
+        if self.output_mode == "validation":
+            return self.vault_path / self.config.validation_meetings_dir
+        return self.vault_path / self.config.meetings_dir
+
+    def _resolve_actions_path(self) -> Path:
+        if self.output_mode == "validation":
+            return self.vault_path / self.config.validation_actions_dir
+        return self.vault_path / self.config.actions_dir
 
     def process_all_unprocessed(self) -> ProcessingSummary:
         summary = ProcessingSummary(processed_sources=[])
@@ -111,17 +125,19 @@ class MeetingProcessor:
         action_items = self._extract_action_items(source_path, body)
         metadata = normalize_meeting_metadata(source_path)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
-        meeting_link = f"{self.config.meetings_dir}/{metadata.canonical_basename}".replace("\\", "/")
+        meeting_link = f"{self._meetings_dir()}/{metadata.canonical_basename}".replace("\\", "/")
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
 
-        meeting_note = render_meeting_note(
-            heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
-            intake_file=self._vault_relative_path(archived_source_path),
-            owner_filter=self.config.owner_filter,
-            normalized_body=body,
-            meeting_date=metadata.date,
-            meeting_source=metadata.source,
-            meeting_title=metadata.title,
+        meeting_note = self._apply_validation_marker(
+            render_meeting_note(
+                heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
+                intake_file=self._vault_relative_path(archived_source_path),
+                owner_filter=self.config.owner_filter,
+                normalized_body=body,
+                meeting_date=metadata.date,
+                meeting_source=metadata.source,
+                meeting_title=metadata.title,
+            )
         )
 
         action_update = self._prepare_action_note_update(
@@ -174,10 +190,12 @@ class MeetingProcessor:
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         canonical_note_name = metadata.canonical_basename
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
-        meeting_note = render_extracted_meeting_note(
-            heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
-            intake_file=self._vault_relative_path(archived_source_path),
-            extracted=extracted,
+        meeting_note = self._apply_validation_marker(
+            render_extracted_meeting_note(
+                heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
+                intake_file=self._vault_relative_path(archived_source_path),
+                extracted=extracted,
+            )
         )
 
         action_update = self._prepare_action_note_update(
@@ -293,6 +311,20 @@ class MeetingProcessor:
             return []
         previous_actions = previous_actions_path.read_text(encoding="utf-8")
         return parse_incomplete_actions(previous_actions, self.action_owner_aliases)
+
+    def _meetings_dir(self) -> str:
+        if self.output_mode == "validation":
+            return self.config.validation_meetings_dir
+        return self.config.meetings_dir
+
+    def _apply_validation_marker(self, rendered_note: str) -> str:
+        if self.output_mode != "validation":
+            return rendered_note
+        if "validation_mode: true" in rendered_note:
+            return rendered_note
+        if rendered_note.startswith("---\n"):
+            return rendered_note.replace("---\n", "---\nvalidation_mode: true\n", 1)
+        return "---\nvalidation_mode: true\n---\n\n" + rendered_note
 
     def _should_include_action_owner(self, owner: str | None) -> bool:
         normalized_owner = self._normalize_owner(owner)

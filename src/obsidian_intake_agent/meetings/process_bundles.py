@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from ..processors.meeting_processor import MeetingProcessor, ProcessResult
+from ..processors.meeting_processor import MeetingProcessor, OutputMode, ProcessResult
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 BundleProcessDecision = Literal["ready", "blocked"]
@@ -96,6 +96,7 @@ class BundleExecutionResult:
     bundle_root: Path
     items: tuple[BundleExecutionResultItem, ...]
     warnings: tuple[str, ...] = ()
+    output_mode: OutputMode = "normal"
 
     @property
     def candidate_count(self) -> int:
@@ -276,6 +277,7 @@ def execute_bundle_processing_plan(
         bundle_root=plan.bundle_root,
         items=tuple(items),
         warnings=plan.warnings,
+        output_mode=getattr(processor, "output_mode", "normal"),
     )
 
 
@@ -289,6 +291,8 @@ def render_bundle_execution_result(result: BundleExecutionResult) -> str:
         f"meeting_bundle_process_skipped: {result.skipped_count}",
         f"meeting_bundle_process_failed: {result.failed_count}",
     ]
+    if result.output_mode == "validation":
+        lines.append("meeting_bundle_process_output_mode: validation")
     for warning in result.warnings:
         lines.append(f"meeting_bundle_process_warning: {warning}")
     for item in result.items:
