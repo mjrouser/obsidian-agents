@@ -15,6 +15,8 @@ class Config:
     archive_intake_dir: str
     templates_dir: str
     owner_filter: str
+    validation_meetings_dir: str = "99_Test Notes/Meetings"
+    validation_actions_dir: str = "99_Test Notes/Actions"
     dry_run: bool = True
     include_unassigned: bool = False
     llm_provider: str = "codex_cli"
@@ -44,6 +46,8 @@ class Config:
             intake_dir=_required_string(data, "intake_dir"),
             meetings_dir=_required_string(data, "meetings_dir"),
             actions_dir=_required_string(data, "actions_dir"),
+            validation_meetings_dir=str(data.get("validation_meetings_dir", "99_Test Notes/Meetings")),
+            validation_actions_dir=str(data.get("validation_actions_dir", "99_Test Notes/Actions")),
             archive_intake_dir=_required_string(data, "archive_intake_dir"),
             templates_dir=_required_string(data, "templates_dir"),
             owner_filter=_required_string(data, "owner_filter"),

@@ -21,6 +21,8 @@ def config(
         archive_intake_dir="_Archive/Intake",
         templates_dir="Templates",
         owner_filter="Matthew",
+        validation_meetings_dir="99_Test Notes/Meetings",
+        validation_actions_dir="99_Test Notes/Actions",
         dry_run=dry_run,
         include_unassigned=include_unassigned,
         llm_provider=llm_provider,

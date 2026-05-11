@@ -8,6 +8,26 @@ from obsidian_intake_agent.config import Config
 
 
 class ConfigCompatibilityTests(unittest.TestCase):
+    def test_validation_output_dirs_default_when_omitted(self) -> None:
+        config_path = _write_config(self)
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.validation_meetings_dir, "99_Test Notes/Meetings")
+        self.assertEqual(loaded.validation_actions_dir, "99_Test Notes/Actions")
+
+    def test_validation_output_dirs_can_be_overridden(self) -> None:
+        config_path = _write_config(
+            self,
+            'validation_meetings_dir: "99_Custom Validation/Meetings"',
+            'validation_actions_dir: "99_Custom Validation/Actions"',
+        )
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.validation_meetings_dir, "99_Custom Validation/Meetings")
+        self.assertEqual(loaded.validation_actions_dir, "99_Custom Validation/Actions")
+
     def test_legacy_snapshots_dir_key_still_loads_weekly_reviews_dir(self) -> None:
         config_path = _write_config(self, 'snapshots_dir: "09_Weekly Reviews"')
 
