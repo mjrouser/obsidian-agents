@@ -130,6 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="execute",
         help="Process ready meeting bundle handoffs through the existing intake processor.",
     )
+    process_bundles_parser.add_argument(
+        "--validation",
+        action="store_true",
+        dest="validation",
+        help="Write processed meeting notes and Matthew-owned actions into 99_Test Notes instead of production lanes.",
+    )
 
     return parser
 
@@ -225,14 +231,18 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(
                     "`obsidian-agent meetings process-bundles` requires exactly one of `--dry-run` or `--execute`."
                 )
+            bundle_processor = MeetingProcessor(
+                config,
+                output_mode="validation" if args.validation else "normal",
+            )
             bundle_plan = build_bundle_processing_plan(
                 intake_root=config.vault_path / config.intake_dir / "bundles",
-                processor=processor,
+                processor=bundle_processor,
             )
             if args.dry_run:
                 print(render_bundle_processing_plan(bundle_plan))
                 return 0
-            execution_result = execute_bundle_processing_plan(bundle_plan, processor=processor)
+            execution_result = execute_bundle_processing_plan(bundle_plan, processor=bundle_processor)
             print(render_bundle_execution_result(execution_result))
             if execution_result.processed_count > 0:
                 source_label = _vault_commit_source_label(

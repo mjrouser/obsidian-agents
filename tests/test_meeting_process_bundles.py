@@ -220,6 +220,47 @@ class BundleProcessingPlanTests(unittest.TestCase):
             self.assertIn("meeting_bundle_process_processed: 1", rendered)
             self.assertIn("reason: Bundle preferred input was processed successfully.", rendered)
 
+    def test_execute_bundle_processing_plan_validation_mode_routes_outputs_to_test_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAction: Matthew will confirm follow-up\n",
+                encoding="utf-8",
+            )
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-validation", subject="Platform Sync"),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+            )
+
+            processor = MeetingProcessor(
+                _config_for_vault(vault),
+                output_mode="validation",
+            )
+            plan = build_bundle_processing_plan(
+                intake_root=intake_root / "bundles",
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            processed = next(item for item in result.items if item.status == "processed")
+            self.assertEqual(
+                processed.canonical_note_path,
+                vault / "99_Test Notes" / "Meetings" / "2026-05-04 - Teams - Platform Sync.md",
+            )
+            self.assertEqual(
+                processed.actions_file_path,
+                vault / "99_Test Notes" / "Actions" / "2026-05-04.md",
+            )
+            self.assertFalse((vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").exists())
+            self.assertFalse((vault / "07_Actions" / "2026-05-04.md").exists())
+
     def test_execute_skips_blocked_bundle_without_calling_processor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -343,6 +384,10 @@ def _write_bundle_metadata_sidecar(
 
 
 def _processor_for_vault(vault: Path) -> MeetingProcessor:
+    return MeetingProcessor(_config_for_vault(vault))
+
+
+def _config_for_vault(vault: Path) -> Config:
     config_path = vault.parent / "config.yaml"
     config_path.write_text(
         "\n".join(
@@ -365,7 +410,7 @@ def _processor_for_vault(vault: Path) -> MeetingProcessor:
         + "\n",
         encoding="utf-8",
     )
-    return MeetingProcessor(Config.load(config_path))
+    return Config.load(config_path)
 
 
 def _meeting(

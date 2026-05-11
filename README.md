@@ -81,6 +81,8 @@ vault_path: "/PATH/TO/YOUR/VAULT"
 intake_dir: "00_Intake"
 meetings_dir: "01_Meetings"
 actions_dir: "07_Actions"
+validation_meetings_dir: "99_Test Notes/Meetings"
+validation_actions_dir: "99_Test Notes/Actions"
 archive_intake_dir: "z_Archive/Intake"
 weekly_reviews_dir: "09_Weekly Reviews"
 templates_dir: "Templates"
@@ -183,6 +185,23 @@ Process ready meeting bundles through the existing intake processor:
 ```bash
 obsidian-agent meetings process-bundles --execute
 ```
+
+Validate recent meetings without touching production note lanes:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+obsidian-agent meetings process-bundles --execute --validation
+```
+
+Validation outputs land in:
+
+- `99_Test Notes/Meetings`
+- `99_Test Notes/Actions`
+
+Normal runs still write to:
+
+- `01_Meetings`
+- `07_Actions`
 
 With Graph discovery enabled:
 
@@ -299,6 +318,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   removes the machine-managed bundle note, Outlook metadata sidecar, and any
   machine-managed artifacts under `00_Intake/bundles/raw_transcripts` or
   `00_Intake/bundles/fallbacks`, while leaving unrelated intake files alone.
+  Add `--validation` with `--execute` to route generated canonical meeting
+  notes and Matthew-owned weekly actions into the test-only `99_Test Notes`
+  lane instead of `01_Meetings` and `07_Actions`.
   Both modes distinguish calendar-only bundles, missing local transcript files,
   permission-blocked retrieval, and handoffs the current intake processor would
   skip as already processed.

@@ -326,6 +326,43 @@ class MeetingProcessorTests(unittest.TestCase):
                 actions_text,
             )
 
+    def test_process_vtt_file_validation_mode_writes_meeting_note_under_test_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            source = vault / "00_Intake" / "2026-03-12 - Teams - weekly-sync.vtt"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "WEBVTT\n\n00:00.000 --> 00:02.000\nAction: Matthew to ship recap\n",
+                encoding="utf-8",
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False, llm_provider="none"), output_mode="validation")
+
+            result = processor.process_file(source)
+
+            expected_note = vault / "99_Test Notes" / "Meetings" / "2026-03-12 - Teams - weekly-sync.md"
+            self.assertTrue(result.processed)
+            self.assertEqual(result.canonical_note_path, expected_note)
+            self.assertTrue(expected_note.exists())
+            self.assertFalse((vault / "01_Meetings" / "2026-03-12 - Teams - weekly-sync.md").exists())
+            self.assertIn("validation_mode: true", expected_note.read_text(encoding="utf-8"))
+
+    def test_process_markdown_validation_mode_routes_actions_to_test_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            source = vault / "00_Intake" / "2026-03-12 - Unknown - weekly-sync.md"
+            source.parent.mkdir(parents=True)
+            source.write_text("# Notes\nAction: Matthew to review action items\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False), output_mode="validation")
+
+            result = processor.process_file(source)
+
+            expected_actions = vault / "99_Test Notes" / "Actions" / "2026-03-09.md"
+            self.assertEqual(result.actions_file_path, expected_actions)
+            self.assertTrue(expected_actions.exists())
+            self.assertFalse((vault / "07_Actions" / "2026-03-09.md").exists())
+
     def test_meeting_date_2026_03_12_rolls_to_monday_2026_03_09(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"

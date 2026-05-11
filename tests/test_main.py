@@ -614,6 +614,59 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("meeting_bundle_process_processed: 1", output)
             self.assertIn("canonical_output_file:", output)
 
+    def test_meetings_process_bundles_execute_validation_mode_prints_test_lane_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            bundle_root = vault / "00_Intake" / "bundles"
+            bundle_root.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            preferred_input = bundle_root / "raw_transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
+            preferred_input.parent.mkdir(parents=True)
+            preferred_input.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAction: Matthew will confirm follow-up\n",
+                encoding="utf-8",
+            )
+            (bundle_root / "2026-05-04 - Teams - Platform Sync (outlook).json").write_text(
+                "\n".join(
+                    [
+                        "{",
+                        '  "outlook_event_id": "evt-validation",',
+                        '  "subject": "Platform Sync",',
+                        '  "processor_handoff": {',
+                        f'    "preferred_input_path": "{preferred_input}",',
+                        '    "preferred_input_source_name": "Teams .vtt transcript"',
+                        "  },",
+                        '  "artifacts": [',
+                        '    {"source_name": "Teams .vtt transcript", "status": "available", "detail": "downloaded", "matched_paths": []}',
+                        "  ]",
+                        "}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "process-bundles",
+                        "--execute",
+                        "--validation",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_bundle_process_output_mode: validation", output)
+            self.assertIn("99_Test Notes/Meetings", output)
+            self.assertIn("99_Test Notes/Actions", output)
+            self.assertFalse((vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").exists())
+            self.assertFalse((vault / "07_Actions" / "2026-05-04.md").exists())
+
     def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
