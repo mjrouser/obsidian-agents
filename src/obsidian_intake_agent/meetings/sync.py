@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import binascii
 import hashlib
 import html
 import json
 import re
+from base64 import urlsafe_b64decode
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
@@ -386,6 +388,14 @@ class GraphOutlookMeetingDiscoveryClient:
         since: date,
         now: datetime,
     ) -> MeetingDiscoverySnapshot:
+        scope_warning = _graph_calendar_scope_warning(self._access_token)
+        if scope_warning is not None:
+            return MeetingDiscoverySnapshot(
+                meetings=(),
+                provider_label="graph_outlook_calendar",
+                warning=scope_warning,
+            )
+
         start_at = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
         start_text = start_at.isoformat().replace("+00:00", "Z")
         end_text = now.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -2244,6 +2254,65 @@ def _graph_http_warning(error: HTTPError) -> str:
         error,
         default=f"Graph calendar discovery failed with HTTP {error.code}.",
     )
+
+
+def _graph_calendar_scope_warning(access_token: str) -> str | None:
+    claims = _decode_jwt_claims(access_token)
+    if claims is None:
+        return None
+
+    grants = _claim_grants(claims.get("scp")) | _claim_grants(claims.get("roles"))
+    if not grants:
+        return None
+
+    calendar_grants = {
+        "Calendars.ReadBasic",
+        "Calendars.Read",
+        "Calendars.Read.Shared",
+        "Calendars.ReadWrite",
+        "Calendars.ReadWrite.Shared",
+    }
+    if grants & calendar_grants:
+        return None
+
+    grant_summary = _format_graph_grants(grants)
+    return (
+        "Graph token is missing delegated Microsoft Graph calendar permission. "
+        "Calendar discovery needs Calendars.Read for full meeting context; "
+        "Calendars.ReadBasic may only support limited metadata. "
+        "Request a token with https://graph.microsoft.com/Calendars.Read. "
+        f"Current token grants: {grant_summary}."
+    )
+
+
+def _decode_jwt_claims(access_token: str) -> dict[str, object] | None:
+    parts = access_token.split(".")
+    if len(parts) < 2:
+        return None
+
+    payload = parts[1] + ("=" * (-len(parts[1]) % 4))
+    try:
+        decoded = urlsafe_b64decode(payload.encode()).decode()
+        claims = json.loads(decoded)
+    except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    return claims if isinstance(claims, dict) else None
+
+
+def _claim_grants(raw_value: object) -> set[str]:
+    if isinstance(raw_value, str):
+        return {part for part in raw_value.split() if part}
+    if isinstance(raw_value, list):
+        return {str(part) for part in raw_value if str(part).strip()}
+    return set()
+
+
+def _format_graph_grants(grants: set[str]) -> str:
+    sorted_grants = sorted(grants)
+    if len(sorted_grants) <= 8:
+        return ", ".join(sorted_grants)
+    shown = ", ".join(sorted_grants[:8])
+    return f"{shown}, ... ({len(sorted_grants)} total)"
 
 
 def _graph_http_error_detail(error: HTTPError, *, default: str) -> str:
