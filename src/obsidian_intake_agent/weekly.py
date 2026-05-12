@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import Config
 from .llm.codex_cli import run_codex_stdout
+from .output_retention import apply_output_retention
 from .utils.dates import monday_of_week
 from .utils.fs import safe_write_text
 
@@ -50,6 +51,11 @@ def generate_weekly_snapshot(
     changed = updated != existing
     if not dry_run and changed:
         safe_write_text(review_path, updated)
+        apply_output_retention(
+            review_dir,
+            archive_dir_name=config.weekly_reviews_archive_dir,
+            keep_count=config.archive_retention_count,
+        )
     return WeeklyRunResult(review_path=review_path, changed=changed, mode=mode)
 
 

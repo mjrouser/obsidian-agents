@@ -85,6 +85,9 @@ validation_meetings_dir: "99_Test Notes/Meetings"
 validation_actions_dir: "99_Test Notes/Actions"
 archive_intake_dir: "z_Archive/Intake"
 weekly_reviews_dir: "09_Weekly Reviews"
+actions_archive_dir: "Actions Archive"
+weekly_reviews_archive_dir: "Review & Wrap Archive"
+archive_retention_count: 4
 templates_dir: "Templates"
 owner_filter: "Matthew"
 dry_run: true
@@ -256,6 +259,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - `YYYY-MM-DD Weekly Briefing.md`
 - `YYYY-MM-DD Weekly Wrap.md`
 - Both filenames use the Monday date of the relevant week.
+- After successful non-dry-run writes, the agent keeps the four newest dated Markdown records in `07_Actions` and `09_Weekly Reviews` and moves older dated records into their configured archive subfolders. Recency is based on the leading `YYYY-MM-DD` filename date, not file modified time. Files without a leading date and files already inside archive folders are ignored.
 - Weekly actions only include items owned by `owner_filter`, plus `Unassigned` items when `include_unassigned: true`.
 - The intake file is prepended with `STATUS: PROCESSED — see [[...]]`.
 - The watcher listens for both create and modify events, waits for the file to stop changing, and uses a per-file lock to avoid duplicate processing attempts.

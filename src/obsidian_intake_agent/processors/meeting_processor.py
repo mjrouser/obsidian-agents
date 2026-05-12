@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from ..config import Config
+from ..output_retention import apply_output_retention
 from ..rendering.action_renderer import ActionRecord, parse_incomplete_actions, render_actions_note
 from ..rendering.meeting_renderer import (
     render_extracted_meeting_note,
@@ -78,12 +79,13 @@ class MeetingProcessor:
 
     def process_all_unprocessed(self) -> ProcessingSummary:
         summary = ProcessingSummary(processed_sources=[])
+        action_notes_changed = False
         for path in sorted(self.intake_path.iterdir()):
             if not path.is_file():
                 continue
             reason = self.skip_reason(path)
             if reason is None:
-                result = self.process_file(path)
+                result = self.process_file(path, apply_retention=False)
                 if result.processed:
                     summary.processed_files += 1
                     summary.processed_sources.append(path.name)
@@ -91,6 +93,7 @@ class MeetingProcessor:
                         summary.meeting_notes_written += 1
                     if result.actions_file_path is not None:
                         summary.weekly_action_files_updated += 1
+                        action_notes_changed = True
             else:
                 summary.skipped_files += 1
                 if reason == "ignored basename":
@@ -99,9 +102,18 @@ class MeetingProcessor:
                     summary.skipped_already_processed += 1
                 elif reason == "unsupported ext":
                     summary.skipped_unsupported_ext += 1
+        if action_notes_changed and not self.config.dry_run:
+            self._apply_actions_retention()
         return summary
 
-    def process_file(self, path: Path, *, force: bool = False, dry_run: bool | None = None) -> ProcessResult:
+    def process_file(
+        self,
+        path: Path,
+        *,
+        force: bool = False,
+        dry_run: bool | None = None,
+        apply_retention: bool = True,
+    ) -> ProcessResult:
         source_path = path if path.is_absolute() else self.vault_path / path
         if not source_path.exists() or source_path.is_dir():
             raise FileNotFoundError(source_path)
@@ -121,6 +133,7 @@ class MeetingProcessor:
                 body,
                 dry_run=effective_dry_run,
                 source_in_intake=source_in_intake,
+                apply_retention=apply_retention,
             )
         action_items = self._extract_action_items(source_path, body)
         metadata = normalize_meeting_metadata(source_path)
@@ -170,6 +183,8 @@ class MeetingProcessor:
                 prepend_status_marker(source_path, status_text)
         if source_in_intake:
             self._archive_processed_source(source_path)
+        if apply_retention and action_update.changed:
+            self._apply_actions_retention()
         return ProcessResult(
             processed=True,
             canonical_note_path=meeting_note_path,
@@ -183,6 +198,7 @@ class MeetingProcessor:
         *,
         dry_run: bool,
         source_in_intake: bool,
+        apply_retention: bool,
     ) -> ProcessResult:
         metadata = normalize_meeting_metadata(source_path)
         extracted = extract_vtt_meeting_data(transcript_text=transcript_text, metadata=metadata, config=self.config)
@@ -231,6 +247,8 @@ class MeetingProcessor:
         safe_write_text(sidecar_path, sidecar_note)
         if source_in_intake:
             self._archive_processed_source(source_path)
+        if apply_retention and action_update.changed:
+            self._apply_actions_retention()
         return ProcessResult(
             processed=True,
             canonical_note_path=meeting_note_path,
@@ -311,6 +329,15 @@ class MeetingProcessor:
             return []
         previous_actions = previous_actions_path.read_text(encoding="utf-8")
         return parse_incomplete_actions(previous_actions, self.action_owner_aliases)
+
+    def _apply_actions_retention(self) -> None:
+        if self.output_mode != "normal":
+            return
+        apply_output_retention(
+            self.actions_path,
+            archive_dir_name=self.config.actions_archive_dir,
+            keep_count=self.config.archive_retention_count,
+        )
 
     def _meetings_dir(self) -> str:
         if self.output_mode == "validation":

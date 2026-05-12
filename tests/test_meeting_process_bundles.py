@@ -220,6 +220,61 @@ class BundleProcessingPlanTests(unittest.TestCase):
             self.assertIn("meeting_bundle_process_processed: 1", rendered)
             self.assertIn("reason: Bundle preferred input was processed successfully.", rendered)
 
+    def test_execute_defers_retention_until_ready_bundle_carry_over_sources_are_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            bundle_root = intake_root / "bundles"
+            actions_dir = vault / "07_Actions"
+            bundle_root.mkdir(parents=True)
+            actions_dir.mkdir(parents=True)
+            for name in [
+                "2026-05-04.md",
+                "2026-04-27.md",
+                "2026-04-14.md",
+            ]:
+                (actions_dir / name).write_text(f"# Actions — Week of {name.removesuffix('.md')}\n", encoding="utf-8")
+            (actions_dir / "2026-04-13.md").write_text(
+                "# Actions — Week of 2026-04-13\n\n"
+                "## This Week\n\n"
+                "- [ ] Preserve this carry-over context (Owner: Matthew Rouser) — Source: 2026-04-13 [[source.md]]\n\n"
+                "## Carry Over Items\n\n"
+                "## Longer-Term / In Progress\n",
+                encoding="utf-8",
+            )
+
+            newer_input = bundle_root / "2026-05-12 - Teams - Newer Planning.md"
+            newer_input.write_text("Action: Matthew will update the May plan.\n", encoding="utf-8")
+            older_input = bundle_root / "2026-04-21 - Teams - Older Planning.md"
+            older_input.write_text("Action: Matthew will update the April plan.\n", encoding="utf-8")
+            _write_ready_bundle_metadata(
+                metadata_path=bundle_root / "a-newer-planning (outlook).json",
+                preferred_input=newer_input,
+                event_id="evt-newer",
+                subject="Newer Planning",
+            )
+            _write_ready_bundle_metadata(
+                metadata_path=bundle_root / "b-older-planning (outlook).json",
+                preferred_input=older_input,
+                event_id="evt-older",
+                subject="Older Planning",
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 2)
+            april_actions_text = (actions_dir / "2026-04-20.md").read_text(encoding="utf-8")
+            self.assertIn("Preserve this carry-over context", april_actions_text)
+            self.assertFalse((actions_dir / "2026-04-13.md").exists())
+            self.assertTrue((actions_dir / "Actions Archive" / "2026-04-13.md").exists())
+
     def test_execute_bundle_processing_plan_validation_mode_routes_outputs_to_test_lane(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -381,6 +436,40 @@ def _write_bundle_metadata_sidecar(
     note.metadata_path.parent.mkdir(parents=True, exist_ok=True)
     note.metadata_path.write_text(note.metadata_content + "\n", encoding="utf-8")
     return note
+
+
+def _write_ready_bundle_metadata(
+    *,
+    metadata_path: Path,
+    preferred_input: Path,
+    event_id: str,
+    subject: str,
+) -> None:
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "source_type": "outlook_meeting_bundle",
+                "outlook_event_id": event_id,
+                "subject": subject,
+                "processor_handoff": {
+                    "preferred_input_path": str(preferred_input),
+                    "preferred_input_source_name": "Local transcript",
+                },
+                "artifacts": [
+                    {
+                        "source_name": "Local transcript",
+                        "status": "available",
+                        "detail": None,
+                        "matched_paths": [str(preferred_input)],
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _processor_for_vault(vault: Path) -> MeetingProcessor:

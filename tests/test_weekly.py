@@ -83,6 +83,89 @@ class WeeklySnapshotTests(unittest.TestCase):
             self.assertEqual(second.review_path.read_text(encoding="utf-8"), "# Weekly Briefing V2\n")
             self.assertFalse((vault / "09_Weekly Reviews" / "2026-03-30 Weekly Wrap.md").exists())
 
+    def test_non_dry_run_weekly_note_write_archives_older_dated_weekly_review_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            reviews = vault / "09_Weekly Reviews"
+            (vault / "07_Actions").mkdir(parents=True)
+            reviews.mkdir(parents=True)
+            old_review = reviews / "2026-03-16 Weekly Briefing.md"
+            kept_review = reviews / "2026-03-23 Weekly Briefing.md"
+            old_review.write_text("old", encoding="utf-8")
+            kept_review.write_text("kept", encoding="utf-8")
+            config = _config(vault, archive_retention_count=2)
+
+            with patch("obsidian_intake_agent.weekly.run_codex_markdown", return_value="# Weekly Briefing"):
+                result = generate_weekly_snapshot(
+                    config,
+                    mode="briefing",
+                    target_date=date(2026, 3, 30),
+                    dry_run=False,
+                )
+
+            self.assertTrue(result.changed)
+            self.assertTrue(result.review_path.exists())
+            self.assertTrue(kept_review.exists())
+            self.assertFalse(old_review.exists())
+            self.assertEqual(
+                (reviews / "Review & Wrap Archive" / old_review.name).read_text(encoding="utf-8"),
+                "old",
+            )
+
+    def test_dry_run_weekly_generation_does_not_archive_older_weekly_review_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            reviews = vault / "09_Weekly Reviews"
+            (vault / "07_Actions").mkdir(parents=True)
+            reviews.mkdir(parents=True)
+            old_review = reviews / "2026-03-16 Weekly Briefing.md"
+            kept_review = reviews / "2026-03-23 Weekly Briefing.md"
+            old_review.write_text("old", encoding="utf-8")
+            kept_review.write_text("kept", encoding="utf-8")
+            config = _config(vault, archive_retention_count=1)
+
+            with patch("obsidian_intake_agent.weekly.run_codex_markdown", return_value="# Weekly Briefing"):
+                result = generate_weekly_snapshot(
+                    config,
+                    mode="briefing",
+                    target_date=date(2026, 3, 30),
+                    dry_run=True,
+                )
+
+            self.assertTrue(result.changed)
+            self.assertFalse(result.review_path.exists())
+            self.assertTrue(old_review.exists())
+            self.assertTrue(kept_review.exists())
+            self.assertFalse((reviews / "Review & Wrap Archive").exists())
+
+    def test_unchanged_weekly_generation_does_not_archive_older_weekly_review_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            reviews = vault / "09_Weekly Reviews"
+            (vault / "07_Actions").mkdir(parents=True)
+            reviews.mkdir(parents=True)
+            unchanged_review = reviews / "2026-03-30 Weekly Briefing.md"
+            old_review = reviews / "2026-03-16 Weekly Briefing.md"
+            kept_review = reviews / "2026-03-23 Weekly Briefing.md"
+            unchanged_review.write_text("# Weekly Briefing\n", encoding="utf-8")
+            old_review.write_text("old", encoding="utf-8")
+            kept_review.write_text("kept", encoding="utf-8")
+            config = _config(vault, archive_retention_count=1)
+
+            with patch("obsidian_intake_agent.weekly.run_codex_markdown", return_value="# Weekly Briefing"):
+                result = generate_weekly_snapshot(
+                    config,
+                    mode="briefing",
+                    target_date=date(2026, 3, 30),
+                    dry_run=False,
+                )
+
+            self.assertFalse(result.changed)
+            self.assertTrue(unchanged_review.exists())
+            self.assertTrue(old_review.exists())
+            self.assertTrue(kept_review.exists())
+            self.assertFalse((reviews / "Review & Wrap Archive").exists())
+
     def test_wrap_prompt_path_uses_correct_spelling(self) -> None:
         self.assertEqual(_prompt_path_for_mode("wrap").name, "friday_weekly_wrap_prompt.md")
         self.assertTrue(_prompt_path_for_mode("wrap").exists())
@@ -116,7 +199,7 @@ class WeeklyCodexTests(unittest.TestCase):
             run_codex_markdown("prompt", model=None, exec_cmd=["codex", "exec"], timeout_seconds=30)
 
 
-def _config(vault: Path) -> Config:
+def _config(vault: Path, *, archive_retention_count: int = 4) -> Config:
     return Config(
         vault_path=vault,
         intake_dir="00_Intake",
@@ -130,6 +213,8 @@ def _config(vault: Path) -> Config:
         codex_model=None,
         codex_exec_cmd=["codex", "exec"],
         weekly_reviews_dir="09_Weekly Reviews",
+        weekly_reviews_archive_dir="Review & Wrap Archive",
+        archive_retention_count=archive_retention_count,
         watcher_settle_seconds=1,
         watcher_stable_seconds=0,
         automation_log_dir=str(vault / "logs"),

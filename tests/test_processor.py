@@ -253,6 +253,130 @@ class MeetingProcessorTests(unittest.TestCase):
             )
             self.assertNotIn("Completed item", actions_text)
 
+    def test_archives_older_action_notes_after_action_note_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            actions_dir = vault / "07_Actions"
+            intake_dir.mkdir(parents=True)
+            actions_dir.mkdir(parents=True)
+            for name in [
+                "2026-05-11.md",
+                "2026-05-04.md",
+                "2026-04-27.md",
+                "2026-04-20.md",
+                "2026-04-13.md",
+            ]:
+                (actions_dir / name).write_text(f"# Actions {name}\n", encoding="utf-8")
+            source = intake_dir / "2026-05-12 - Teams - Sync.md"
+            source.write_text("Action: Matthew will follow up with Alex.\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            self.assertFalse((actions_dir / "2026-04-13.md").exists())
+            self.assertTrue((actions_dir / "Actions Archive" / "2026-04-13.md").exists())
+            self.assertTrue((actions_dir / "2026-05-11.md").exists())
+
+    def test_batch_retention_waits_until_carry_over_sources_are_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            actions_dir = vault / "07_Actions"
+            intake_dir.mkdir(parents=True)
+            actions_dir.mkdir(parents=True)
+            for name in [
+                "2026-05-04.md",
+                "2026-04-27.md",
+                "2026-04-14.md",
+            ]:
+                (actions_dir / name).write_text(f"# Actions — Week of {name.removesuffix('.md')}\n", encoding="utf-8")
+            (actions_dir / "2026-04-13.md").write_text(
+                "# Actions — Week of 2026-04-13\n\n"
+                "## This Week\n\n"
+                "- [ ] Preserve this carry-over context (Owner: Matthew Rouser) — Source: 2026-04-13 [[source.md]]\n\n"
+                "## Carry Over Items\n\n"
+                "## Longer-Term / In Progress\n",
+                encoding="utf-8",
+            )
+            first_source = intake_dir / "a-newer-week.md"
+            first_source.write_text("Action: Matthew will update the May plan.\n", encoding="utf-8")
+            first_ts = datetime(2026, 5, 12, 10, 0, 0).timestamp()
+            os.utime(first_source, (first_ts, first_ts))
+            second_source = intake_dir / "b-carry-over-week.md"
+            second_source.write_text("Action: Matthew will update the April plan.\n", encoding="utf-8")
+            second_ts = datetime(2026, 4, 21, 10, 0, 0).timestamp()
+            os.utime(second_source, (second_ts, second_ts))
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            processor.process_all_unprocessed()
+
+            april_actions_text = (actions_dir / "2026-04-20.md").read_text(encoding="utf-8")
+            self.assertIn("Preserve this carry-over context", april_actions_text)
+            self.assertFalse((actions_dir / "2026-04-13.md").exists())
+            self.assertTrue((actions_dir / "Actions Archive" / "2026-04-13.md").exists())
+
+    def test_dry_run_does_not_archive_older_action_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            actions_dir = vault / "07_Actions"
+            intake_dir.mkdir(parents=True)
+            actions_dir.mkdir(parents=True)
+            for name in [
+                "2026-05-11.md",
+                "2026-05-04.md",
+                "2026-04-27.md",
+                "2026-04-20.md",
+                "2026-04-13.md",
+            ]:
+                (actions_dir / name).write_text(f"# Actions {name}\n", encoding="utf-8")
+            source = intake_dir / "2026-05-12 - Teams - Sync.md"
+            source.write_text("Action: Matthew will follow up with Alex.\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=True))
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            self.assertTrue((actions_dir / "2026-04-13.md").exists())
+            self.assertFalse((actions_dir / "Actions Archive").exists())
+
+    def test_validation_mode_action_write_does_not_archive_action_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            production_actions_dir = vault / "07_Actions"
+            validation_actions_dir = vault / "99_Test Notes" / "Actions"
+            intake_dir.mkdir(parents=True)
+            production_actions_dir.mkdir(parents=True)
+            validation_actions_dir.mkdir(parents=True)
+            action_note_names = [
+                "2026-05-11.md",
+                "2026-05-04.md",
+                "2026-04-27.md",
+                "2026-04-20.md",
+                "2026-04-13.md",
+            ]
+            for name in action_note_names:
+                (production_actions_dir / name).write_text(f"# Production Actions {name}\n", encoding="utf-8")
+                (validation_actions_dir / name).write_text(f"# Validation Actions {name}\n", encoding="utf-8")
+            source = intake_dir / "2026-05-12 - Teams - Sync.md"
+            source.write_text("Action: Matthew will follow up with Alex.\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False), output_mode="validation")
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            self.assertTrue((production_actions_dir / "2026-04-13.md").exists())
+            self.assertFalse((production_actions_dir / "Actions Archive").exists())
+            self.assertTrue((validation_actions_dir / "2026-04-13.md").exists())
+            self.assertFalse((validation_actions_dir / "Actions Archive").exists())
+
     def test_processes_vtt_without_modifying_raw_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
