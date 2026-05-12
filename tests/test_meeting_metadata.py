@@ -32,6 +32,28 @@ class MeetingMetadataTests(unittest.TestCase):
         self.assertEqual(metadata.source, "Copilot")
         self.assertEqual(metadata.title, "Project Review")
 
+    def test_normalize_meeting_metadata_accepts_equals_in_filename_date(self) -> None:
+        path = Path("/tmp/2026=05-11 - Teams - Slalom Kickoff Week Monday.vtt")
+
+        metadata = normalize_meeting_metadata(path)
+
+        self.assertEqual(metadata.date, "2026-05-11")
+        self.assertEqual(metadata.source, "Teams")
+        self.assertEqual(metadata.title, "Slalom Kickoff Week Monday")
+        self.assertEqual(
+            metadata.canonical_basename,
+            "2026-05-11 - Teams - Slalom Kickoff Week Monday.md",
+        )
+
+    def test_normalize_meeting_metadata_detects_source_with_missing_title_space(self) -> None:
+        path = Path("/tmp/2026-05-12 - Teams -Slalom Kickoff Week Tuesday.vtt")
+
+        metadata = normalize_meeting_metadata(path)
+
+        self.assertEqual(metadata.date, "2026-05-12")
+        self.assertEqual(metadata.source, "Teams")
+        self.assertEqual(metadata.title, "Slalom Kickoff Week Tuesday")
+
     def test_normalize_meeting_metadata_falls_back_to_mtime_for_unknown_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "weekly-sync.md"

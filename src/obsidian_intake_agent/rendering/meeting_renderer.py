@@ -162,11 +162,14 @@ def render_vtt_intake_sidecar(
     raw_relative_path: str,
     canonical_note_name: str,
     verbatim_excerpt: str,
+    transcript_hash: str | None = None,
 ) -> str:
     parts = [
         f"STATUS: PROCESSED — see [[{canonical_note_name}]]",
         f"- Raw VTT: [{raw_relative_path}]({raw_relative_path})",
     ]
+    if transcript_hash:
+        parts.append(f"- Transcript SHA256: {transcript_hash}")
     excerpt = verbatim_excerpt.strip()
     if excerpt:
         parts.append(f'- Verbatim excerpt: "{excerpt}"')
