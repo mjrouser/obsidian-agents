@@ -30,6 +30,9 @@ class Config:
     git_vault_repo_path: Path | None = None
     git_project_repo_path: Path | None = None
     weekly_reviews_dir: str = "09_Weekly Reviews"
+    actions_archive_dir: str = "Actions Archive"
+    weekly_reviews_archive_dir: str = "Review & Wrap Archive"
+    archive_retention_count: int = 4
     watcher_settle_seconds: int = 5
     watcher_stable_seconds: int = 2
     automation_log_dir: str = "logs"
@@ -64,6 +67,9 @@ class Config:
             git_vault_repo_path=_optional_path(data.get("git_vault_repo_path")) or vault_path,
             git_project_repo_path=_optional_path(data.get("git_project_repo_path")) or path.resolve().parent,
             weekly_reviews_dir=str(data.get("weekly_reviews_dir") or data.get("snapshots_dir") or "09_Weekly Reviews"),
+            actions_archive_dir=str(data.get("actions_archive_dir", "Actions Archive")),
+            weekly_reviews_archive_dir=str(data.get("weekly_reviews_archive_dir", "Review & Wrap Archive")),
+            archive_retention_count=_positive_int(data.get("archive_retention_count", 4), "archive_retention_count"),
             watcher_settle_seconds=_positive_int(data.get("watcher_settle_seconds", 5), "watcher_settle_seconds"),
             watcher_stable_seconds=_positive_int(data.get("watcher_stable_seconds", 2), "watcher_stable_seconds"),
             automation_log_dir=str(data.get("automation_log_dir", "logs")),

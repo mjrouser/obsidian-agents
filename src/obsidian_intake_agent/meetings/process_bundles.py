@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -211,6 +212,7 @@ def execute_bundle_processing_plan(
     processor: MeetingProcessor,
 ) -> BundleExecutionResult:
     items: list[BundleExecutionResultItem] = []
+    action_notes_changed = False
     for plan_item in plan.items:
         if plan_item.decision != "ready":
             items.append(
@@ -232,7 +234,7 @@ def execute_bundle_processing_plan(
             )
             continue
         try:
-            process_result = processor.process_file(preferred_input, dry_run=False)
+            process_result = _process_file_with_deferred_retention(processor, preferred_input)
         except Exception as exc:
             items.append(
                 BundleExecutionResultItem(
@@ -243,6 +245,8 @@ def execute_bundle_processing_plan(
             )
             continue
         if process_result.processed:
+            if process_result.actions_file_path is not None:
+                action_notes_changed = True
             try:
                 processed_marker_path = _write_durable_processed_marker(
                     metadata=plan_item.metadata,
@@ -272,6 +276,8 @@ def execute_bundle_processing_plan(
             )
             continue
         items.append(_execution_result_item_from_process_result(plan_item=plan_item, process_result=process_result))
+    if action_notes_changed:
+        _apply_deferred_action_retention(processor)
     return BundleExecutionResult(
         executed_at=datetime.now().astimezone(),
         bundle_root=plan.bundle_root,
@@ -279,6 +285,26 @@ def execute_bundle_processing_plan(
         warnings=plan.warnings,
         output_mode=getattr(processor, "output_mode", "normal"),
     )
+
+
+def _process_file_with_deferred_retention(processor: MeetingProcessor, preferred_input: Path) -> ProcessResult:
+    process_file = processor.process_file
+    parameters = inspect.signature(process_file).parameters
+    supports_apply_retention = "apply_retention" in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if supports_apply_retention:
+        return process_file(preferred_input, dry_run=False, apply_retention=False)
+    return process_file(preferred_input, dry_run=False)
+
+
+def _apply_deferred_action_retention(processor: MeetingProcessor) -> None:
+    config = getattr(processor, "config", None)
+    if config is not None and config.dry_run:
+        return
+    apply_actions_retention = getattr(processor, "_apply_actions_retention", None)
+    if callable(apply_actions_retention):
+        apply_actions_retention()
 
 
 def render_bundle_execution_result(result: BundleExecutionResult) -> str:

@@ -63,6 +63,35 @@ class ConfigCompatibilityTests(unittest.TestCase):
         self.assertEqual(loaded.outlook_graph_access_token_env, "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
         self.assertEqual(loaded.outlook_graph_api_base_url, "https://graph.microsoft.com/v1.0")
 
+    def test_archive_retention_defaults_load_when_omitted(self) -> None:
+        config_path = _write_config(self)
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.actions_archive_dir, "Actions Archive")
+        self.assertEqual(loaded.weekly_reviews_archive_dir, "Review & Wrap Archive")
+        self.assertEqual(loaded.archive_retention_count, 4)
+
+    def test_archive_retention_values_can_be_overridden(self) -> None:
+        config_path = _write_config(
+            self,
+            'actions_archive_dir: "07_Actions/Archive"',
+            'weekly_reviews_archive_dir: "09_Weekly Reviews/Archive"',
+            "archive_retention_count: 8",
+        )
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.actions_archive_dir, "07_Actions/Archive")
+        self.assertEqual(loaded.weekly_reviews_archive_dir, "09_Weekly Reviews/Archive")
+        self.assertEqual(loaded.archive_retention_count, 8)
+
+    def test_archive_retention_count_must_be_positive(self) -> None:
+        config_path = _write_config(self, "archive_retention_count: 0")
+
+        with self.assertRaisesRegex(ValueError, "archive_retention_count must be a positive integer"):
+            Config.load(config_path)
+
 
 def _write_config(test_case: unittest.TestCase, *extra_lines: str) -> Path:
     tmp_dir = tempfile.TemporaryDirectory()
