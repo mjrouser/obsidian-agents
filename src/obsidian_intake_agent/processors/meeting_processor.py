@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from os.path import relpath
@@ -21,7 +22,7 @@ from ..utils.text import normalize_whitespace
 from .docx_reader import read_docx
 from .intake_state import IntakeState, strip_leading_status_marker
 from .md_reader import ActionItem, extract_markdown_action_items, read_markdown
-from .meeting_metadata import normalize_meeting_metadata
+from .meeting_metadata import MeetingMetadata, normalize_meeting_metadata
 from .vtt_extractor import action_items_from_extracted, extract_vtt_meeting_data, normalize_extracted_meeting_data
 from .vtt_reader import read_vtt
 
@@ -137,6 +138,7 @@ class MeetingProcessor:
             )
         action_items = self._extract_action_items(source_path, body)
         metadata = normalize_meeting_metadata(source_path)
+        self._print_metadata_warnings(source_path, metadata)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         meeting_link = f"{self._meetings_dir()}/{metadata.canonical_basename}".replace("\\", "/")
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
@@ -201,6 +203,8 @@ class MeetingProcessor:
         apply_retention: bool,
     ) -> ProcessResult:
         metadata = normalize_meeting_metadata(source_path)
+        self._print_metadata_warnings(source_path, metadata)
+        transcript_hash = self._transcript_hash(transcript_text)
         extracted = extract_vtt_meeting_data(transcript_text=transcript_text, metadata=metadata, config=self.config)
         extracted = normalize_extracted_meeting_data(extracted, metadata)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
@@ -226,6 +230,7 @@ class MeetingProcessor:
             raw_relative_path=raw_relative_path,
             canonical_note_name=canonical_note_name,
             verbatim_excerpt=str(extracted.get("verbatim_excerpt", "")),
+            transcript_hash=transcript_hash,
         )
 
         if dry_run:
@@ -364,10 +369,15 @@ class MeetingProcessor:
         return self.intake_state.is_processed(path)
 
     def should_process_intake_file(self, path: Path) -> bool:
-        return self.intake_state.should_process(path)
+        return self.skip_reason(path) is None
 
     def skip_reason(self, path: Path) -> str | None:
-        return self.intake_state.skip_reason(path)
+        reason = self.intake_state.skip_reason(path)
+        if reason is not None:
+            return reason
+        if path.suffix.lower() == ".vtt" and self._vtt_hash_has_processed_sidecar(path):
+            return "already processed"
+        return None
 
     def _is_under_intake(self, path: Path) -> bool:
         return self.intake_state.is_under_intake(path)
@@ -389,3 +399,24 @@ class MeetingProcessor:
 
     def _archive_processed_source(self, source_path: Path) -> Path:
         return self.intake_state.archive_processed_source(source_path)
+
+    def _print_metadata_warnings(self, source_path: Path, metadata: MeetingMetadata) -> None:
+        if not metadata.date_from_filename:
+            print(f"WARNING — using file modified date for meeting metadata: {source_path}")
+        if metadata.source == "Unknown" and self._filename_mentions_known_source(source_path):
+            print(f"WARNING — filename mentions a known source but source parsed as Unknown: {source_path}")
+
+    def _filename_mentions_known_source(self, path: Path) -> bool:
+        normalized_stem = path.stem.casefold()
+        return "teams" in normalized_stem or "copilot" in normalized_stem
+
+    def _vtt_hash_has_processed_sidecar(self, path: Path) -> bool:
+        transcript_hash = self._transcript_hash(self._read_source(path))
+        needle = f"- Transcript SHA256: {transcript_hash}"
+        for sidecar_path in self.intake_path.glob("* (intake).md"):
+            if sidecar_path.exists() and needle in sidecar_path.read_text(encoding="utf-8"):
+                return True
+        return False
+
+    def _transcript_hash(self, transcript_text: str) -> str:
+        return hashlib.sha256(transcript_text.encode("utf-8")).hexdigest()

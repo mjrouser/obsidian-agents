@@ -7,7 +7,8 @@ from pathlib import Path
 
 from ..utils.text import normalize_whitespace
 
-LEADING_DATE_PATTERN = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})(?: - )?(?P<rest>.*)$")
+LEADING_DATE_PATTERN = re.compile(r"^(?P<year>\d{4})[-=](?P<month>\d{2})[-=](?P<day>\d{2})(?:\s*-\s*)?(?P<rest>.*)$")
+SOURCE_PATTERN = re.compile(r"^(?P<source>Teams|Copilot)\s*-\s*(?P<title>.+)$")
 
 
 @dataclass(slots=True)
@@ -16,24 +17,25 @@ class MeetingMetadata:
     source: str
     title: str
     canonical_basename: str
+    date_from_filename: bool = True
 
 
 def normalize_meeting_metadata(intake_path: Path) -> MeetingMetadata:
     basename = intake_path.stem
     match = LEADING_DATE_PATTERN.match(basename)
     if match:
-        meeting_date = match.group("date")
+        meeting_date = f"{match.group('year')}-{match.group('month')}-{match.group('day')}"
         remainder = match.group("rest")
+        date_from_filename = True
     else:
         meeting_date = date.fromtimestamp(intake_path.stat().st_mtime).isoformat()
         remainder = basename
+        date_from_filename = False
 
-    if " - Teams - " in basename:
-        source = "Teams"
-        title = basename.split(" - Teams - ", 1)[1]
-    elif " - Copilot - " in basename:
-        source = "Copilot"
-        title = basename.split(" - Copilot - ", 1)[1]
+    source_match = SOURCE_PATTERN.match(remainder)
+    if source_match:
+        source = source_match.group("source")
+        title = source_match.group("title")
     else:
         source = "Unknown"
         title = remainder
@@ -47,4 +49,5 @@ def normalize_meeting_metadata(intake_path: Path) -> MeetingMetadata:
         source=source,
         title=title,
         canonical_basename=f"{meeting_date} - {source} - {title}.md",
+        date_from_filename=date_from_filename,
     )

@@ -450,6 +450,30 @@ class MeetingProcessorTests(unittest.TestCase):
                 actions_text,
             )
 
+    def test_identical_vtt_copy_is_skipped_even_with_different_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            raw_vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nAction: Matthew will complete Codex setup by Friday.\n"
+            first = intake_dir / "2026-03-12 - Teams - Platform Sync.vtt"
+            duplicate = intake_dir / "Platform Sync Copy.vtt"
+            first.write_text(raw_vtt, encoding="utf-8")
+            duplicate.write_text(raw_vtt, encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False, llm_provider="none"))
+
+            summary = processor.process_all_unprocessed()
+
+            self.assertEqual(summary.processed_files, 1)
+            self.assertEqual(summary.skipped_files, 1)
+            self.assertEqual(summary.skipped_already_processed, 1)
+            self.assertTrue((vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md").exists())
+            self.assertFalse((vault / "01_Meetings" / "2026-03-12 - Unknown - Platform Sync Copy.md").exists())
+            self.assertTrue(duplicate.exists())
+            sidecar_text = (intake_dir / "2026-03-12 - Teams - Platform Sync (intake).md").read_text(encoding="utf-8")
+            self.assertIn("- Transcript SHA256:", sidecar_text)
+
     def test_process_vtt_file_validation_mode_writes_meeting_note_under_test_lane(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -522,6 +546,38 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertIn("DRY RUN — would prepend processed marker", output)
             self.assertFalse((vault / "01_Meetings").exists())
             self.assertNotIn("STATUS: PROCESSED", source.read_text(encoding="utf-8"))
+
+    def test_dry_run_warns_when_metadata_uses_modified_time_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "weekly-sync.md"
+            source.write_text("Agenda only\n", encoding="utf-8")
+            ts = datetime(2026, 3, 12, 10, 0, 0).timestamp()
+            os.utime(source, (ts, ts))
+
+            processor = MeetingProcessor(_config(vault, dry_run=True))
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                processor.process_file(source)
+
+            self.assertIn("WARNING — using file modified date for meeting metadata:", stdout.getvalue())
+
+    def test_dry_run_warns_when_filename_mentions_source_but_source_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-03-12 Teams Platform Sync.md"
+            source.write_text("Agenda only\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=True))
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                processor.process_file(source)
+
+            self.assertIn("WARNING — filename mentions a known source but source parsed as Unknown:", stdout.getvalue())
 
     def test_dry_run_override_does_not_create_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
