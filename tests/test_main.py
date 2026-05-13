@@ -568,6 +568,7 @@ class MainCliTests(unittest.TestCase):
                                 processed_marker_path=None,
                                 event_id="evt-1",
                                 subject="Platform Sync",
+                                start_at=datetime.fromisoformat("2026-05-04T13:00:00+00:00"),
                                 teams_meeting_id=None,
                                 identity_key=None,
                                 source_type="outlook_calendar_metadata",
