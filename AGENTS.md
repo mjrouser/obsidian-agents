@@ -168,3 +168,23 @@ A task is done when:
 6. Relevant docs are updated.
 7. Behavior changes include tests where practical.
 8. Transcript-processing changes are verified with dry-run output when applicable.
+
+## Context Management
+
+Follow the global Context Management guidance; this repo should default to repo files, shell, git, and Superpowers skills unless the task requires more.
+
+## Project Plugin Needs
+
+Default to local tests and mocks for connector-related code. Some workflows may
+need live plugin validation because they mirror production behavior:
+
+- Outlook Calendar: meeting metadata enrichment, organizer/attendee context,
+  response status, join links, and calendar-based meeting lookup.
+- Teams: meeting chat enrichment, Teams chat lookup, and Teams follow-up
+  extraction.
+- SharePoint: SharePoint/OneDrive-hosted source files or documentation
+  workflows.
+
+If a needed plugin is disabled, pause and say which plugin is needed, what
+behavior it validates, whether to switch to a fresh plugin-enabled chat, and
+what mock-only fallback is available.
