@@ -168,3 +168,7 @@ A task is done when:
 6. Relevant docs are updated.
 7. Behavior changes include tests where practical.
 8. Transcript-processing changes are verified with dry-run output when applicable.
+
+## Context Management
+
+Follow the global Context Management guidance; this repo should default to repo files, shell, git, and Superpowers skills unless the task requires more.
