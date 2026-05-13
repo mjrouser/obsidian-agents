@@ -162,6 +162,9 @@ Current implementation status in this repo:
   already sitting in `00_Intake`, marking canonical date/title-matched `.vtt`,
   `.md`, and `.docx` files as available transcript sources before any network
   retrieval is added.
+- When local transcript discovery does not find an exact date/title match, the
+  missing-source detail now reports the expected local transcript filename stem
+  and any same-date transcript candidates as suggestions only.
 - When local transcript discovery finds a match, the planner now carries the
   exact local artifact path forward into the bundle note artifact plan and the
   raw Outlook metadata sidecar so later ingestion steps can reuse the same
