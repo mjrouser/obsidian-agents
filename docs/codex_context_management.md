@@ -56,3 +56,55 @@ open questions, and the next concrete step.
   documents.
 - Use browser or app connectors only when their live data or UI behavior is
   part of the task.
+
+## Plugin Routing
+
+When a disabled plugin would materially improve the result, ask before using it.
+Name the plugin, why it helps, whether a fresh chat is recommended, and the
+lowest-friction fallback. Use the smallest plugin set needed for the task.
+
+Treat connector writes, desktop UI control, and recurring automations as
+explicit-confirmation actions even when the relevant plugin is enabled.
+
+Common routing:
+
+- Outlook Calendar: scheduling, availability, meeting prep, calendar briefs,
+  and meeting metadata.
+- Outlook Email: inbox triage, email search, reply drafting, and task
+  extraction.
+- Teams: chat/channel summaries, replies, and Teams follow-ups.
+- SharePoint: finding, reading, or editing SharePoint/OneDrive files.
+- Documents: creating or editing `.docx` files.
+- Presentations: creating or editing slide decks or `.pptx` files.
+- Spreadsheets: creating, editing, or analyzing `.xlsx` or CSV files.
+- Browser Use: local web app testing, screenshots, and UI flow verification.
+- Computer Use: controlling a desktop app UI when no file or API route is
+  practical.
+
+## Project Connector Work
+
+For this repo, default to local tests and mocks for connector-related code. Use
+live plugins only when validating real integration behavior or working with live
+data:
+
+- Outlook Calendar: meeting metadata enrichment, organizer/attendee context,
+  response status, join links, and calendar-based meeting lookup.
+- Teams: meeting chat enrichment, Teams chat lookup, and Teams follow-up
+  extraction.
+- SharePoint: SharePoint/OneDrive-hosted source files or documentation
+  workflows.
+
+If a needed plugin is disabled, pause and name the plugin, the behavior it
+validates, whether to switch to a fresh plugin-enabled chat, and the mock-only
+fallback.
+
+## Action Plan
+
+1. Keep heavy plugins disabled globally; keep Superpowers enabled for normal
+   coding work.
+2. Start fresh focused chats when enabling task-specific plugins.
+3. Use mock-first validation for connector code.
+4. Confirm connector writes, desktop UI control, recurring automations, broad
+   web search, and multi-plugin workflows before acting.
+5. Keep live email, calendar, chat, and file content out of commits, PRs, docs,
+   and summaries unless explicitly requested.
