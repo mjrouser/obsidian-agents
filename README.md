@@ -301,9 +301,12 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   date/title-matched `.vtt`, `.md`, and `.docx` transcript artifacts before
   falling back to `missing` or `not_attempted`, and it preserves those exact
   matched artifact paths in the bundle note artifact plan plus the raw Outlook
-  metadata sidecar. When one of those transcript artifacts is available, the
-  bundle contract now also records a preferred processor input path/source so
-  the next ingestion step can feed the existing processor directly. Bundle
+  metadata sidecar. If no exact match is found, the missing-source detail shows
+  the expected local transcript filename stem and any same-date local transcript
+  candidates as suggestions only. When one of those transcript artifacts is
+  available, the bundle contract now also records a preferred processor input
+  path/source so the next ingestion step can feed the existing processor
+  directly. Bundle
   source limitations include the retrieval detail from Graph or local discovery
   so permission blocks and unpublished transcripts are visible in the note. The
   sync planner prefilters meetings that are not yet eligible for bundle

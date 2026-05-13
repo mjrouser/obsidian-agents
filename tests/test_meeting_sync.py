@@ -617,6 +617,112 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertIn(f"- Preferred Input: `{transcript_path}`", bundle_note.content)
             self.assertIn("- Preferred Source: Teams .vtt transcript", bundle_note.content)
 
+    def test_local_transcript_discovery_reports_same_date_candidates_when_exact_match_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            candidate_path = intake_root / "2026-05-04 - Teams - Platform Planning.vtt"
+            candidate_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            response_status="accepted",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            artifact = plan.items[0].bundle.artifact("Teams .vtt transcript")
+            assert artifact is not None
+
+            self.assertEqual(artifact.status, "missing")
+            self.assertEqual(artifact.matched_paths, ())
+            self.assertIn("Expected local transcript stem: 2026-05-04 - Teams - Platform Sync", artifact.detail or "")
+            self.assertIn("Same-date local candidate(s):", artifact.detail or "")
+            self.assertIn(str(candidate_path), artifact.detail or "")
+            self.assertIn("Candidates are suggestions only and were not selected automatically.", artifact.detail or "")
+
+    def test_local_transcript_discovery_reports_expected_stem_when_no_candidates_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            response_status="accepted",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            artifact = plan.items[0].bundle.artifact("Teams .vtt transcript")
+            assert artifact is not None
+
+            self.assertEqual(artifact.status, "missing")
+            self.assertIn("Expected local transcript stem: 2026-05-04 - Teams - Platform Sync", artifact.detail or "")
+            self.assertIn("no same-date local transcript candidates found", artifact.detail or "")
+
+    def test_local_transcript_discovery_ignores_meeting_sync_machine_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            machine_path = intake_root / "bundles" / "_meeting_sync" / "2026-05-04 - Teams - Platform Planning.vtt"
+            machine_path.parent.mkdir(parents=True)
+            machine_path.write_text("WEBVTT\n", encoding="utf-8")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            response_status="accepted",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            artifact = plan.items[0].bundle.artifact("Teams .vtt transcript")
+            assert artifact is not None
+
+            self.assertEqual(artifact.status, "missing")
+            self.assertNotIn(str(machine_path), artifact.detail or "")
+            self.assertIn("no same-date local transcript candidates found", artifact.detail or "")
+
     def test_local_transcript_discovery_marks_matching_markdown_transcript_as_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
