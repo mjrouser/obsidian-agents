@@ -83,6 +83,30 @@ class BundleProcessingPlanTests(unittest.TestCase):
             rendered = render_bundle_processing_plan(plan)
             self.assertIn("meeting_bundle_process_blocked_calendar_only: 1", rendered)
 
+    def test_dry_run_calendar_only_bundle_prints_local_next_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            intake_root.mkdir(parents=True)
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-calendar", subject="Delivery Review"),
+            )
+
+            plan = build_bundle_processing_plan(
+                intake_root=intake_root / "bundles",
+                processor=_processor_for_vault(vault),
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+            rendered = render_bundle_processing_plan(plan)
+
+        self.assertIn("expected_local_transcript_stem: 2026-05-04 - Teams - Delivery Review", rendered)
+        self.assertIn(
+            "next_step: add or attach a local .vtt, .md, or .docx transcript, then rerun process-bundles --dry-run",
+            rendered,
+        )
+
     def test_blocks_missing_preferred_input_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -112,6 +136,31 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
             rendered = render_bundle_processing_plan(plan)
             self.assertIn("meeting_bundle_process_blocked_missing_input_file: 1", rendered)
+
+    def test_dry_run_missing_preferred_file_prints_missing_path_and_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            bundle_root = intake_root / "bundles"
+            bundle_root.mkdir(parents=True)
+            missing_input = bundle_root / "raw_transcripts" / "2026-05-04 - Teams - Delivery Review.vtt"
+            _write_ready_bundle_metadata(
+                metadata_path=bundle_root / "delivery-review (outlook).json",
+                preferred_input=missing_input,
+                event_id="evt-missing",
+                subject="Delivery Review",
+                preferred_source="Teams .vtt transcript",
+            )
+
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=_processor_for_vault(vault),
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+            rendered = render_bundle_processing_plan(plan)
+
+        self.assertIn(f"missing_preferred_input: {missing_input}", rendered)
+        self.assertIn("preferred_source: Teams .vtt transcript", rendered)
 
     def test_blocks_preferred_input_that_processor_would_skip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -444,6 +493,7 @@ def _write_ready_bundle_metadata(
     preferred_input: Path,
     event_id: str,
     subject: str,
+    preferred_source: str = "Local transcript",
 ) -> None:
     metadata_path.write_text(
         json.dumps(
@@ -453,11 +503,11 @@ def _write_ready_bundle_metadata(
                 "subject": subject,
                 "processor_handoff": {
                     "preferred_input_path": str(preferred_input),
-                    "preferred_input_source_name": "Local transcript",
+                    "preferred_input_source_name": preferred_source,
                 },
                 "artifacts": [
                     {
-                        "source_name": "Local transcript",
+                        "source_name": preferred_source,
                         "status": "available",
                         "detail": None,
                         "matched_paths": [str(preferred_input)],

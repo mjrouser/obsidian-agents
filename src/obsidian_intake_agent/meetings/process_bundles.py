@@ -39,6 +39,7 @@ class BundleMetadataRecord:
     processed_marker_path: Path | None
     event_id: str
     subject: str
+    start_at: datetime | None
     teams_meeting_id: str | None
     identity_key: str | None
     source_type: str | None
@@ -201,6 +202,15 @@ def render_bundle_processing_plan(plan: BundleProcessingPlan) -> str:
                 "  would_run: "
                 f".venv/bin/obsidian-agent process {item.metadata.processor_handoff.preferred_input_path} --dry-run"
             )
+        if item.decision == "blocked" and "Missing preferred processor input path in bundle metadata." in item.reasons:
+            expected_stem = _expected_local_transcript_stem(item.metadata)
+            if expected_stem is not None:
+                lines.append(f"  expected_local_transcript_stem: {expected_stem}")
+            lines.append(f"  next_step: {_bundle_next_step(item.metadata)}")
+        if item.decision == "blocked" and "Preferred processor input file does not exist on disk." in item.reasons:
+            missing_path = item.metadata.processor_handoff.preferred_input_path
+            if missing_path is not None:
+                lines.append(f"  missing_preferred_input: {missing_path}")
         for reason in item.reasons:
             lines.append(f"  reason: {reason}")
     return "\n".join(lines)
@@ -422,6 +432,7 @@ def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:
         processed_marker_path=processed_marker_path,
         event_id=_string_or_default(payload.get("outlook_event_id"), metadata_path.stem),
         subject=_string_or_default(payload.get("subject"), metadata_path.stem),
+        start_at=_datetime_or_none(payload.get("start_at")),
         teams_meeting_id=_string_or_none(payload.get("teams_meeting_id")),
         identity_key=_string_or_none(payload.get("identity_key")),
         source_type=_string_or_none(payload.get("source_type")),
@@ -448,6 +459,28 @@ def _path_or_none(value: object) -> Path | None:
     if text is None:
         return None
     return Path(text)
+
+
+def _datetime_or_none(value: object) -> datetime | None:
+    text = _string_or_none(value)
+    if text is None:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _expected_local_transcript_stem(metadata: BundleMetadataRecord) -> str | None:
+    if metadata.start_at is None:
+        return None
+    title = metadata.subject.strip().replace("/", "-").replace(":", "-").replace("\\", "-") or "Meeting"
+    return f"{metadata.start_at.date().isoformat()} - Teams - {title}"
+
+
+def _bundle_next_step(metadata: BundleMetadataRecord) -> str:
+    del metadata
+    return "add or attach a local .vtt, .md, or .docx transcript, then rerun process-bundles --dry-run"
 
 
 def _string_or_none(value: object) -> str | None:
