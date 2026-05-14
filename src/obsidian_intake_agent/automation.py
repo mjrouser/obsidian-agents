@@ -133,6 +133,8 @@ class IntakeAutomationWatcher:
                     self.log_path,
                     f"processed={result.processed} path={path} note={result.canonical_note_path}",
                 )
+                for warning in result.processing_warnings:
+                    append_log(self.log_path, f"warning path={path} detail={warning}")
                 if result.processed and not self.processor.config.dry_run:
                     from .main import _maybe_auto_commit
 

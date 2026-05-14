@@ -114,7 +114,7 @@ outlook_graph_api_base_url: "https://graph.microsoft.com/v1.0"
 
 Set `dry_run: false` when you want the agent to write files instead of printing planned changes.
 Set `include_unassigned: true` if weekly action notes should also include items without a parsed owner.
-Set `codex_timeout_seconds` to control how long Codex CLI extraction and weekly generation may run before failing. Use `null` only when you intentionally want no timeout.
+Set `codex_timeout_seconds` to control how long Codex CLI extraction and weekly generation may run. VTT extraction falls back to heuristic extraction on timeout; weekly generation still fails clearly. Use `null` only when you intentionally want no timeout.
 Set `automation_error_dir` to control where automation failure notes are written inside the vault.
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
 Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
@@ -263,7 +263,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Markdown intake files extract action items from `Action:` lines and `- [ ]` checkboxes.
 - Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake`.
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
-- Codex CLI calls use `codex_timeout_seconds` so watcher and weekly automation fail clearly instead of hanging indefinitely.
+- If Codex CLI times out during VTT extraction, the processor writes a heuristic note with an explicit source limitation instead of failing the watcher.
+- Timeout fallback events are also reported as `vtt_extraction_fallback` warnings in `logs/intake-watcher.log` and as `processing_warning:` lines during manual `process` runs.
+- Codex CLI calls use `codex_timeout_seconds` so long-running weekly automation fails clearly instead of hanging indefinitely.
 - For `launchd` jobs, prefer an absolute `codex_exec_cmd` path in `config.yaml` because `launchd` does not reliably inherit your interactive shell `PATH`.
 - The Monday actions note is created or updated in `vault_path/07_Actions`.
 - Weekly action notes include a top Tasks query for open tasks in the current file, then use `## This Week`, `## Carry Over Items`, and `## Longer-Term / In Progress`; new weekly notes seed `Carry Over Items` from the previous week's unfinished items, and automated inserts always go under `This Week`.
