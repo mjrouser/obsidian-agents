@@ -13,6 +13,63 @@ from obsidian_intake_agent.rendering.action_renderer import (
 
 
 class ActionRendererTests(unittest.TestCase):
+    def test_new_actions_note_includes_open_tasks_query_before_sections(self) -> None:
+        rendered = render_actions_note(
+            monday=date(2026, 3, 9),
+            action_records=[
+                ActionRecord(
+                    text="Complete Codex setup by Friday.",
+                    owner="Matthew Rouser",
+                    source_date="2026-03-11",
+                    source_note="2026-03-11 - Teams - Weekly Sync.md",
+                )
+            ],
+            owner_aliases={"Matthew Rouser": ["Matthew", "Matt"]},
+        )
+        self.assertIn(
+            "# Actions — Week of 2026-03-09\n\n"
+            "```tasks\n\n"
+            "path includes {{query.file.path}}\n\n"
+            "not done\n\n"
+            "sort by due\n\n"
+            "```\n\n"
+            "## This Week",
+            rendered,
+        )
+
+    def test_updated_existing_actions_note_gets_open_tasks_query_once(self) -> None:
+        existing = (
+            "# Actions — Week of 2026-03-09\n\n"
+            "## This Week\n\n"
+            "- [ ] Existing this week item (Owner: Matthew Rouser) — Source: 2026-03-10 [[existing.md]]\n\n"
+            "## Carry Over Items\n\n"
+            "## Longer-Term / In Progress\n"
+        )
+        rendered = render_actions_note(
+            monday=date(2026, 3, 9),
+            action_records=[
+                ActionRecord(
+                    text="New this week item",
+                    owner="Matthew Rouser",
+                    source_date="2026-03-11",
+                    source_note="2026-03-11 - Teams - Weekly Sync.md",
+                )
+            ],
+            owner_aliases={"Matthew Rouser": ["Matthew", "Matt"]},
+            existing_text=existing,
+        )
+        self.assertEqual(rendered.count("```tasks"), 1)
+        self.assertIn(
+            "# Actions — Week of 2026-03-09\n\n"
+            "```tasks\n\n"
+            "path includes {{query.file.path}}\n\n"
+            "not done\n\n"
+            "sort by due\n\n"
+            "```\n\n"
+            "## This Week",
+            rendered,
+        )
+
     def test_renders_actions_note_with_link(self) -> None:
         rendered = render_actions_note(
             monday=date(2026, 3, 9),

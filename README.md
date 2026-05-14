@@ -254,7 +254,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Codex CLI calls use `codex_timeout_seconds` so watcher and weekly automation fail clearly instead of hanging indefinitely.
 - For `launchd` jobs, prefer an absolute `codex_exec_cmd` path in `config.yaml` because `launchd` does not reliably inherit your interactive shell `PATH`.
 - The Monday actions note is created or updated in `vault_path/07_Actions`.
-- Weekly action notes use `## This Week`, `## Carry Over Items`, and `## Longer-Term / In Progress`; new weekly notes seed `Carry Over Items` from the previous week's unfinished items, and automated inserts always go under `This Week`.
+- Weekly action notes include a top Tasks query for open tasks in the current file, then use `## This Week`, `## Carry Over Items`, and `## Longer-Term / In Progress`; new weekly notes seed `Carry Over Items` from the previous week's unfinished items, and automated inserts always go under `This Week`.
 - Weekly reviews are written to `vault_path/09_Weekly Reviews` as separate files:
 - `YYYY-MM-DD Weekly Briefing.md`
 - `YYYY-MM-DD Weekly Wrap.md`
