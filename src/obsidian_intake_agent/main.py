@@ -16,6 +16,7 @@ from .meetings import (
     LocalIntakeTranscriptDiscoveryClient,
     MeetingArtifactDiscoveryClient,
     UnconfiguredOutlookMeetingDiscoveryClient,
+    attach_transcript_to_bundle,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
     execute_bundle_processing_plan,
@@ -136,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="validation",
         help="Write processed meeting notes and Matthew-owned actions into 99_Test Notes instead of production lanes.",
     )
+    attach_parser = meetings_subparsers.add_parser(
+        "attach-transcript",
+        help="Attach a local transcript file to an existing synced meeting bundle.",
+    )
+    attach_parser.add_argument("--event-id", required=True, help="Outlook event ID from the meeting bundle metadata.")
+    attach_parser.add_argument("--file", required=True, help="Local .vtt, .md, or .docx transcript file to attach.")
 
     return parser
 
@@ -254,6 +261,16 @@ def main(argv: list[str] | None = None) -> int:
                     ]
                 )
                 _maybe_auto_commit(config, vault_source_name=source_label)
+            return 0
+        if args.meetings_command == "attach-transcript":
+            attach_result = attach_transcript_to_bundle(
+                bundle_root=config.vault_path / config.intake_dir / "bundles",
+                event_id=args.event_id,
+                file_path=Path(args.file),
+            )
+            print(f"meeting_bundle_transcript_attached: {attach_result.attached_path}")
+            print(f"meeting_bundle_metadata_updated: {attach_result.metadata_path}")
+            print(f"meeting_bundle_preferred_source: {attach_result.source_name}")
             return 0
 
     parser.error("Unknown command.")

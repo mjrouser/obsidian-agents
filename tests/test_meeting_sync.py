@@ -1804,6 +1804,43 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertIn('"preferred_input_source_name": "Copilot recap / AI summary"', rendered)
             self.assertIn('"source_name": "Copilot recap / AI summary"', rendered)
 
+    def test_summary_fallback_bundle_records_non_verbatim_source_limitation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            recap_path = intake_root / "bundles" / "fallbacks" / "2026-05-04 - Teams - Delivery Review.md"
+            recap_path.parent.mkdir(parents=True, exist_ok=True)
+            recap_path.write_text("# Recap\n", encoding="utf-8")
+            meeting = _meeting(
+                event_id="evt-9",
+                subject="Delivery Review",
+                response_status="accepted",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_delivery%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            source_name="Copilot recap / AI summary",
+                            status="available",
+                            detail="Downloaded Copilot recap fallback summary and wrote a local processor input.",
+                            matched_paths=(recap_path,),
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            note = plan.items[0].intake_bundle_note
+            assert note is not None
+
+        self.assertIn("summary-derived and not a verbatim transcript", note.content)
+        self.assertIn("copilot_recap_ai_summary", note.metadata_content)
+
     def test_render_intake_bundle_note_renders_expected_sections(self) -> None:
         meeting = _meeting(
             event_id="evt-9",

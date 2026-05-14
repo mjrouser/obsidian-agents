@@ -11,6 +11,7 @@ from unittest.mock import patch
 from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.main import _build_meeting_artifact_discovery_client, _build_meeting_discovery_client, main
 from obsidian_intake_agent.meetings import (
+    AttachTranscriptResult,
     BundleExecutionResult,
     BundleExecutionResultItem,
     BundleMetadataRecord,
@@ -667,6 +668,48 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("99_Test Notes/Actions", output)
             self.assertFalse((vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").exists())
             self.assertFalse((vault / "07_Actions" / "2026-05-04.md").exists())
+
+    def test_meetings_attach_transcript_prints_attached_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            source = repo / "download.vtt"
+            source.write_text("WEBVTT\n", encoding="utf-8")
+            result = AttachTranscriptResult(
+                metadata_path=vault / "00_Intake" / "bundles" / "delivery-review (outlook).json",
+                attached_path=vault / "00_Intake" / "bundles" / "raw_transcripts" / "download.vtt",
+                source_name="Manual / semi-manual intake",
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.attach_transcript_to_bundle", return_value=result) as attach_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "attach-transcript",
+                        "--event-id",
+                        "evt-attach",
+                        "--file",
+                        str(source),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            attach_mock.assert_called_once_with(
+                bundle_root=vault / "00_Intake" / "bundles",
+                event_id="evt-attach",
+                file_path=source,
+            )
+            output = stdout.getvalue()
+            self.assertIn("meeting_bundle_transcript_attached:", output)
+            self.assertIn("meeting_bundle_metadata_updated:", output)
+            self.assertIn("meeting_bundle_preferred_source:", output)
 
     def test_build_meeting_discovery_client_uses_graph_when_token_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

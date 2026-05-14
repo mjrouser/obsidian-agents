@@ -48,6 +48,8 @@ BUNDLE_RAW_TRANSCRIPTS_DIR = Path(BUNDLES_DIR) / "raw_transcripts"
 BUNDLE_FALLBACKS_DIR = Path(BUNDLES_DIR) / "fallbacks"
 V1_INELIGIBLE_RESPONSE_STATUSES = frozenset({"declined", "none", "notresponded"})
 LOW_SIGNAL_SUBJECT_PATTERNS = (re.compile(r"\boffice\W*hours\b", re.IGNORECASE),)
+SUMMARY_DERIVED_SOURCE_NAMES = frozenset({"Copilot recap / AI summary", "Manual / semi-manual summary"})
+SUMMARY_DERIVED_LIMITATION = "Processor input is summary-derived and not a verbatim transcript."
 
 
 class GraphOnlineMeetingNotFoundError(ValueError):
@@ -1609,9 +1611,18 @@ def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, .
             if artifact.status == "available":
                 continue
             limitations.append(_artifact_limitation(artifact))
+        limitations.extend(_summary_derived_limitations(bundle))
         return "calendar_invite_only", tuple(limitations)
     limitations = [_artifact_limitation(artifact) for artifact in bundle.artifacts if artifact.status != "available"]
+    limitations.extend(_summary_derived_limitations(bundle))
     return "partial_visibility", tuple(limitations)
+
+
+def _summary_derived_limitations(bundle: MeetingSourceBundle) -> tuple[str, ...]:
+    for artifact in bundle.artifacts:
+        if artifact.status == "available" and artifact.source_name in SUMMARY_DERIVED_SOURCE_NAMES:
+            return (SUMMARY_DERIVED_LIMITATION,)
+    return ()
 
 
 def _artifact_limitation(artifact: MeetingArtifact) -> str:

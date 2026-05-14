@@ -215,6 +215,14 @@ obsidian-agent meetings process-bundles --execute --validation
 This mode preserves transcript, fallback, and filtering semantics. Only the
 canonical outputs are redirected into `99_Test Notes/`.
 
+## Manual Local Transcript Lane
+
+When Graph transcript permissions are unavailable, place a local `.vtt`, `.md`,
+or `.docx` transcript in `00_Intake` using the expected meeting filename, or
+attach it to an existing bundle with `meetings attach-transcript`. Near-match
+candidates are diagnostic only; the system processes exact matches or explicit
+attachments.
+
 ## Extraction Standard
 
 The extraction prompt intentionally borrows the strongest quality rules from

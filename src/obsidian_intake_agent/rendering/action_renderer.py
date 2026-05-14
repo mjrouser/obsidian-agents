@@ -18,6 +18,23 @@ THIS_WEEK_HEADING = "## This Week"
 CARRY_OVER_HEADING = "## Carry Over Items"
 LONGER_TERM_HEADING = "## Longer-Term / In Progress"
 OPEN_ACTIONS_HEADING = "## Open Actions"
+TASKS_QUERY_BLOCK = "\n".join(
+    [
+        "```tasks",
+        "",
+        "path includes {{query.file.path}}",
+        "",
+        "not done",
+        "",
+        "sort by due",
+        "",
+        "```",
+    ]
+)
+TASKS_QUERY_PATTERN = re.compile(
+    r"```tasks\s+path includes\s+\{\{query\.file\.path\}\}\s+not done\s+sort by due\s+```",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +97,7 @@ def render_actions_note(
     if not pending_lines:
         return existing_text
 
+    existing_text = _ensure_tasks_query_block(existing_text, title)
     return _append_pending_actions(
         existing_text=existing_text,
         title=title,
@@ -186,6 +204,9 @@ def _extract_actions_note_parts(existing_text: str) -> tuple[list[str], list[str
         lines = lines[1:]
     while lines and not lines[0].strip():
         lines = lines[1:]
+    lines = _remove_tasks_query_block(lines)
+    while lines and not lines[0].strip():
+        lines = lines[1:]
 
     this_week_index = _find_heading_index(lines, THIS_WEEK_HEADING)
     carry_over_index = _find_heading_index(lines, CARRY_OVER_HEADING)
@@ -242,7 +263,7 @@ def _build_actions_note(
     longer_term_lines: list[str],
     preamble_lines: list[str],
 ) -> str:
-    parts = [title]
+    parts = [title, TASKS_QUERY_BLOCK]
     if preamble_lines:
         parts.append("\n".join(_strip_edge_blank_lines(preamble_lines)))
     parts.append(THIS_WEEK_HEADING)
@@ -262,6 +283,37 @@ def _find_heading_index(lines: list[str], heading: str) -> int | None:
         if line.strip() == heading:
             return index
     return None
+
+
+def _ensure_tasks_query_block(existing_text: str, title: str) -> str:
+    if TASKS_QUERY_PATTERN.search(existing_text):
+        return existing_text
+
+    lines = existing_text.splitlines()
+    if not lines:
+        return _build_actions_note(
+            title=title,
+            this_week_lines=[],
+            carry_over_lines=[],
+            longer_term_lines=[],
+            preamble_lines=[],
+        )
+
+    if lines[0].startswith("# "):
+        rest = lines[1:]
+        while rest and not rest[0].strip():
+            rest = rest[1:]
+        updated_lines = [lines[0], "", *TASKS_QUERY_BLOCK.splitlines(), "", *rest]
+        return "\n".join(updated_lines).rstrip() + "\n"
+
+    updated_lines = [title, "", *TASKS_QUERY_BLOCK.splitlines(), "", *lines]
+    return "\n".join(updated_lines).rstrip() + "\n"
+
+
+def _remove_tasks_query_block(lines: list[str]) -> list[str]:
+    text = "\n".join(lines)
+    updated_text = TASKS_QUERY_PATTERN.sub("", text, count=1)
+    return updated_text.splitlines()
 
 
 def _strip_edge_blank_lines(lines: list[str]) -> list[str]:
