@@ -1,4 +1,5 @@
 from .process_bundles import (
+    AttachTranscriptResult,
     BundleArtifactRecord,
     BundleExecutionResult,
     BundleExecutionResultItem,
@@ -6,6 +7,7 @@ from .process_bundles import (
     BundleProcessingPlan,
     BundleProcessingPlanItem,
     BundleProcessorHandoff,
+    attach_transcript_to_bundle,
     build_bundle_processing_plan,
     execute_bundle_processing_plan,
     render_bundle_execution_result,
@@ -44,6 +46,7 @@ from .sync import (
 
 __all__ = [
     "ARTIFACT_SOURCE_PRIORITY",
+    "AttachTranscriptResult",
     "ArtifactStatus",
     "BundleArtifactRecord",
     "BundleExecutionResult",
@@ -71,6 +74,7 @@ __all__ = [
     "TranscriptSyncPlan",
     "TranscriptSyncPlanItem",
     "UnconfiguredOutlookMeetingDiscoveryClient",
+    "attach_transcript_to_bundle",
     "build_bundle_processing_plan",
     "build_transcript_sync_plan",
     "execute_bundle_processing_plan",

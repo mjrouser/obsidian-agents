@@ -13,6 +13,7 @@ from obsidian_intake_agent.meetings import (
     MeetingArtifact,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
+    attach_transcript_to_bundle,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
     execute_bundle_processing_plan,
@@ -452,6 +453,100 @@ class BundleProcessingPlanTests(unittest.TestCase):
             self.assertEqual(result.skipped_count, 1)
             self.assertEqual(result.items[0].reasons, ("Processor skipped preferred input: already processed.",))
 
+    def test_attach_transcript_copies_file_and_updates_metadata_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            source = Path(tmp_dir) / "download.vtt"
+            source.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n", encoding="utf-8")
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-attach", subject="Delivery Review"),
+            )
+
+            result = attach_transcript_to_bundle(
+                bundle_root=intake_root / "bundles",
+                event_id="evt-attach",
+                file_path=source,
+            )
+
+            self.assertTrue(result.attached_path.exists())
+            self.assertEqual(result.attached_path.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
+            payload = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["processor_handoff"]["preferred_input_path"], str(result.attached_path))
+            self.assertEqual(payload["processor_handoff"]["preferred_input_source_name"], "Manual / semi-manual intake")
+            self.assertEqual(payload["source_type"], "manual_semi_manual_intake")
+            self.assertIn(
+                "Manual / semi-manual intake",
+                [artifact["source_name"] for artifact in payload["artifacts"]],
+            )
+
+    def test_attach_transcript_rejects_unsupported_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            source = Path(tmp_dir) / "download.txt"
+            source.write_text("notes\n", encoding="utf-8")
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-attach", subject="Delivery Review"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "Unsupported transcript file type"):
+                attach_transcript_to_bundle(
+                    bundle_root=intake_root / "bundles",
+                    event_id="evt-attach",
+                    file_path=source,
+                )
+
+    def test_attach_transcript_rejects_missing_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_root = Path(tmp_dir) / "00_Intake" / "bundles"
+            source = Path(tmp_dir) / "download.vtt"
+            source.write_text("WEBVTT\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "No meeting bundle metadata found"):
+                attach_transcript_to_bundle(
+                    bundle_root=bundle_root,
+                    event_id="missing",
+                    file_path=source,
+                )
+
+    def test_attach_transcript_rejects_duplicate_bundle_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bundle_root = Path(tmp_dir) / "00_Intake" / "bundles"
+            bundle_root.mkdir(parents=True)
+            source = Path(tmp_dir) / "download.vtt"
+            source.write_text("WEBVTT\n", encoding="utf-8")
+            _write_calendar_only_metadata(bundle_root / "a (outlook).json", event_id="evt-duplicate")
+            _write_calendar_only_metadata(bundle_root / "b (outlook).json", event_id="evt-duplicate")
+
+            with self.assertRaisesRegex(ValueError, "Multiple meeting bundle metadata files matched"):
+                attach_transcript_to_bundle(
+                    bundle_root=bundle_root,
+                    event_id="evt-duplicate",
+                    file_path=source,
+                )
+
+    def test_attach_transcript_rejects_existing_staged_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            bundle_root = intake_root / "bundles"
+            source = Path(tmp_dir) / "download.vtt"
+            source.write_text("WEBVTT\n", encoding="utf-8")
+            staged = bundle_root / "raw_transcripts" / source.name
+            staged.parent.mkdir(parents=True)
+            staged.write_text("existing\n", encoding="utf-8")
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-existing", subject="Delivery Review"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite existing staged transcript"):
+                attach_transcript_to_bundle(
+                    bundle_root=bundle_root,
+                    event_id="evt-existing",
+                    file_path=source,
+                )
+
 
 class _StubMeetingDiscoveryClient:
     def __init__(self, *, meetings: tuple[OutlookMeetingCandidate, ...]) -> None:
@@ -511,6 +606,33 @@ def _write_ready_bundle_metadata(
                         "status": "available",
                         "detail": None,
                         "matched_paths": [str(preferred_input)],
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_calendar_only_metadata(metadata_path: Path, *, event_id: str) -> None:
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "outlook_event_id": event_id,
+                "subject": "Delivery Review",
+                "processor_handoff": {
+                    "preferred_input_path": None,
+                    "preferred_input_source_name": None,
+                },
+                "artifacts": [
+                    {
+                        "source_name": "Outlook calendar metadata",
+                        "status": "available",
+                        "detail": "metadata",
+                        "matched_paths": [],
                     }
                 ],
             },

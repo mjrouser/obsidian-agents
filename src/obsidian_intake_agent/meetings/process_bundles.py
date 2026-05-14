@@ -15,6 +15,7 @@ ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_atte
 BundleProcessDecision = Literal["ready", "blocked"]
 BundleExecutionStatus = Literal["processed", "skipped", "failed"]
 PROCESSOR_SUPPORTED_EXTENSIONS = {".md", ".docx", ".vtt"}
+SUPPORTED_ATTACH_EXTENSIONS = {".md", ".docx", ".vtt"}
 MACHINE_MANAGED_BUNDLE_DIR_NAMES = ("raw_transcripts", "fallbacks")
 
 
@@ -117,6 +118,13 @@ class BundleExecutionResult:
         return sum(1 for item in self.items if item.status == "failed")
 
 
+@dataclass(slots=True, frozen=True)
+class AttachTranscriptResult:
+    metadata_path: Path
+    attached_path: Path
+    source_name: str
+
+
 def build_bundle_processing_plan(
     *,
     intake_root: Path,
@@ -214,6 +222,36 @@ def render_bundle_processing_plan(plan: BundleProcessingPlan) -> str:
         for reason in item.reasons:
             lines.append(f"  reason: {reason}")
     return "\n".join(lines)
+
+
+def attach_transcript_to_bundle(*, bundle_root: Path, event_id: str, file_path: Path) -> AttachTranscriptResult:
+    if file_path.suffix.lower() not in SUPPORTED_ATTACH_EXTENSIONS:
+        raise ValueError(f"Unsupported transcript file type: {file_path.suffix}")
+    if not file_path.exists() or file_path.is_dir():
+        raise ValueError(f"Transcript file does not exist: {file_path}")
+
+    metadata_paths = _metadata_paths_for_event_id(bundle_root=bundle_root, event_id=event_id)
+    if not metadata_paths:
+        raise ValueError(f"No meeting bundle metadata found for Outlook event ID: {event_id}")
+    if len(metadata_paths) > 1:
+        rendered = ", ".join(str(path) for path in metadata_paths)
+        raise ValueError(f"Multiple meeting bundle metadata files matched Outlook event ID {event_id}: {rendered}")
+
+    metadata_path = metadata_paths[0]
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    attached_dir = bundle_root / "raw_transcripts"
+    attached_dir.mkdir(parents=True, exist_ok=True)
+    attached_path = attached_dir / file_path.name
+    if attached_path.exists():
+        raise ValueError(f"Refusing to overwrite existing staged transcript: {attached_path}")
+    attached_path.write_bytes(file_path.read_bytes())
+    _update_payload_for_attached_transcript(payload=payload, attached_path=attached_path)
+    metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return AttachTranscriptResult(
+        metadata_path=metadata_path,
+        attached_path=attached_path,
+        source_name="Manual / semi-manual intake",
+    )
 
 
 def execute_bundle_processing_plan(
@@ -442,6 +480,42 @@ def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:
         ),
         artifacts=tuple(artifacts),
     )
+
+
+def _metadata_paths_for_event_id(*, bundle_root: Path, event_id: str) -> tuple[Path, ...]:
+    matches: list[Path] = []
+    for metadata_path in sorted(bundle_root.glob("* (outlook).json")):
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if _string_or_none(payload.get("outlook_event_id")) == event_id:
+            matches.append(metadata_path)
+    return tuple(matches)
+
+
+def _update_payload_for_attached_transcript(*, payload: dict[str, object], attached_path: Path) -> None:
+    payload["source_type"] = "manual_semi_manual_intake"
+    payload["processor_handoff"] = {
+        "preferred_input_path": str(attached_path),
+        "preferred_input_source_name": "Manual / semi-manual intake",
+    }
+    raw_artifacts = payload.get("artifacts")
+    artifacts = raw_artifacts if isinstance(raw_artifacts, list) else []
+    artifacts = [
+        artifact
+        for artifact in artifacts
+        if not (isinstance(artifact, dict) and artifact.get("source_name") == "Manual / semi-manual intake")
+    ]
+    artifacts.append(
+        {
+            "source_name": "Manual / semi-manual intake",
+            "status": "available",
+            "detail": "Manually attached local processor input.",
+            "matched_paths": [str(attached_path)],
+        }
+    )
+    payload["artifacts"] = artifacts
 
 
 def _count_blocked_reason(items: tuple[BundleProcessingPlanItem, ...], exact_reason: str) -> int:

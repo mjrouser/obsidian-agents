@@ -183,6 +183,18 @@ Dry-run which written meeting bundles are ready to feed into the existing proces
 obsidian-agent meetings process-bundles --dry-run
 ```
 
+Attach an explicit local transcript to an existing synced bundle:
+
+```bash
+obsidian-agent meetings attach-transcript \
+  --event-id "<outlook-event-id>" \
+  --file "/absolute/path/to/transcript.vtt"
+```
+
+`attach-transcript` stages the `.vtt`, `.md`, or `.docx` file under
+`00_Intake/bundles/raw_transcripts` and updates the bundle sidecar. It does not
+process the bundle; rerun `process-bundles --dry-run` before executing.
+
 Process ready meeting bundles through the existing intake processor:
 
 ```bash
