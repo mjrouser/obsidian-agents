@@ -24,6 +24,7 @@ from obsidian_intake_agent.meetings import (
     TranscriptSyncPlan,
     UnconfiguredOutlookMeetingDiscoveryClient,
 )
+from obsidian_intake_agent.processors.meeting_processor import ProcessResult
 from obsidian_intake_agent.utils.git import GitCommitStatus
 
 
@@ -261,6 +262,32 @@ class MainCliTests(unittest.TestCase):
                 main(["--config", str(config_path), "process", str(intake_file)])
 
             commit_mock.assert_not_called()
+
+    def test_process_prints_processor_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            intake_file = intake_dir / "2026-05-13 - Teams - Long Meeting.vtt"
+            intake_file.write_text("WEBVTT\n", encoding="utf-8")
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch(
+                    "obsidian_intake_agent.main.MeetingProcessor.process_file",
+                    return_value=ProcessResult(
+                        processed=True,
+                        canonical_note_path=vault / "01_Meetings" / "2026-05-13 - Teams - Long Meeting.md",
+                        processing_warnings=["vtt_extraction_fallback reason=Codex CLI timed out"],
+                    ),
+                ),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(["--config", str(config_path), "process", str(intake_file)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("processing_warning: vtt_extraction_fallback reason=Codex CLI timed out", stdout.getvalue())
 
     def test_meetings_sync_transcripts_requires_exactly_one_mode_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

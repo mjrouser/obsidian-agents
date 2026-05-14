@@ -17,12 +17,17 @@ def extract_vtt_meeting_data(*, transcript_text: str, metadata: MeetingMetadata,
             source=metadata.source,
             title=metadata.title,
         )
-        return run_codex_json(
-            prompt,
-            config.codex_model,
-            exec_cmd=config.codex_exec_cmd,
-            timeout_seconds=config.codex_timeout_seconds,
-        )
+        try:
+            return run_codex_json(
+                prompt,
+                config.codex_model,
+                exec_cmd=config.codex_exec_cmd,
+                timeout_seconds=config.codex_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            extracted = heuristic_extract_meeting_data(transcript_text, metadata)
+            extracted["source_limitations"].append(f"{exc}; heuristic extraction used instead.")
+            return extracted
     return heuristic_extract_meeting_data(transcript_text, metadata)
 
 

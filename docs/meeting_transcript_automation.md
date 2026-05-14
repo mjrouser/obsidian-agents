@@ -238,3 +238,20 @@ Josh's batch workflow:
   `Known from calendar invite; attendance not guaranteed.`
 - State source limitations directly instead of hiding missing transcript, chat,
   recap, or attendance visibility.
+
+## Extraction Fallback Monitoring
+
+When Codex CLI times out during `.vtt` extraction, the processor falls back to
+heuristic extraction and keeps the automation running. The generated meeting note
+records the fallback as a source limitation, and the intake watcher records a
+`vtt_extraction_fallback` warning in `logs/intake-watcher.log`.
+
+Use this query to inspect fallback volume and patterns:
+
+```bash
+rg -n "vtt_extraction_fallback" logs/intake-watcher.log
+```
+
+Chunked transcript extraction remains a potential feature under evaluation. Use
+the fallback warning volume, affected meeting lengths, and note-quality impact to
+decide whether the added complexity is justified.

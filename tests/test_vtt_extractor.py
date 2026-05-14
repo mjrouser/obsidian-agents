@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.processors.meeting_metadata import MeetingMetadata
 from obsidian_intake_agent.processors.vtt_extractor import (
     action_items_from_extracted,
+    extract_vtt_meeting_data,
     heuristic_extract_meeting_data,
     normalize_extracted_meeting_data,
 )
@@ -57,6 +60,39 @@ class VttExtractorTests(unittest.TestCase):
         self.assertEqual(
             extracted["source_limitations"],
             ["Heuristic extraction used; no calendar, chat, or recap context was available."],
+        )
+
+    def test_codex_timeout_falls_back_to_heuristic_extraction(self) -> None:
+        config = Config(
+            vault_path="vault",
+            intake_dir="00_Intake",
+            meetings_dir="01_Meetings",
+            actions_dir="07_Actions",
+            archive_intake_dir="_Archive/Intake",
+            templates_dir="Templates",
+            owner_filter="Matthew",
+            dry_run=False,
+            llm_provider="codex_cli",
+            codex_timeout_seconds=300,
+        )
+
+        with patch(
+            "obsidian_intake_agent.processors.vtt_extractor.run_codex_json",
+            side_effect=TimeoutError("Codex CLI timed out after 300 seconds while returning JSON."),
+        ):
+            extracted = extract_vtt_meeting_data(
+                transcript_text="Action: Matthew will follow up.",
+                metadata=_metadata(),
+                config=config,
+            )
+
+        self.assertEqual(
+            extracted["action_items"],
+            [{"text": "follow up.", "owner": "Matthew", "due": None}],
+        )
+        self.assertIn(
+            "Codex CLI timed out after 300 seconds while returning JSON.; heuristic extraction used instead.",
+            extracted["source_limitations"],
         )
 
 

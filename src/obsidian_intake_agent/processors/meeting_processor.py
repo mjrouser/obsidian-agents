@@ -47,6 +47,7 @@ class ProcessResult:
     canonical_note_path: Path | None = None
     actions_file_path: Path | None = None
     skip_reason: str | None = None
+    processing_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -207,6 +208,7 @@ class MeetingProcessor:
         transcript_hash = self._transcript_hash(transcript_text)
         extracted = extract_vtt_meeting_data(transcript_text=transcript_text, metadata=metadata, config=self.config)
         extracted = normalize_extracted_meeting_data(extracted, metadata)
+        processing_warnings = self._processing_warnings_from_extracted(source_path, extracted)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         canonical_note_name = metadata.canonical_basename
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
@@ -244,6 +246,7 @@ class MeetingProcessor:
                 processed=True,
                 canonical_note_path=meeting_note_path,
                 actions_file_path=action_update.path if action_update.changed else None,
+                processing_warnings=processing_warnings,
             )
 
         safe_write_text(meeting_note_path, meeting_note)
@@ -258,6 +261,7 @@ class MeetingProcessor:
             processed=True,
             canonical_note_path=meeting_note_path,
             actions_file_path=action_update.path if action_update.changed else None,
+            processing_warnings=processing_warnings,
         )
 
     def _read_source(self, path: Path) -> str:
@@ -420,3 +424,11 @@ class MeetingProcessor:
 
     def _transcript_hash(self, transcript_text: str) -> str:
         return hashlib.sha256(transcript_text.encode("utf-8")).hexdigest()
+
+    def _processing_warnings_from_extracted(self, source_path: Path, extracted: dict) -> list[str]:
+        warnings: list[str] = []
+        for limitation in extracted.get("source_limitations", []):
+            text = str(limitation).strip()
+            if "heuristic extraction used instead" in text:
+                warnings.append(f"vtt_extraction_fallback source={source_path} reason={text}")
+        return warnings

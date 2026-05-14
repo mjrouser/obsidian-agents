@@ -184,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         result = processor.process_file(Path(args.path), force=args.force, dry_run=args.dry_run)
         if result.canonical_note_path is not None:
             print(f"canonical_output_file: {result.canonical_note_path}")
+        for warning in result.processing_warnings:
+            print(f"processing_warning: {warning}")
         if result.processed and not args.dry_run:
             _maybe_auto_commit(config, vault_source_name=Path(args.path).name)
         return 0
