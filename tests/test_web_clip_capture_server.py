@@ -15,6 +15,7 @@ from obsidian_intake_agent.web_clips.capture_server import (
     parse_content_length,
     run_capture_server,
     sanitize_clip_filename,
+    validate_loopback_host,
 )
 
 
@@ -85,7 +86,7 @@ class WebClipCaptureServerTests(unittest.TestCase):
         self.assertEqual(parse_content_length(str(MAX_REQUEST_BYTES)), MAX_REQUEST_BYTES)
 
     def test_parse_content_length_rejects_missing_or_malformed_values(self) -> None:
-        for value in (None, "", "abc", "1.5"):
+        for value in (None, "", "abc", "1.5", "+1", " 1", "1 ", "1\n"):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "Content-Length"):
                     parse_content_length(value)
@@ -153,3 +154,18 @@ class WebClipCaptureServerTests(unittest.TestCase):
     def test_capture_server_rejects_blank_token_before_starting(self) -> None:
         with self.assertRaisesRegex(ValueError, "token is required"):
             run_capture_server(host="127.0.0.1", port=8765, intake_dir=Path("/tmp/not-used"), token="")
+
+    def test_validate_loopback_host_accepts_loopback_hosts(self) -> None:
+        for host in ("127.0.0.1", "localhost", "::1"):
+            with self.subTest(host=host):
+                validate_loopback_host(host)
+
+    def test_validate_loopback_host_rejects_non_loopback_hosts(self) -> None:
+        for host in ("", "0.0.0.0", "192.168.1.25", "10.0.0.5", "example.com"):
+            with self.subTest(host=host):
+                with self.assertRaisesRegex(ValueError, "web clip capture host must be loopback-only"):
+                    validate_loopback_host(host)
+
+    def test_capture_server_rejects_non_loopback_host_before_starting(self) -> None:
+        with self.assertRaisesRegex(ValueError, "web clip capture host must be loopback-only"):
+            run_capture_server(host="0.0.0.0", port=8765, intake_dir=Path("/tmp/not-used"), token="secret-token")

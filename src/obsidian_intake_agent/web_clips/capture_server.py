@@ -18,6 +18,7 @@ MAX_FIELD_CHARS = 10_000
 MAX_PASSAGES = 25
 MAX_FILENAME_TITLE_CHARS = 120
 TOKEN_HEADER = "X-Obsidian-Web-Clipper-Token"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def sanitize_clip_filename(title: str, captured_at: datetime) -> str:
@@ -44,12 +45,9 @@ def is_valid_capture_token(headers: Any, token: str) -> bool:
 
 
 def parse_content_length(value: str | None) -> int:
-    if value is None:
-        raise ValueError("Content-Length is required.")
-    try:
-        content_length = int(value)
-    except ValueError as exc:
-        raise ValueError("Content-Length must be an integer.") from exc
+    if value is None or not value.isascii() or not value.isdigit():
+        raise ValueError("Content-Length must be ASCII digits.")
+    content_length = int(value)
     if content_length <= 0:
         raise ValueError("Content-Length must be positive.")
     if content_length > MAX_REQUEST_BYTES:
@@ -57,7 +55,13 @@ def parse_content_length(value: str | None) -> int:
     return content_length
 
 
+def validate_loopback_host(host: str) -> None:
+    if host not in _LOOPBACK_HOSTS:
+        raise ValueError("web clip capture host must be loopback-only.")
+
+
 def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str) -> None:
+    validate_loopback_host(host)
     _validate_token(token)
 
     class CaptureRequestHandler(BaseHTTPRequestHandler):
