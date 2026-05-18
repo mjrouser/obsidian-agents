@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from obsidian_intake_agent.processors.web_clip_processor import WebClipProcessor
@@ -57,6 +58,50 @@ class WebClipProcessorTests(unittest.TestCase):
 
             self.assertEqual(first.processed_files, 1)
             self.assertEqual(second.processed_files, 0)
+
+    def test_process_preserves_existing_outputs_with_unique_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            raw = vault / "00_Intake" / "Web Clips" / "2026-05-18 - Article.md"
+            reference = vault / "10_References" / "Web Clips" / "2026-05-18 - Article.md"
+            archive = vault / "_Archive" / "Intake" / "Web Clips" / "2026-05-18 - Article.md"
+            raw.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            archive.parent.mkdir(parents=True)
+            raw.write_text(_raw_note(), encoding="utf-8")
+            reference.write_text("existing reference", encoding="utf-8")
+            archive.write_text("existing archive", encoding="utf-8")
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            result = processor.process_all(dry_run=False)
+
+            unique_reference = vault / "10_References" / "Web Clips" / "2026-05-18 - Article 2.md"
+            unique_archive = vault / "_Archive" / "Intake" / "Web Clips" / "2026-05-18 - Article 2.md"
+            self.assertEqual(result.processed_files, 1)
+            self.assertEqual(reference.read_text(encoding="utf-8"), "existing reference")
+            self.assertEqual(archive.read_text(encoding="utf-8"), "existing archive")
+            self.assertTrue(unique_reference.exists())
+            self.assertTrue(unique_archive.exists())
+            self.assertFalse(raw.exists())
+            self.assertIn(
+                "[[_Archive/Intake/Web Clips/2026-05-18 - Article 2.md]]",
+                unique_reference.read_text(encoding="utf-8"),
+            )
+
+    def test_process_rejects_outputs_outside_vault_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            raw = vault / "00_Intake" / "Web Clips" / "2026-05-18 - Article.md"
+            raw.parent.mkdir(parents=True)
+            raw.write_text(_raw_note(), encoding="utf-8")
+            outside = Path(tmp_dir) / "outside"
+            processor = WebClipProcessor(replace(config(vault, dry_run=False), web_clips_references_dir="../outside"))
+
+            with self.assertRaisesRegex(ValueError, "outside the vault"):
+                processor.process_all(dry_run=False)
+
+            self.assertTrue(raw.exists())
+            self.assertFalse(outside.exists())
 
 
 def _raw_note() -> str:

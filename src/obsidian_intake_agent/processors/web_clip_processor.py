@@ -40,8 +40,10 @@ class WebClipProcessor:
             if parsed is None:
                 continue
 
-            reference_path = self.references_path / raw_path.name
-            archive_path = self.archive_path / raw_path.name
+            reference_path = _unique_path(
+                _validate_vault_destination(self.vault_path, self.references_path / raw_path.name)
+            )
+            archive_path = _unique_path(_validate_vault_destination(self.vault_path, self.archive_path / raw_path.name))
             processed_files += 1
             if effective_dry_run:
                 print(f"DRY RUN: would write web clip reference note: {reference_path}")
@@ -185,4 +187,26 @@ def _topics_from_text(text: str) -> list[str]:
 
 
 def _vault_relative_path(vault_path: Path, path: Path) -> str:
-    return path.relative_to(vault_path).as_posix()
+    return _validate_vault_destination(vault_path, path).relative_to(vault_path.resolve()).as_posix()
+
+
+def _validate_vault_destination(vault_path: Path, path: Path) -> Path:
+    resolved_vault = vault_path.resolve()
+    resolved_path = path.resolve()
+    if resolved_path != resolved_vault and resolved_vault not in resolved_path.parents:
+        raise ValueError(f"web clip destination is outside the vault: {path}")
+    return resolved_path
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    stem = path.stem
+    suffix = path.suffix
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{stem} {counter}{suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
