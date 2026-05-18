@@ -52,9 +52,16 @@ def find_relevant_web_clips(config: Config, query_text: str) -> list[RelevantWeb
         return []
 
     results: list[RelevantWebClip] = []
-    for path in sorted(root.glob("*.md")):
+    for candidate in sorted(root.glob("*.md")):
+        try:
+            path = _validate_vault_path(config.vault_path, candidate, label="web clip path")
+        except ValueError:
+            continue
         text = path.read_text(encoding="utf-8")
-        metadata, body = _split_frontmatter(text)
+        parsed = _split_frontmatter(text)
+        if parsed is None:
+            continue
+        metadata, body = parsed
         title = _clip_title(path, metadata, body)
         topics = _list_metadata(metadata.get("topics"))
         searchable_terms = _terms(" ".join([title, *topics, body]))
@@ -111,13 +118,13 @@ def _terms(text: str) -> set[str]:
     return {term for term in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", text.lower()) if term not in STOP_WORDS}
 
 
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+def _split_frontmatter(text: str) -> tuple[dict[str, Any], str] | None:
     if not text.startswith("---\n"):
         return {}, text
     try:
         _, frontmatter, body = text.split("---\n", 2)
     except ValueError:
-        return {}, text
+        return None
     try:
         import yaml  # type: ignore
 
@@ -126,6 +133,8 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             return loaded, body
     except ModuleNotFoundError:
         pass
+    except Exception:
+        return None
     return _parse_simple_frontmatter(frontmatter), body
 
 

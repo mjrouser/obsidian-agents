@@ -26,6 +26,46 @@ class WebClipRetrievalTests(unittest.TestCase):
             self.assertEqual(results[0].title, "CRM Adoption")
             self.assertIn("crm", results[0].reason)
 
+    def test_find_relevant_web_clips_skips_symlink_outside_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            vault = tmp_path / "vault"
+            clips = vault / "10_References" / "Web Clips"
+            outside = tmp_path / "outside"
+            clips.mkdir(parents=True)
+            outside.mkdir()
+            outside_clip = outside / "Outside CRM.md"
+            outside_clip.write_text(_clip("Outside CRM", ["crm", "adoption"]), encoding="utf-8")
+            try:
+                (clips / "Outside CRM.md").symlink_to(outside_clip)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            results = find_relevant_web_clips(
+                config(vault, dry_run=False),
+                query_text="CRM adoption planning",
+            )
+
+            self.assertEqual(results, [])
+
+    def test_find_relevant_web_clips_skips_malformed_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            clips = vault / "10_References" / "Web Clips"
+            clips.mkdir(parents=True)
+            (clips / "Broken.md").write_text(
+                '---\nsource_title: "Broken"\ntopics: [crm\n---\n\n# Broken\n\ncrm adoption\n',
+                encoding="utf-8",
+            )
+            (clips / "CRM Adoption.md").write_text(_clip("CRM Adoption", ["crm", "adoption"]), encoding="utf-8")
+
+            results = find_relevant_web_clips(
+                config(vault, dry_run=False),
+                query_text="CRM adoption planning",
+            )
+
+            self.assertEqual([result.title for result in results], ["CRM Adoption"])
+
 
 def _clip(title: str, topics: list[str]) -> str:
     topics_yaml = "\n".join(f"  - {topic}" for topic in topics)
