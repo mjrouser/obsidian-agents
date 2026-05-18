@@ -37,6 +37,8 @@ class WebClipProcessor:
         written_reference_notes = 0
         archived_raw_captures = 0
         for raw_path in sorted(self.intake_path.glob("*.md")):
+            if raw_path.is_symlink():
+                continue
             try:
                 raw_path = validate_vault_path(self.vault_path, raw_path, label="web clip intake note")
             except ValueError:
@@ -54,14 +56,15 @@ class WebClipProcessor:
             )
             processed_files += 1
 
-            archive_relative_path = vault_relative_path(self.vault_path, base_archive_path)
-            if (
-                not effective_dry_run
-                and not base_archive_path.exists()
-                and _reference_already_points_to_archive(base_reference_path, archive_relative_path)
-            ):
-                base_archive_path.parent.mkdir(parents=True, exist_ok=True)
-                raw_path.replace(base_archive_path)
+            recoverable_archive_path = _recoverable_archive_path_for_existing_reference(
+                vault_path=self.vault_path,
+                references_path=self.references_path,
+                archive_path=self.archive_path,
+                raw_name=raw_path.name,
+            )
+            if not effective_dry_run and recoverable_archive_path is not None:
+                recoverable_archive_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.replace(recoverable_archive_path)
                 archived_raw_captures += 1
                 continue
 
@@ -230,7 +233,42 @@ def _unique_path(path: Path) -> Path:
         counter += 1
 
 
-def _reference_already_points_to_archive(reference_path: Path, archive_relative_path: str) -> bool:
-    if not reference_path.exists():
-        return False
-    return f"[[{archive_relative_path}]]" in reference_path.read_text(encoding="utf-8")
+def _recoverable_archive_path_for_existing_reference(
+    *,
+    vault_path: Path,
+    references_path: Path,
+    archive_path: Path,
+    raw_name: str,
+) -> Path | None:
+    reference_name_pattern = _unique_name_pattern(raw_name)
+    archive_root = validate_vault_path(vault_path, archive_path, label="web clip archive directory")
+    for reference_path in sorted(references_path.glob("*.md")):
+        if reference_path.is_symlink() or not reference_name_pattern.match(reference_path.name):
+            continue
+        try:
+            reference_path = validate_vault_path(vault_path, reference_path, label="web clip reference note")
+        except ValueError:
+            continue
+        for link_target in _wikilink_targets(reference_path.read_text(encoding="utf-8")):
+            try:
+                archive_target = validate_vault_path(
+                    vault_path, vault_path / link_target, label="web clip archive note"
+                )
+            except ValueError:
+                continue
+            if (
+                archive_target.parent == archive_root
+                and archive_target.name == reference_path.name
+                and not archive_target.exists()
+            ):
+                return archive_target
+    return None
+
+
+def _unique_name_pattern(name: str) -> re.Pattern[str]:
+    path = Path(name)
+    return re.compile(rf"^{re.escape(path.stem)}(?: \d+)?{re.escape(path.suffix)}$")
+
+
+def _wikilink_targets(text: str) -> list[str]:
+    return [match.strip() for match in re.findall(r"\[\[([^]|#]+)", text)]

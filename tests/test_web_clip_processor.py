@@ -111,6 +111,33 @@ class WebClipProcessorTests(unittest.TestCase):
             self.assertTrue(archive.exists())
             self.assertFalse((vault / "10_References" / "Web Clips" / "2026-05-18 - Article 2.md").exists())
 
+    def test_process_recovers_partial_collision_reference_without_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            raw = vault / "00_Intake" / "Web Clips" / "2026-05-18 - Article.md"
+            references = vault / "10_References" / "Web Clips"
+            archives = vault / "_Archive" / "Intake" / "Web Clips"
+            raw.parent.mkdir(parents=True)
+            references.mkdir(parents=True)
+            archives.mkdir(parents=True)
+            raw.write_text(_raw_note(), encoding="utf-8")
+            (references / "2026-05-18 - Article.md").write_text("existing reference", encoding="utf-8")
+            (archives / "2026-05-18 - Article.md").write_text("existing archive", encoding="utf-8")
+            (references / "2026-05-18 - Article 2.md").write_text(
+                "partial processed note\n[[_Archive/Intake/Web Clips/2026-05-18 - Article 2.md]]\n",
+                encoding="utf-8",
+            )
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            result = processor.process_all(dry_run=False)
+
+            self.assertEqual(result.processed_files, 1)
+            self.assertEqual(result.written_reference_notes, 0)
+            self.assertEqual(result.archived_raw_captures, 1)
+            self.assertTrue((archives / "2026-05-18 - Article 2.md").exists())
+            self.assertFalse((references / "2026-05-18 - Article 3.md").exists())
+            self.assertFalse(raw.exists())
+
     def test_process_rejects_outputs_outside_vault_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -159,6 +186,30 @@ class WebClipProcessorTests(unittest.TestCase):
 
             self.assertEqual(result.processed_files, 0)
             self.assertTrue(outside_raw.exists())
+            self.assertFalse((vault / "10_References" / "Web Clips").exists())
+
+    def test_process_skips_symlinked_raw_clip_inside_vault_without_moving_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            target = vault / "00_Intake" / "Other" / "target.md"
+            intake = vault / "00_Intake" / "Web Clips"
+            target.parent.mkdir(parents=True)
+            intake.mkdir(parents=True)
+            target.write_text(_raw_note(), encoding="utf-8")
+            symlink = intake / "2026-05-18 - Article.md"
+            try:
+                symlink.symlink_to(target)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            first = processor.process_all(dry_run=False)
+            second = processor.process_all(dry_run=False)
+
+            self.assertEqual(first.processed_files, 0)
+            self.assertEqual(second.processed_files, 0)
+            self.assertTrue(target.exists())
+            self.assertTrue(symlink.exists())
             self.assertFalse((vault / "10_References" / "Web Clips").exists())
 
     def test_process_skips_malformed_frontmatter_without_blocking_later_clips(self) -> None:
