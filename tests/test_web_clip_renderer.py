@@ -80,3 +80,28 @@ class WebClipRendererTests(unittest.TestCase):
         frontmatter = rendered.split("---\n", 2)[1]
         metadata = yaml.safe_load(frontmatter)
         self.assertEqual(topics, metadata["topics"])
+
+    def test_render_processed_note_frontmatter_scalars_round_trip_control_characters(self) -> None:
+        topics = ["foo\nbar", "foo: # bar"]
+        related = ["context\nwith newline", "related: # item"]
+        source_title = "Article\nTitle # with colon:"
+        processed = ProcessedWebClip(
+            source_url="https://example.com/article",
+            source_title=source_title,
+            captured_at="2026-05-18T14:30:00+00:00",
+            why="Use this for CRM adoption messaging.",
+            summary="This source explains adoption pressure.",
+            passages=["First exact passage."],
+            topics=topics,
+            application="Use this for CRM adoption messaging.",
+            related=related,
+            intake_source="z_Archive/Intake/Web Clips/Article Title.md",
+        )
+
+        rendered = render_processed_web_clip_note(processed)
+
+        frontmatter = rendered.split("---\n", 2)[1]
+        metadata = yaml.safe_load(frontmatter)
+        self.assertEqual(topics, metadata["topics"])
+        self.assertEqual(related, metadata["related"])
+        self.assertEqual(source_title, metadata["source_title"])
