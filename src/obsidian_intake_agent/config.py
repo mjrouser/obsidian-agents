@@ -37,6 +37,11 @@ class Config:
     git_vault_repo_path: Path | None = None
     git_project_repo_path: Path | None = None
     weekly_reviews_dir: str = "09_Weekly Reviews"
+    web_clips_intake_dir: str = "00_Intake/Web Clips"
+    web_clips_references_dir: str = "10_References/Web Clips"
+    web_clips_capture_host: str = "127.0.0.1"
+    web_clips_capture_port: int = 8765
+    web_clips_max_weekly_results: int = 3
     actions_archive_dir: str = "Actions Archive"
     weekly_reviews_archive_dir: str = "Review & Wrap Archive"
     archive_retention_count: int = 4
@@ -78,6 +83,14 @@ class Config:
             git_vault_repo_path=_optional_path(data.get("git_vault_repo_path")) or vault_path,
             git_project_repo_path=_optional_path(data.get("git_project_repo_path")) or path.resolve().parent,
             weekly_reviews_dir=str(data.get("weekly_reviews_dir") or data.get("snapshots_dir") or "09_Weekly Reviews"),
+            web_clips_intake_dir=str(data.get("web_clips_intake_dir", "00_Intake/Web Clips")),
+            web_clips_references_dir=str(data.get("web_clips_references_dir", "10_References/Web Clips")),
+            web_clips_capture_host=str(data.get("web_clips_capture_host", "127.0.0.1")),
+            web_clips_capture_port=_positive_int(data.get("web_clips_capture_port", 8765), "web_clips_capture_port"),
+            web_clips_max_weekly_results=_positive_int(
+                data.get("web_clips_max_weekly_results", 3),
+                "web_clips_max_weekly_results",
+            ),
             actions_archive_dir=str(data.get("actions_archive_dir", "Actions Archive")),
             weekly_reviews_archive_dir=str(data.get("weekly_reviews_archive_dir", "Review & Wrap Archive")),
             archive_retention_count=_positive_int(data.get("archive_retention_count", 4), "archive_retention_count"),
