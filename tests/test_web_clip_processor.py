@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.helpers import config
 from obsidian_intake_agent.processors.web_clip_processor import WebClipProcessor
+from tests.helpers import config
 
 
 class WebClipProcessorTests(unittest.TestCase):
