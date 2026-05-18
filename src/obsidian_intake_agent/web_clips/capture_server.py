@@ -13,6 +13,11 @@ from obsidian_intake_agent.web_clips.models import WebClipCapture, WebClipPassag
 
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\\:*?"<>|]+')
 _WHITESPACE = re.compile(r"\s+")
+MAX_REQUEST_BYTES = 256_000
+MAX_FIELD_CHARS = 10_000
+MAX_PASSAGES = 25
+MAX_FILENAME_TITLE_CHARS = 120
+TOKEN_HEADER = "X-Obsidian-Web-Clipper-Token"
 
 
 def sanitize_clip_filename(title: str, captured_at: datetime) -> str:
@@ -21,6 +26,7 @@ def sanitize_clip_filename(title: str, captured_at: datetime) -> str:
     safe_title = _WHITESPACE.sub(" ", safe_title).strip(" .-")
     if not safe_title:
         safe_title = "Untitled Web Clip"
+    safe_title = safe_title[:MAX_FILENAME_TITLE_CHARS].rstrip(" .-")
     return f"{captured_at.date().isoformat()} - {safe_title}.md"
 
 
@@ -32,7 +38,15 @@ def capture_payload_to_note(payload: dict[str, Any], *, intake_dir: Path) -> Pat
     return note_path
 
 
-def run_capture_server(*, host: str, port: int, intake_dir: Path) -> None:
+def is_valid_capture_token(headers: Any, token: str | None) -> bool:
+    return token is None or headers.get(TOKEN_HEADER) == token
+
+
+def is_request_size_allowed(content_length: int) -> bool:
+    return content_length <= MAX_REQUEST_BYTES
+
+
+def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str | None = None) -> None:
     class CaptureRequestHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
             self._send_empty(204)
@@ -43,6 +57,13 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path) -> None:
                 return
 
             length = int(self.headers.get("Content-Length", "0"))
+            if not is_valid_capture_token(self.headers, token):
+                self._send_json(403, {"error": "invalid token"})
+                return
+            if not is_request_size_allowed(length):
+                self._send_json(413, {"error": "request is too large"})
+                return
+
             try:
                 raw_body = self.rfile.read(length).decode("utf-8")
                 payload = json.loads(raw_body)
@@ -75,7 +96,7 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path) -> None:
         def _send_common_headers(self) -> None:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
 
     HTTPServer((host, port), CaptureRequestHandler).serve_forever()
 
@@ -84,13 +105,15 @@ def _capture_from_payload(payload: dict[str, Any]) -> WebClipCapture:
     passages = payload.get("passages")
     if not isinstance(passages, list):
         raise ValueError("passages must be a list.")
+    if len(passages) > MAX_PASSAGES:
+        raise ValueError("too many passages.")
 
     return WebClipCapture(
         source_url=_string_field(payload, "source_url"),
         source_title=_string_field(payload, "source_title"),
         captured_at=_datetime_field(payload, "captured_at"),
         why=_string_field(payload, "why"),
-        passages=[WebClipPassage(text=str(passage)) for passage in passages],
+        passages=[WebClipPassage(text=_passage_text(passage)) for passage in passages],
     )
 
 
@@ -98,6 +121,16 @@ def _string_field(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str):
         raise ValueError(f"{key} is required.")
+    if len(value) > MAX_FIELD_CHARS:
+        raise ValueError(f"{key} is too large.")
+    return value
+
+
+def _passage_text(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("passages must be strings.")
+    if len(value) > MAX_FIELD_CHARS:
+        raise ValueError("passage is too large.")
     return value
 
 

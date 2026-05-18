@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 
 
-def render_bookmarklet(host: str, port: int) -> str:
+def render_bookmarklet(host: str, port: int, token: str | None = None) -> str:
     endpoint = f"http://{host}:{port}/capture"
+    headers = {"Content-Type": "application/json"}
+    if token is not None:
+        headers["X-Obsidian-Web-Clipper-Token"] = token
     script = f"""
 (() => {{
   const endpoint = {json.dumps(endpoint)};
+  const headers = {json.dumps(headers)};
   const existing = document.getElementById("obsidian-web-clipper-panel");
   if (existing) existing.remove();
 
@@ -55,7 +59,7 @@ def render_bookmarklet(host: str, port: int) -> str:
     status.textContent = "Saving...";
     const response = await fetch(endpoint, {{
       method: "POST",
-      headers: {{"Content-Type": "application/json"}},
+      headers,
       body: JSON.stringify(payload),
     }});
     status.textContent = response.ok ? "Saved." : `Failed: ${{await response.text()}}`;

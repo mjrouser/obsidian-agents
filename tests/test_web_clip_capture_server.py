@@ -6,7 +6,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from obsidian_intake_agent.web_clips.bookmarklet import render_bookmarklet
-from obsidian_intake_agent.web_clips.capture_server import capture_payload_to_note, sanitize_clip_filename
+from obsidian_intake_agent.web_clips.capture_server import (
+    MAX_FIELD_CHARS,
+    MAX_PASSAGES,
+    MAX_REQUEST_BYTES,
+    capture_payload_to_note,
+    is_request_size_allowed,
+    is_valid_capture_token,
+    sanitize_clip_filename,
+)
 
 
 class WebClipCaptureServerTests(unittest.TestCase):
@@ -48,9 +56,72 @@ class WebClipCaptureServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "passages cannot be blank"):
             capture_payload_to_note(payload, intake_dir=Path("/tmp/not-used"))
 
+    def test_capture_payload_rejects_field_over_limit(self) -> None:
+        payload = {
+            "source_url": "https://example.com/article",
+            "source_title": "Article Title",
+            "captured_at": "2026-05-18T14:30:00+00:00",
+            "why": "x" * (MAX_FIELD_CHARS + 1),
+            "passages": ["Useful passage."],
+        }
+
+        with self.assertRaisesRegex(ValueError, "why is too large"):
+            capture_payload_to_note(payload, intake_dir=Path("/tmp/not-used"))
+
+    def test_capture_payload_rejects_too_many_passages(self) -> None:
+        payload = {
+            "source_url": "https://example.com/article",
+            "source_title": "Article Title",
+            "captured_at": "2026-05-18T14:30:00+00:00",
+            "why": "Use this.",
+            "passages": ["Useful passage."] * (MAX_PASSAGES + 1),
+        }
+
+        with self.assertRaisesRegex(ValueError, "too many passages"):
+            capture_payload_to_note(payload, intake_dir=Path("/tmp/not-used"))
+
+    def test_request_size_validation_rejects_large_requests(self) -> None:
+        self.assertTrue(is_request_size_allowed(MAX_REQUEST_BYTES))
+        self.assertFalse(is_request_size_allowed(MAX_REQUEST_BYTES + 1))
+
+    def test_sanitize_clip_filename_truncates_long_titles(self) -> None:
+        captured_at = datetime(2026, 5, 18, 14, 30, tzinfo=timezone.utc)
+
+        name = sanitize_clip_filename("x" * 300, captured_at)
+
+        self.assertEqual(len(name.removeprefix("2026-05-18 - ").removesuffix(".md")), 120)
+
+    def test_capture_payload_to_note_uses_unique_name_for_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_dir = Path(tmp_dir) / "00_Intake" / "Web Clips"
+            payload = {
+                "source_url": "https://example.com/article",
+                "source_title": "Article Title",
+                "captured_at": "2026-05-18T14:30:00+00:00",
+                "why": "Use this.",
+                "passages": ["Useful passage."],
+            }
+
+            first = capture_payload_to_note(payload, intake_dir=intake_dir)
+            second = capture_payload_to_note(payload, intake_dir=intake_dir)
+
+            self.assertNotEqual(first, second)
+            self.assertEqual(second.name, "2026-05-18 - Article Title 2.md")
+
     def test_bookmarklet_targets_configured_endpoint(self) -> None:
         bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765)
 
         self.assertTrue(bookmarklet.startswith("javascript:"))
         self.assertIn("http://127.0.0.1:8765/capture", bookmarklet)
         self.assertIn("Add passage", bookmarklet)
+
+    def test_bookmarklet_sends_token_header_when_configured(self) -> None:
+        bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
+
+        self.assertIn("X-Obsidian-Web-Clipper-Token", bookmarklet)
+        self.assertIn("secret-token", bookmarklet)
+
+    def test_capture_token_validation_requires_match_when_configured(self) -> None:
+        self.assertTrue(is_valid_capture_token({"X-Obsidian-Web-Clipper-Token": "secret-token"}, "secret-token"))
+        self.assertFalse(is_valid_capture_token({"X-Obsidian-Web-Clipper-Token": "wrong-token"}, "secret-token"))
+        self.assertTrue(is_valid_capture_token({}, None))
