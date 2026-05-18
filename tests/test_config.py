@@ -63,6 +63,42 @@ class ConfigCompatibilityTests(unittest.TestCase):
         self.assertEqual(loaded.outlook_graph_access_token_env, "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
         self.assertEqual(loaded.outlook_graph_api_base_url, "https://graph.microsoft.com/v1.0")
 
+    def test_outlook_graph_auth_defaults_preserve_unconfigured_auth(self) -> None:
+        config_path = _write_config(self)
+
+        loaded = Config.load(config_path)
+
+        self.assertIsNone(loaded.outlook_graph_tenant_id)
+        self.assertIsNone(loaded.outlook_graph_client_id)
+        self.assertEqual(
+            loaded.outlook_graph_scopes,
+            (
+                "https://graph.microsoft.com/Calendars.Read",
+                "https://graph.microsoft.com/OnlineMeetings.Read",
+                "https://graph.microsoft.com/OnlineMeetingTranscript.Read.All",
+            ),
+        )
+        self.assertEqual(
+            loaded.outlook_graph_token_cache_path,
+            Path("~/.cache/obsidian-intake-agent/msal_token_cache.json").expanduser(),
+        )
+
+    def test_outlook_graph_auth_settings_can_be_overridden(self) -> None:
+        config_path = _write_config(
+            self,
+            'outlook_graph_tenant_id: "tenant-123"',
+            'outlook_graph_client_id: "client-456"',
+            'outlook_graph_scopes: ["scope-a", "scope-b"]',
+            'outlook_graph_token_cache_path: "/tmp/custom-msal-cache.json"',
+        )
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.outlook_graph_tenant_id, "tenant-123")
+        self.assertEqual(loaded.outlook_graph_client_id, "client-456")
+        self.assertEqual(loaded.outlook_graph_scopes, ("scope-a", "scope-b"))
+        self.assertEqual(loaded.outlook_graph_token_cache_path, Path("/tmp/custom-msal-cache.json"))
+
     def test_archive_retention_defaults_load_when_omitted(self) -> None:
         config_path = _write_config(self)
 

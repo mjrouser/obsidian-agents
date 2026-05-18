@@ -35,5 +35,16 @@ watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
 automation_error_dir: "_System/Agent Errors"
+# Entra public-client auth settings. Tenant/client IDs are not credentials, but
+# keep real organization/app values in local config.yaml rather than committing
+# them here.
+outlook_graph_tenant_id: null
+outlook_graph_client_id: null
+outlook_graph_scopes:
+  - "https://graph.microsoft.com/Calendars.Read"
+  - "https://graph.microsoft.com/OnlineMeetings.Read"
+  - "https://graph.microsoft.com/OnlineMeetingTranscript.Read.All"
+outlook_graph_token_cache_path: "~/.cache/obsidian-intake-agent/msal_token_cache.json"
+# Optional debug override. Prefer device-code login and the MSAL cache above.
 outlook_graph_access_token_env: "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
 outlook_graph_api_base_url: "https://graph.microsoft.com/v1.0"

@@ -13,6 +13,7 @@ dependencies = [
   "watchdog",
   "python-docx",
   "webvtt-py",
+  "msal>=1.31,<2",
 ]
 
 [project.optional-dependencies]

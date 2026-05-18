@@ -43,9 +43,15 @@ but it does not currently expose a direct transcript-download action. Transcript
 sync will likely need Microsoft Graph access outside the installed Teams
 connector.
 
-## Microsoft Graph Path To Probe
+## Microsoft Graph Auth And Probe Path
 
-Use Graph Explorer or a small local probe before building the full sync command.
+Use the local device-code auth flow before probing live meeting sync behavior.
+The approved Entra app is a public client: configure its tenant ID and client ID
+in local `config.yaml`, then run `obsidian-agent graph login` to create the
+MSAL token cache used by unattended sync jobs. Tenant IDs and public-client
+client IDs are not credentials, but keep real organization/app values in local
+config rather than committed examples so app registrations can be rotated or
+replaced without repo changes.
 
 Relevant Microsoft Graph APIs:
 
@@ -60,17 +66,27 @@ Relevant Microsoft Graph APIs:
   - Supports delegated work/school permission `OnlineMeetingTranscript.Read.All`
     for online meetings.
 
-Probe sequence:
+Auth and probe sequence:
 
-1. Pick one completed meeting Matthew organized and one completed meeting Matthew
-   attended but did not organize.
-2. From Outlook, capture the event ID, organizer, join URL, and meeting thread or
-   meeting ID if present in the body.
-3. Test whether Graph can resolve the online meeting from the join URL or meeting
-   ID.
-4. Test transcript listing and transcript content download for both cases.
-5. Record whether the tenant allows delegated access, requires application
+1. Confirm local `config.yaml` has `outlook_graph_tenant_id` and
+   `outlook_graph_client_id`.
+2. Run `obsidian-agent graph status`; if no cached account is available, run
+   `obsidian-agent graph login` and complete the browser/device-code prompt.
+3. Pick one completed meeting Matthew organized and one completed meeting
+   Matthew attended but did not organize.
+4. Run `obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run`
+   across that small window and confirm Outlook discovery, Teams meeting
+   resolution, and transcript source states.
+5. Run the same window with `--download-transcripts` only after the dry-run
+   source states look correct.
+6. Record whether the tenant allows delegated access, requires application
    access, or blocks non-organizer transcript retrieval.
+
+If the cached access token expires, the app attempts a silent MSAL refresh. If
+there is no refreshable auth state, sync exits nonzero with
+`graph_auth_required` and prints manual recovery commands. In launchd, that
+failure also creates the action-needed failure note and best-effort desktop
+notification.
 
 ## Auto-Recording Strategy
 
@@ -116,9 +132,11 @@ Current implementation status in this repo:
 
 - `obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run` now
   exists as discovery/planning-only CLI plumbing.
-- When `OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN` is present, the command queries
-  Microsoft Graph `me/calendarView` and turns returned events into internal
-  Outlook meeting candidates.
+- When Entra device-code auth is configured, the command uses the local MSAL
+  cache to query Microsoft Graph `me/calendarView` and turns returned events
+  into internal Outlook meeting candidates. A temporary token from
+  `OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN` can override the cache for debugging, but
+  should not be treated as the normal unattended path.
 - The command builds a source bundle for each candidate, marks Outlook calendar
   metadata as the currently available source, and preserves the intended source
   priority for transcript, chat, recap, and manual fallback artifacts.
@@ -208,12 +226,28 @@ small representative sample without updating production meeting notes or weekly
 actions.
 
 ```bash
+obsidian-agent graph status
+obsidian-agent graph login
 obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run
 obsidian-agent meetings process-bundles --execute --validation
 ```
 
 This mode preserves transcript, fallback, and filtering semantics. Only the
 canonical outputs are redirected into `99_Test Notes/`.
+
+For auth-specific validation, force the cache-cleared path in a non-production
+window:
+
+```bash
+obsidian-agent graph logout
+obsidian-agent meetings sync-transcripts --since YYYY-MM-DD --dry-run
+obsidian-agent graph login
+```
+
+The cache-cleared sync should report `graph_auth_required` with recovery steps.
+When run through launchd, the same failure should create or update
+`_System/Agent Errors/ACTION NEEDED - Latest Automation Failure.md` and send the
+desktop notification.
 
 ## Manual Local Transcript Lane
 

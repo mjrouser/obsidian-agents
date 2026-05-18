@@ -106,6 +106,17 @@ watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
 automation_error_dir: "_System/Agent Errors"
+# Entra public-client auth settings. Tenant/client IDs are not credentials, but
+# keep real organization/app values in local config.yaml rather than committing
+# them here.
+outlook_graph_tenant_id: null
+outlook_graph_client_id: null
+outlook_graph_scopes:
+  - "https://graph.microsoft.com/Calendars.Read"
+  - "https://graph.microsoft.com/OnlineMeetings.Read"
+  - "https://graph.microsoft.com/OnlineMeetingTranscript.Read.All"
+outlook_graph_token_cache_path: "~/.cache/obsidian-intake-agent/msal_token_cache.json"
+# Optional debug override. Prefer device-code login and the MSAL cache above.
 outlook_graph_access_token_env: "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
 outlook_graph_api_base_url: "https://graph.microsoft.com/v1.0"
 ```
@@ -119,9 +130,13 @@ Set `automation_error_dir` to control where automation failure notes are written
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
 Project repo auto-commit is intentionally skipped even if `git_auto_commit_project: true`; review, test, commit, and merge project code changes manually.
 If `git_vault_repo_path` is unset, it defaults to `vault_path`.
-Set the environment variable named by `outlook_graph_access_token_env` before
-running `meetings sync-transcripts` if you want real Outlook discovery instead
-of the no-token dry-run warning.
+For meeting transcript sync, set `outlook_graph_tenant_id` and
+`outlook_graph_client_id` in local `config.yaml`, then run
+`obsidian-agent graph login` once to create a local MSAL token cache. Tenant IDs
+and public-client app IDs are not secrets, but the project keeps real
+organization/app values out of committed config so app registrations can be
+rotated or replaced without repo churn. `outlook_graph_access_token_env` remains
+available as a temporary override for debugging; do not commit access tokens.
 
 ## Run
 
@@ -160,6 +175,8 @@ obsidian-agent process /absolute/path/to/file.md
 Dry-run recently ended meeting candidates for future transcript sync:
 
 ```bash
+obsidian-agent graph status
+obsidian-agent graph login
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
 ```
 
@@ -218,11 +235,13 @@ Normal runs still write to:
 - `01_Meetings`
 - `07_Actions`
 
-With Graph discovery enabled:
+Use these Graph auth helpers to inspect, refresh, or clear the local cached
+login:
 
 ```bash
-export OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN="..."
-obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
+obsidian-agent graph status
+obsidian-agent graph login
+obsidian-agent graph logout
 ```
 
 With vault auto-commit enabled, successful non-dry-run `run --once` and `process` commands will attempt a vault repo commit with `auto: process transcript outputs for <source filename>` (or `multiple intake files` for multi-file batch runs).
@@ -291,10 +310,13 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   available, the sync path now tries a Copilot AI recap before chat, writes any
   recap-based fallback handoff to `00_Intake/bundles/fallbacks`, and uses
   meeting chat only as supplemental context for that fallback note rather than
-  as a standalone processor source. If a Graph bearer token is not configured,
-  the command returns a warning-only plan instead of discovered meetings. For
-  meetings that would be processed, the plan reports the intake bundle note path
-  and source-transparency metadata.
+  as a standalone processor source. If Entra auth is not configured, the
+  command returns a warning-only plan instead of discovered meetings. If Entra
+  auth is configured but the cached Graph token cannot be refreshed silently,
+  the command exits nonzero with `graph_auth_required` and prints manual
+  recovery steps such as `obsidian-agent graph login`. For meetings that would
+  be processed, the plan reports the intake bundle note path and
+  source-transparency metadata.
   `--write-bundles` writes only those planned bundle notes into
   `00_Intake/bundles` and skips existing bundle files. If the planned bundle
   note already exists, the planner now reports that meeting as an explicit skip
@@ -394,7 +416,10 @@ newest failure so it is easy to spot. The detailed trace stays in the matching
 loaded, the failure-note helper falls back to `logs/automation-failures/` beside
 the stderr log so the job still leaves a readable artifact. On macOS, the wrapper
 also sends a best-effort desktop notification through `osascript`; set
-`AUTOMATION_FAILURE_NOTIFICATIONS=0` to disable that notification.
+`AUTOMATION_FAILURE_NOTIFICATIONS=0` to disable that notification. Graph sync
+auth failures use this same path, so an unattended run that prints
+`graph_auth_required` also leaves an action-needed note and desktop notification
+instead of relying on daily log review.
 
 ## Quality Checks
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import date
 from pathlib import Path
 
 from .config import Config
+from .graph_auth import GraphAuthProvider, GraphTokenResult
 from .meetings import (
     ChainedMeetingArtifactDiscoveryClient,
     GraphMeetingFallbackSummaryClient,
@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help="Render the weekly note update without writing the weekly review file.",
     )
+
+    graph_parser = subparsers.add_parser("graph", help="Authenticate and inspect Microsoft Graph access.")
+    graph_subparsers = graph_parser.add_subparsers(dest="graph_command", required=True)
+    graph_subparsers.add_parser("login", help="Start Microsoft Graph device-code login and cache the token.")
+    graph_subparsers.add_parser("status", help="Show Microsoft Graph auth configuration and cache status.")
+    graph_subparsers.add_parser("logout", help="Remove the local Microsoft Graph token cache.")
 
     meetings_parser = subparsers.add_parser("meetings", help="Discover and plan meeting artifact sync.")
     meetings_subparsers = meetings_parser.add_subparsers(dest="meetings_command", required=True)
@@ -206,6 +212,26 @@ def main(argv: list[str] | None = None) -> int:
             _maybe_auto_commit(config, vault_source_name=weekly_result.review_path.name)
         return 0
 
+    if args.command == "graph":
+        provider = GraphAuthProvider(config)
+        if args.graph_command == "status":
+            for line in provider.status().lines():
+                print(line)
+            return 0
+        if args.graph_command == "login":
+            login_result = provider.login(print)
+            print(f"graph_login_succeeded: {'yes' if login_result.succeeded else 'no'}")
+            if login_result.username:
+                print(f"graph_login_account: {login_result.username}")
+            print(f"graph_login_message: {login_result.message}")
+            return 0 if login_result.succeeded else 1
+        if args.graph_command == "logout":
+            logout_result = provider.logout()
+            print(f"graph_logout_removed: {'yes' if logout_result.removed else 'no'}")
+            print(f"graph_logout_cache_path: {logout_result.cache_path}")
+            print(f"graph_logout_message: {logout_result.message}")
+            return 0
+
     if args.command == "meetings":
         if args.meetings_command == "sync-transcripts":
             selected_modes = sum(
@@ -216,6 +242,10 @@ def main(argv: list[str] | None = None) -> int:
                     "`obsidian-agent meetings sync-transcripts` requires exactly one of "
                     "`--dry-run`, `--write-bundles`, or `--download-transcripts`."
                 )
+            token_result = _resolve_graph_access_token_result(config)
+            if _graph_auth_requires_manual_action(token_result):
+                _print_graph_auth_required(token_result)
+                return 2
             since = date.fromisoformat(args.since)
             sync_plan = build_transcript_sync_plan(
                 client=_build_meeting_discovery_client(config),
@@ -313,6 +343,30 @@ def _vault_commit_source_label(processed_sources: list[str]) -> str:
     return "multiple intake files"
 
 
+def _resolve_graph_access_token_result(config: Config) -> GraphTokenResult:
+    return GraphAuthProvider(config).get_access_token()
+
+
+def _resolve_graph_access_token(config: Config) -> str | None:
+    return _resolve_graph_access_token_result(config).access_token
+
+
+def _graph_auth_requires_manual_action(token_result: GraphTokenResult) -> bool:
+    return token_result.source == "cache_miss" and not token_result.available
+
+
+def _print_graph_auth_required(token_result: GraphTokenResult) -> None:
+    print("graph_auth_required: yes", file=sys.stderr)
+    print(
+        f"graph_auth_message: {token_result.message}",
+        file=sys.stderr,
+    )
+    if token_result.recovery_steps:
+        print("graph_auth_recovery_steps:", file=sys.stderr)
+        for step in token_result.recovery_steps:
+            print(f"  {step}", file=sys.stderr)
+
+
 def _warn_if_not_using_repo_venv() -> None:
     executable = Path(sys.executable)
     repo_root = Path(__file__).resolve().parents[2]
@@ -332,7 +386,7 @@ def _warn_if_not_using_repo_venv() -> None:
 def _build_meeting_discovery_client(
     config: Config,
 ) -> GraphOutlookMeetingDiscoveryClient | UnconfiguredOutlookMeetingDiscoveryClient:
-    token = os.environ.get(config.outlook_graph_access_token_env, "").strip()
+    token = _resolve_graph_access_token(config)
     if not token:
         return UnconfiguredOutlookMeetingDiscoveryClient()
     return GraphOutlookMeetingDiscoveryClient(
@@ -349,7 +403,7 @@ def _build_meeting_artifact_discovery_client(
     local_client = LocalIntakeTranscriptDiscoveryClient(
         intake_root=config.vault_path / config.intake_dir,
     )
-    token = os.environ.get(config.outlook_graph_access_token_env, "").strip()
+    token = _resolve_graph_access_token(config)
     if not token:
         return local_client
     if download_transcripts:
