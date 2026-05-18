@@ -24,6 +24,8 @@ token cache, and lets existing Graph clients keep accepting bearer tokens.
   backwards-compatible debugging path.
 - Provide clear operator commands for login, status inspection, logout, and
   meeting-sync validation.
+- Notify the operator when background meeting sync cannot authenticate and
+  needs manual login or admin-consent action.
 - Document setup, config keys, required delegated permissions, cache handling,
   and common Graph failure modes.
 - Keep secrets and machine-specific values out of committed files.
@@ -78,12 +80,19 @@ Meeting sync should then work without manually exporting a bearer token:
 The auth provider should resolve tokens in this order:
 
 1. Use `OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN` when it is set.
-2. Use a cached account/token silently when possible.
-3. Report that Graph auth is unconfigured or expired when no token can be
-   acquired silently.
+2. Use MSAL silent token acquisition from the local cache.
+3. Let MSAL refresh the access token from the cached refresh token when refresh
+   is possible.
+4. Report that Graph auth is unconfigured or requires manual action when no
+   token can be acquired or refreshed silently.
 
 Only `graph login` should initiate the interactive device-code flow. Normal
 automation commands should not block waiting for a user to complete login.
+
+When Entra auth is configured but silent acquisition cannot return a token,
+background meeting sync should fail loudly with an auth-required exit instead of
+quietly producing a warning-only local plan. The existing automation wrapper can
+then write an `ACTION NEEDED` note and send its best-effort desktop notification.
 
 ## Architecture
 
@@ -98,9 +107,12 @@ Add non-secret Graph auth settings to `Config` and `config.example.yaml`:
 - existing `outlook_graph_access_token_env`
 - existing `outlook_graph_api_base_url`
 
-The tenant ID and client ID identify the approved Entra app but are not secrets.
-The token cache path is local machine state and should default outside committed
-repo content, such as a user cache directory or a `.cache` path that is ignored.
+The tenant ID and client ID identify the approved Entra app but are not credentials.
+For this project, real tenant and client IDs should still stay in local,
+ignored `config.yaml` rather than committed files. Committed docs and
+`config.example.yaml` should use `null` or placeholder values only. The token
+cache path is local machine state and should default outside committed repo
+content, such as a user cache directory or a `.cache` path that is ignored.
 
 The app must not support or require client secrets for this local delegated
 workflow.
@@ -112,7 +124,11 @@ Create `src/obsidian_intake_agent/graph_auth.py` with focused responsibilities:
 - Build the MSAL authority URL from tenant ID.
 - Build a `PublicClientApplication` from client ID, authority, and token cache.
 - Load and persist a serializable token cache.
-- Acquire a token silently from cached accounts.
+- Acquire a token silently from cached accounts, using MSAL refresh behavior
+  when the cached access token is expired but a refresh token can be redeemed.
+- Preserve MSAL silent-acquisition error details when refresh is not possible so
+  CLI output can distinguish login-required and consent/permission-required
+  cases.
 - Start device-code login for `graph login`.
 - Remove the cache for `graph logout`.
 - Return status information without printing access tokens or refresh tokens.
@@ -124,6 +140,7 @@ The module should expose small result types, for example:
 - cache present or absent
 - account count
 - silent token success or failure
+- auth-required recovery instructions
 - device-code message for user login
 
 ### CLI Wiring
@@ -145,9 +162,36 @@ Expected behavior:
   use, whether cache exists, and whether silent token acquisition succeeds.
 - `graph logout` deletes the local token cache file if present and reports the
   path removed.
+- meeting sync exits with a distinct auth-required failure when Entra auth is
+  configured but silent token acquisition cannot acquire or refresh a token.
+  The stderr output must include copy-pasteable recovery commands.
 
 Meeting sync client builders should use a shared token resolver instead of
 directly reading `os.environ`.
+
+### Background Auth Notifications
+
+The repo already has an automation failure path: launchd wrappers call
+`scripts/write_automation_failure_note.py`, which writes a timestamped note
+under `_System/Agent Errors`, updates `ACTION NEEDED - Latest Automation
+Failure.md`, and sends a best-effort desktop notification through `osascript`.
+
+Use that path for auth-required background failures. When a configured Graph
+automation cannot silently acquire or refresh a token:
+
+- print a short `graph_auth_required` diagnostic to stderr
+- include manual recovery commands in stderr:
+  - `.venv/bin/obsidian-agent graph status`
+  - `.venv/bin/obsidian-agent graph login`
+  - `.venv/bin/obsidian-agent graph logout` followed by `graph login` if the
+    cache appears corrupt or stale
+- exit nonzero so the wrapper creates the Obsidian action-needed note and
+  desktop notification
+- never print access tokens, refresh tokens, client secrets, or cache contents
+
+If Graph auth is not configured at all, the current warning-only local fallback
+can remain for manual exploratory runs. The loud failure is for configured
+Entra auth that needs human action.
 
 ### Existing Graph Clients
 
@@ -204,9 +248,13 @@ Documentation must cover:
 - what the approved Entra app is used for
 - what values the operator needs from the Entra app registration
 - which values are safe to store in `config.yaml`
+- why real tenant/client IDs should stay in local `config.yaml`, even though
+  they are not credentials
 - where token cache state is stored
 - how to reset auth with `graph logout`
 - how env-token override interacts with cached login
+- how background auth-required failures surface through the existing automation
+  failure note and desktop notification path
 - expected `permission_blocked` and missing-scope diagnostics
 - the exact validation workflow that writes to `99_Test Notes`
 
@@ -224,8 +272,12 @@ Add tests for auth behavior with fakes:
 
 - env-token override wins and does not inspect the token cache
 - silent cached token is returned when MSAL provides one
+- expired access token is refreshed silently when MSAL can redeem a cached
+  refresh token
 - missing config returns a safe unavailable result
 - failed silent acquisition does not start device-code login during meeting sync
+- configured-but-auth-required meeting sync exits nonzero and prints manual
+  recovery commands suitable for the automation failure note
 - device-code login prints only MSAL instructions and a success/failure summary
 - logout removes only the configured token cache
 - status never prints token material
@@ -297,6 +349,10 @@ Review:
 - `graph logout` removes local cached auth state.
 - `meetings sync-transcripts` can use cached delegated auth without
   `OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN`.
+- Expired access tokens are refreshed silently when MSAL has a redeemable cached
+  refresh token.
+- Configured Graph automation exits nonzero and triggers the existing
+  action-needed notification path when manual auth is required.
 - Existing env-token override still works.
 - Existing no-token warning behavior still works.
 - Documentation includes copy-pasteable setup, validation, and troubleshooting
