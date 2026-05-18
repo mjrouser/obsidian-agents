@@ -24,8 +24,16 @@ Use dry runs when changing config, prompts, dependencies, or parsing behavior.
 For meeting transcript sync, start with a dry run:
 
 ```bash
+./.venv/bin/obsidian-agent graph status
+./.venv/bin/obsidian-agent graph login
 ./.venv/bin/obsidian-agent meetings sync-transcripts --since 2026-05-01 --dry-run
 ```
+
+`graph login` uses the approved Entra public-client app in local `config.yaml`
+and stores refreshable auth state in the configured MSAL token cache. If the
+cached Graph token expires, sync attempts a silent refresh first. If a refresh
+is not possible, the command exits with `graph_auth_required` and prints the
+manual recovery steps.
 
 Then write bundle notes without downloading transcript files:
 
@@ -34,7 +42,7 @@ Then write bundle notes without downloading transcript files:
 ```
 
 Or download available Teams `.vtt` transcripts into
-`00_Intake/Raw Transcripts` and write matching bundle notes:
+`00_Intake/bundles/raw_transcripts` and write matching bundle notes:
 
 ```bash
 ./.venv/bin/obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
@@ -123,7 +131,12 @@ environment at `./.venv/bin/python`.
 
 When a wrapper exits with a real failure, it writes a short Obsidian note under
 `_System/Agent Errors` in the configured vault. The matching stderr log remains
-the detailed source of truth.
+the detailed source of truth. The latest failure is also mirrored through
+`ACTION NEEDED - Latest Automation Failure.md`, and macOS launchd wrappers send
+a best-effort desktop notification unless
+`AUTOMATION_FAILURE_NOTIFICATIONS=0` is set. Graph auth failures such as
+`graph_auth_required` use the same note and notification path so unattended
+sync jobs are visible without reading logs every day.
 
 Render launchd plist files after changing automation scripts or schedules:
 
@@ -170,6 +183,19 @@ Also check the vault for a failure note:
 ```bash
 ls "/absolute/path/to/vault/_System/Agent Errors"
 ```
+
+If meeting transcript sync reports `graph_auth_required`, refresh the local
+Graph login from the repo root:
+
+```bash
+./.venv/bin/obsidian-agent graph status
+./.venv/bin/obsidian-agent graph login
+```
+
+If the status still reports missing auth, confirm local `config.yaml` has
+`outlook_graph_tenant_id` and `outlook_graph_client_id` set. Tenant IDs and
+public-client app IDs are not credentials, but keep the real values in local
+config rather than committing them to the repo.
 
 Check stdout logs for normal command output:
 

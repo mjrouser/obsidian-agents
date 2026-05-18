@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+DEFAULT_OUTLOOK_GRAPH_SCOPES = (
+    "https://graph.microsoft.com/Calendars.Read",
+    "https://graph.microsoft.com/OnlineMeetings.Read",
+    "https://graph.microsoft.com/OnlineMeetingTranscript.Read.All",
+)
+DEFAULT_OUTLOOK_GRAPH_TOKEN_CACHE_PATH = Path("~/.cache/obsidian-intake-agent/msal_token_cache.json").expanduser()
+
 
 @dataclass(slots=True)
 class Config:
@@ -38,6 +45,10 @@ class Config:
     automation_log_dir: str = "logs"
     automation_error_dir: str = "_System/Agent Errors"
     outlook_graph_access_token_env: str = "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
+    outlook_graph_tenant_id: str | None = None
+    outlook_graph_client_id: str | None = None
+    outlook_graph_scopes: tuple[str, ...] = DEFAULT_OUTLOOK_GRAPH_SCOPES
+    outlook_graph_token_cache_path: Path = DEFAULT_OUTLOOK_GRAPH_TOKEN_CACHE_PATH
     outlook_graph_api_base_url: str = "https://graph.microsoft.com/v1.0"
 
     @classmethod
@@ -77,6 +88,11 @@ class Config:
             outlook_graph_access_token_env=str(
                 data.get("outlook_graph_access_token_env", "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
             ),
+            outlook_graph_tenant_id=_optional_string(data.get("outlook_graph_tenant_id")),
+            outlook_graph_client_id=_optional_string(data.get("outlook_graph_client_id")),
+            outlook_graph_scopes=_string_tuple(data.get("outlook_graph_scopes", DEFAULT_OUTLOOK_GRAPH_SCOPES)),
+            outlook_graph_token_cache_path=_optional_path(data.get("outlook_graph_token_cache_path"))
+            or DEFAULT_OUTLOOK_GRAPH_TOKEN_CACHE_PATH,
             outlook_graph_api_base_url=str(data.get("outlook_graph_api_base_url", "https://graph.microsoft.com/v1.0")),
         )
 
@@ -167,6 +183,14 @@ def _string_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
     return [str(value)]
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, tuple):
+        return tuple(str(item) for item in value)
+    if isinstance(value, list):
+        return tuple(str(item) for item in value)
+    return (str(value),)
 
 
 def _string_list_map(value: object) -> dict[str, list[str]]:

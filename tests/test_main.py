@@ -764,6 +764,40 @@ class MainCliTests(unittest.TestCase):
 
             self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
 
+    def test_build_meeting_discovery_client_uses_cached_graph_auth_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+            ):
+                provider_class.return_value.get_access_token.return_value = _FakeTokenResult("cached-token")
+                client = _build_meeting_discovery_client(config)
+
+            self.assertIsInstance(client, GraphOutlookMeetingDiscoveryClient)
+
+    def test_build_meeting_discovery_client_falls_back_when_cached_auth_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+            ):
+                provider_class.return_value.get_access_token.return_value = _FakeTokenResult(None)
+                client = _build_meeting_discovery_client(config)
+
+            self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
+
     def test_build_meeting_artifact_discovery_client_uses_local_only_without_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -776,6 +810,23 @@ class MainCliTests(unittest.TestCase):
                 client = _build_meeting_artifact_discovery_client(config)
 
             self.assertIsInstance(client, LocalIntakeTranscriptDiscoveryClient)
+
+    def test_build_meeting_artifact_discovery_client_uses_cached_graph_auth_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            config = Config.load(config_path)
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+            ):
+                provider_class.return_value.get_access_token.return_value = _FakeTokenResult("cached-token")
+                client = _build_meeting_artifact_discovery_client(config)
+
+            self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
 
     def test_build_meeting_artifact_discovery_client_chains_graph_and_local_with_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -802,6 +853,160 @@ class MainCliTests(unittest.TestCase):
                 client = _build_meeting_artifact_discovery_client(config, download_transcripts=True)
 
             self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
+
+    def test_meetings_sync_transcripts_exits_nonzero_when_configured_auth_requires_login(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+                patch("obsidian_intake_agent.main.build_transcript_sync_plan") as sync_plan_mock,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                provider_class.return_value.get_access_token.return_value = _FakeTokenResult(
+                    None,
+                    source="cache_miss",
+                    message="Graph auth is configured, but no cached token is available or refreshable.",
+                    recovery_steps=(
+                        ".venv/bin/obsidian-agent graph status",
+                        ".venv/bin/obsidian-agent graph login",
+                    ),
+                )
+
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            sync_plan_mock.assert_not_called()
+            self.assertIn("graph_auth_required: yes", stderr.getvalue())
+            self.assertIn(".venv/bin/obsidian-agent graph login", stderr.getvalue())
+
+
+class GraphCliTests(unittest.TestCase):
+    def test_graph_status_prints_status_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                provider = provider_class.return_value
+                provider.status.return_value.lines.return_value = [
+                    "graph_auth_configured: yes",
+                    "graph_auth_silent_token: available",
+                ]
+
+                exit_code = main(["--config", str(config_path), "graph", "status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("graph_auth_configured: yes", stdout.getvalue())
+        self.assertIn("graph_auth_silent_token: available", stdout.getvalue())
+
+    def test_graph_login_returns_zero_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                provider = provider_class.return_value
+                provider.login.side_effect = lambda output: _FakeLoginResult(True, "matthew@example.com", "ok")
+
+                exit_code = main(["--config", str(config_path), "graph", "login"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("graph_login_succeeded: yes", stdout.getvalue())
+        self.assertIn("graph_login_account: matthew@example.com", stdout.getvalue())
+
+    def test_graph_login_returns_one_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                provider = provider_class.return_value
+                provider.login.side_effect = lambda output: _FakeLoginResult(False, None, "missing config")
+
+                exit_code = main(["--config", str(config_path), "graph", "login"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("graph_login_succeeded: no", stdout.getvalue())
+        self.assertIn("graph_login_message: missing config", stdout.getvalue())
+
+    def test_graph_logout_prints_removed_cache_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                provider = provider_class.return_value
+                provider.logout.return_value = _FakeLogoutResult(True, Path("/tmp/cache.json"), "removed")
+
+                exit_code = main(["--config", str(config_path), "graph", "logout"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("graph_logout_removed: yes", stdout.getvalue())
+        self.assertIn("graph_logout_cache_path: /tmp/cache.json", stdout.getvalue())
+
+
+class _FakeLoginResult:
+    def __init__(self, succeeded: bool, username: str | None, message: str) -> None:
+        self.succeeded = succeeded
+        self.username = username
+        self.message = message
+
+
+class _FakeLogoutResult:
+    def __init__(self, removed: bool, cache_path: Path, message: str) -> None:
+        self.removed = removed
+        self.cache_path = cache_path
+        self.message = message
+
+
+class _FakeTokenResult:
+    def __init__(
+        self,
+        access_token: str | None,
+        *,
+        source: str = "cache",
+        message: str = "fake token result",
+        recovery_steps: tuple[str, ...] = (),
+    ) -> None:
+        self.access_token = access_token
+        self.available = access_token is not None
+        self.source = source
+        self.message = message
+        self.recovery_steps = recovery_steps
 
 
 def _write_config(

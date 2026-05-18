@@ -2297,7 +2297,7 @@ def _graph_http_warning(error: HTTPError) -> str:
             error,
             default=(
                 f"Graph calendar discovery failed with HTTP {error.code}. "
-                "Check delegated calendar/transcript permissions and the bearer token."
+                "Check delegated calendar/transcript permissions and refresh Graph auth with `obsidian-agent graph login`."
             ),
         )
     return _graph_http_error_detail(
