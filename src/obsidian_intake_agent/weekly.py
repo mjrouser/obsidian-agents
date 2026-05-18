@@ -10,6 +10,7 @@ from .llm.codex_cli import run_codex_stdout
 from .output_retention import apply_output_retention
 from .utils.dates import monday_of_week
 from .utils.fs import safe_write_text
+from .web_clips.retrieval import render_relevant_web_clips_source
 
 LEADING_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\b")
 
@@ -83,7 +84,12 @@ def build_weekly_source_bundle(config: Config, *, monday: date, run_date: date, 
 
     if not parts:
         return "No source files were found for this week."
-    return "\n\n".join(parts)
+
+    base_bundle = "\n\n".join(parts)
+    relevant_clips = render_relevant_web_clips_source(config, base_bundle)
+    if relevant_clips:
+        return f"{base_bundle}\n\n{relevant_clips}"
+    return base_bundle
 
 
 def run_codex_markdown(
