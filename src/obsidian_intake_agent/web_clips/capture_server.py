@@ -18,7 +18,7 @@ MAX_FIELD_CHARS = 10_000
 MAX_PASSAGES = 25
 MAX_FILENAME_TITLE_CHARS = 120
 TOKEN_HEADER = "X-Obsidian-Web-Clipper-Token"
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 
 
 def sanitize_clip_filename(title: str, captured_at: datetime) -> str:

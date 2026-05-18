@@ -156,12 +156,12 @@ class WebClipCaptureServerTests(unittest.TestCase):
             run_capture_server(host="127.0.0.1", port=8765, intake_dir=Path("/tmp/not-used"), token="")
 
     def test_validate_loopback_host_accepts_loopback_hosts(self) -> None:
-        for host in ("127.0.0.1", "localhost", "::1"):
+        for host in ("127.0.0.1", "localhost"):
             with self.subTest(host=host):
                 validate_loopback_host(host)
 
     def test_validate_loopback_host_rejects_non_loopback_hosts(self) -> None:
-        for host in ("", "0.0.0.0", "192.168.1.25", "10.0.0.5", "example.com"):
+        for host in ("", "0.0.0.0", "192.168.1.25", "10.0.0.5", "example.com", "::1"):
             with self.subTest(host=host):
                 with self.assertRaisesRegex(ValueError, "web clip capture host must be loopback-only"):
                     validate_loopback_host(host)
