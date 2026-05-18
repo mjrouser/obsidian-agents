@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
+import yaml
+
 from obsidian_intake_agent.rendering.web_clip_renderer import (
     render_processed_web_clip_note,
     render_raw_web_clip_note,
@@ -51,9 +53,30 @@ class WebClipRendererTests(unittest.TestCase):
         rendered = render_processed_web_clip_note(processed)
 
         self.assertIn("type: web_clip", rendered)
-        self.assertIn("- adoption", rendered)
+        self.assertIn('- "adoption"', rendered)
         self.assertIn("## Application", rendered)
         self.assertIn("Use this for CRM adoption messaging.", rendered)
         self.assertIn("> First exact passage.", rendered)
         self.assertIn("> Second exact passage.", rendered)
         self.assertIn("[[z_Archive/Intake/Web Clips/Article Title.md]]", rendered)
+
+    def test_render_processed_note_quotes_topics_as_yaml_strings(self) -> None:
+        topics = ["foo: bar", "foo # bar", "- starts list"]
+        processed = ProcessedWebClip(
+            source_url="https://example.com/article",
+            source_title="Article Title",
+            captured_at="2026-05-18T14:30:00+00:00",
+            why="Use this for CRM adoption messaging.",
+            summary="This source explains adoption pressure.",
+            passages=["First exact passage."],
+            topics=topics,
+            application="Use this for CRM adoption messaging.",
+            related=[],
+            intake_source="z_Archive/Intake/Web Clips/Article Title.md",
+        )
+
+        rendered = render_processed_web_clip_note(processed)
+
+        frontmatter = rendered.split("---\n", 2)[1]
+        metadata = yaml.safe_load(frontmatter)
+        self.assertEqual(topics, metadata["topics"])

@@ -25,7 +25,7 @@ def render_raw_web_clip_note(capture: WebClipCapture) -> str:
 
 
 def render_processed_web_clip_note(clip: ProcessedWebClip) -> str:
-    topics = "\n".join(f"  - {_yaml_escape(topic)}" for topic in clip.topics)
+    topics = "\n".join(f'  - "{_yaml_escape(topic)}"' for topic in clip.topics)
     related = "\n".join(f'  - "{_yaml_escape(item)}"' for item in clip.related)
     topics_block = topics if topics else "  []"
     related_block = related if related else "  []"
