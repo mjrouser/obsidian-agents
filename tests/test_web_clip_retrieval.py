@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from obsidian_intake_agent.web_clips.retrieval import find_relevant_web_clips
+from obsidian_intake_agent.web_clips.retrieval import find_relevant_web_clips, render_relevant_web_clips_source
 from tests.helpers import config
 
 
@@ -65,6 +65,24 @@ class WebClipRetrievalTests(unittest.TestCase):
             )
 
             self.assertEqual([result.title for result in results], ["CRM Adoption"])
+
+    def test_render_relevant_web_clips_source_includes_bounded_clip_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            clips = vault / "10_References" / "Web Clips"
+            clips.mkdir(parents=True)
+            (clips / "CRM Adoption.md").write_text(_clip("CRM Adoption", ["crm", "adoption"]), encoding="utf-8")
+
+            source = render_relevant_web_clips_source(
+                config(vault, dry_run=False),
+                query_text="CRM adoption planning",
+            )
+
+            self.assertIn("[[10_References/Web Clips/CRM Adoption.md|CRM Adoption]]", source)
+            self.assertIn("- Source: https://example.com/CRM Adoption", source)
+            self.assertIn("- Why saved: Use this for CRM Adoption.", source)
+            self.assertIn("- Summary: CRM Adoption summary.", source)
+            self.assertIn("> Exact passage about CRM Adoption.", source)
 
 
 def _clip(title: str, topics: list[str]) -> str:

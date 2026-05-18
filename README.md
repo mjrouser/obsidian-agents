@@ -187,6 +187,10 @@ Run the local web clip capture server with the same token:
 OBSIDIAN_WEB_CLIPPER_TOKEN="..." obsidian-agent web-clips serve
 ```
 
+The bookmarklet embeds this token and runs in the current page context. Treat it
+as sensitive, rotate it if exposed, and avoid running the bookmarklet on pages
+you do not trust.
+
 Process raw web clip captures. `--dry-run` previews planned writes; without a
 flag, the command follows `dry_run` from `config.yaml`, so set `dry_run: false`
 for normal write mode:

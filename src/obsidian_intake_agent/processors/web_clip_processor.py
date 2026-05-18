@@ -9,6 +9,7 @@ from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.rendering.web_clip_renderer import render_processed_web_clip_note
 from obsidian_intake_agent.utils.fs import safe_write_text
 from obsidian_intake_agent.web_clips.models import ProcessedWebClip
+from obsidian_intake_agent.web_clips.paths import validate_vault_path, vault_relative_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +29,7 @@ class WebClipProcessor:
 
     def process_all(self, dry_run: bool | None = None) -> WebClipProcessingSummary:
         effective_dry_run = self.config.dry_run if dry_run is None else dry_run
-        self.intake_path = _validate_vault_destination(self.vault_path, self.intake_path)
+        self.intake_path = validate_vault_path(self.vault_path, self.intake_path, label="web clip intake directory")
         if not self.intake_path.exists():
             return WebClipProcessingSummary()
 
@@ -36,22 +37,42 @@ class WebClipProcessor:
         written_reference_notes = 0
         archived_raw_captures = 0
         for raw_path in sorted(self.intake_path.glob("*.md")):
+            try:
+                raw_path = validate_vault_path(self.vault_path, raw_path, label="web clip intake note")
+            except ValueError:
+                continue
             raw_text = raw_path.read_text(encoding="utf-8")
             parsed = _parse_raw_note(raw_text)
             if parsed is None:
                 continue
 
-            reference_path = _unique_path(
-                _validate_vault_destination(self.vault_path, self.references_path / raw_path.name)
+            base_reference_path = validate_vault_path(
+                self.vault_path, self.references_path / raw_path.name, label="web clip reference note"
             )
-            archive_path = _unique_path(_validate_vault_destination(self.vault_path, self.archive_path / raw_path.name))
+            base_archive_path = validate_vault_path(
+                self.vault_path, self.archive_path / raw_path.name, label="web clip archive note"
+            )
             processed_files += 1
+
+            archive_relative_path = vault_relative_path(self.vault_path, base_archive_path)
+            if (
+                not effective_dry_run
+                and not base_archive_path.exists()
+                and _reference_already_points_to_archive(base_reference_path, archive_relative_path)
+            ):
+                base_archive_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.replace(base_archive_path)
+                archived_raw_captures += 1
+                continue
+
+            reference_path = _unique_path(base_reference_path)
+            archive_path = _unique_path(base_archive_path)
             if effective_dry_run:
                 print(f"DRY RUN: would write web clip reference note: {reference_path}")
                 print(f"DRY RUN: would archive web clip intake note: {archive_path}")
                 continue
 
-            processed = _build_processed_clip(parsed, _vault_relative_path(self.vault_path, archive_path))
+            processed = _build_processed_clip(parsed, vault_relative_path(self.vault_path, archive_path))
             safe_write_text(reference_path, render_processed_web_clip_note(processed))
             archive_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.replace(archive_path)
@@ -75,7 +96,10 @@ class _ParsedRawWebClip:
 
 
 def _parse_raw_note(raw_text: str) -> _ParsedRawWebClip | None:
-    metadata, body = _split_frontmatter(raw_text)
+    parsed = _split_frontmatter(raw_text)
+    if parsed is None:
+        return None
+    metadata, body = parsed
     if metadata.get("type") != "web_clip_intake" or metadata.get("status") != "unprocessed":
         return None
 
@@ -96,10 +120,13 @@ def _parse_raw_note(raw_text: str) -> _ParsedRawWebClip | None:
     )
 
 
-def _split_frontmatter(raw_text: str) -> tuple[dict[str, Any], str]:
+def _split_frontmatter(raw_text: str) -> tuple[dict[str, Any], str] | None:
     if not raw_text.startswith("---\n"):
         return {}, raw_text
-    _, frontmatter, body = raw_text.split("---\n", 2)
+    try:
+        _, frontmatter, body = raw_text.split("---\n", 2)
+    except ValueError:
+        return None
     try:
         import yaml  # type: ignore
 
@@ -108,6 +135,8 @@ def _split_frontmatter(raw_text: str) -> tuple[dict[str, Any], str]:
             return loaded, body
     except ModuleNotFoundError:
         pass
+    except Exception:
+        return None
     return _parse_simple_frontmatter(frontmatter), body
 
 
@@ -187,18 +216,6 @@ def _topics_from_text(text: str) -> list[str]:
     return topics
 
 
-def _vault_relative_path(vault_path: Path, path: Path) -> str:
-    return _validate_vault_destination(vault_path, path).relative_to(vault_path.resolve()).as_posix()
-
-
-def _validate_vault_destination(vault_path: Path, path: Path) -> Path:
-    resolved_vault = vault_path.resolve()
-    resolved_path = path.resolve()
-    if resolved_path != resolved_vault and resolved_vault not in resolved_path.parents:
-        raise ValueError(f"web clip destination is outside the vault: {path}")
-    return resolved_path
-
-
 def _unique_path(path: Path) -> Path:
     if not path.exists():
         return path
@@ -211,3 +228,9 @@ def _unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def _reference_already_points_to_archive(reference_path: Path, archive_relative_path: str) -> bool:
+    if not reference_path.exists():
+        return False
+    return f"[[{archive_relative_path}]]" in reference_path.read_text(encoding="utf-8")

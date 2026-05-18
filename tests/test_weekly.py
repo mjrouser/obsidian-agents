@@ -68,7 +68,9 @@ class WeeklySnapshotTests(unittest.TestCase):
             )
 
             self.assertIn("Relevant Saved Clips", bundle)
-            self.assertIn("[[10_References/Web Clips/CRM Adoption.md]]", bundle)
+            self.assertIn("[[10_References/Web Clips/CRM Adoption.md|CRM Adoption]]", bundle)
+            self.assertIn("- Source: https://example.com", bundle)
+            self.assertIn("- Summary: Relevant saved clip.", bundle)
 
     def test_generate_weekly_snapshot_writes_mode_specific_note(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -10,6 +10,7 @@ from typing import Any
 from obsidian_intake_agent.rendering.web_clip_renderer import render_raw_web_clip_note
 from obsidian_intake_agent.utils.fs import safe_write_text
 from obsidian_intake_agent.web_clips.models import WebClipCapture, WebClipPassage
+from obsidian_intake_agent.web_clips.paths import validate_vault_path
 
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\\:*?"<>|]+')
 _WHITESPACE = re.compile(r"\s+")
@@ -31,10 +32,13 @@ def sanitize_clip_filename(title: str, captured_at: datetime) -> str:
     return f"{captured_at.date().isoformat()} - {safe_title}.md"
 
 
-def capture_payload_to_note(payload: dict[str, Any], *, intake_dir: Path) -> Path:
+def capture_payload_to_note(payload: dict[str, Any], *, intake_dir: Path, vault_path: Path) -> Path:
+    resolved_intake_dir = validate_vault_path(vault_path, intake_dir, label="web clip intake directory")
     capture = _capture_from_payload(payload)
     content = render_raw_web_clip_note(capture)
-    note_path = _unique_note_path(intake_dir / sanitize_clip_filename(capture.source_title, capture.captured_at))
+    note_path = _unique_note_path(
+        resolved_intake_dir / sanitize_clip_filename(capture.source_title, capture.captured_at)
+    )
     safe_write_text(note_path, content)
     return note_path
 
@@ -60,9 +64,10 @@ def validate_loopback_host(host: str) -> None:
         raise ValueError("web clip capture host must be loopback-only.")
 
 
-def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str) -> None:
+def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str, vault_path: Path) -> None:
     validate_loopback_host(host)
     _validate_token(token)
+    resolved_intake_dir = validate_vault_path(vault_path, intake_dir, label="web clip intake directory")
 
     class CaptureRequestHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
@@ -88,7 +93,7 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str) ->
                 payload = json.loads(raw_body)
                 if not isinstance(payload, dict):
                     raise ValueError("payload must be an object.")
-                written = capture_payload_to_note(payload, intake_dir=intake_dir)
+                written = capture_payload_to_note(payload, intake_dir=resolved_intake_dir, vault_path=vault_path)
             except (json.JSONDecodeError, ValueError) as exc:
                 self._send_json(400, {"error": str(exc)})
                 return

@@ -362,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
                 port=config.web_clips_capture_port,
                 intake_dir=intake_dir,
                 token=token,
+                vault_path=config.vault_path,
             )
             return 0
         if args.web_clips_command == "process":

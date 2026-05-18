@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from obsidian_intake_agent.config import Config
+from obsidian_intake_agent.web_clips.paths import validate_vault_path, vault_relative_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +15,10 @@ class RelevantWebClip:
     title: str
     score: int
     reason: str
+    source_url: str
+    why: str
+    summary: str
+    passages: list[str]
 
 
 STOP_WORDS = {
@@ -54,7 +59,7 @@ def find_relevant_web_clips(config: Config, query_text: str) -> list[RelevantWeb
     results: list[RelevantWebClip] = []
     for candidate in sorted(root.glob("*.md")):
         try:
-            path = _validate_vault_path(config.vault_path, candidate, label="web clip path")
+            path = validate_vault_path(config.vault_path, candidate, label="web clip path")
         except ValueError:
             continue
         text = path.read_text(encoding="utf-8")
@@ -74,6 +79,10 @@ def find_relevant_web_clips(config: Config, query_text: str) -> list[RelevantWeb
                 title=title,
                 score=len(matches),
                 reason=f"matched terms: {', '.join(matches)}",
+                source_url=str(metadata.get("source_url", "")).strip(),
+                why=_extract_section(body, "Why This Matters").strip(),
+                summary=_extract_section(body, "Summary").strip(),
+                passages=_extract_blockquotes(_extract_section(body, "Captured Passages")),
             )
         )
 
@@ -89,29 +98,28 @@ def render_relevant_web_clips_source(config: Config, query_text: str) -> str:
 
     lines = ["## Source: Relevant Saved Clips", ""]
     for clip in clips:
-        relative_path = _vault_relative_path(config.vault_path, clip.path)
-        lines.append(f"- [[{relative_path}]] — {clip.reason}")
+        relative_path = vault_relative_path(config.vault_path, clip.path)
+        lines.append(f"### [[{relative_path}|{clip.title}]]")
+        if clip.source_url:
+            lines.append(f"- Source: {clip.source_url}")
+        lines.append(f"- Relevance: {clip.reason}")
+        if clip.why:
+            lines.append(f"- Why saved: {_truncate(clip.why, 500)}")
+        if clip.summary:
+            lines.append(f"- Summary: {_truncate(clip.summary, 500)}")
+        if clip.passages:
+            lines.append("- Captured passage:")
+            lines.append(f"> {_truncate(clip.passages[0], 900)}")
+        lines.append("")
     return "\n".join(lines)
 
 
 def _references_root(config: Config) -> Path:
-    return _validate_vault_path(
+    return validate_vault_path(
         config.vault_path,
         config.vault_path / config.web_clips_references_dir,
         label="web clip references directory",
     )
-
-
-def _vault_relative_path(vault_path: Path, path: Path) -> str:
-    return _validate_vault_path(vault_path, path, label="web clip path").relative_to(vault_path.resolve()).as_posix()
-
-
-def _validate_vault_path(vault_path: Path, path: Path, *, label: str) -> Path:
-    resolved_vault = vault_path.resolve()
-    resolved_path = path.resolve()
-    if resolved_path != resolved_vault and resolved_vault not in resolved_path.parents:
-        raise ValueError(f"{label} is outside the vault: {path}")
-    return resolved_path
 
 
 def _terms(text: str) -> set[str]:
@@ -179,3 +187,35 @@ def _list_metadata(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _extract_section(body: str, heading: str) -> str:
+    pattern = re.compile(rf"^## {re.escape(heading)}\s*$", re.MULTILINE)
+    match = pattern.search(body)
+    if not match:
+        return ""
+    start = match.end()
+    next_heading = re.search(r"^##\s+", body[start:], re.MULTILINE)
+    end = start + next_heading.start() if next_heading else len(body)
+    return body[start:end].strip()
+
+
+def _extract_blockquotes(section: str) -> list[str]:
+    passages: list[str] = []
+    current: list[str] = []
+    for line in section.splitlines():
+        if line.startswith(">"):
+            current.append(line[1:].removeprefix(" "))
+        elif current:
+            passages.append("\n".join(current).strip())
+            current = []
+    if current:
+        passages.append("\n".join(current).strip())
+    return [passage for passage in passages if passage]
+
+
+def _truncate(text: str, limit: int) -> str:
+    clean = " ".join(text.split())
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[: limit - 1].rstrip()}..."
