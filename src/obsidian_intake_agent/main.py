@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -32,6 +33,8 @@ from .utils.git import auto_commit_repo
 from .web_clips.bookmarklet import render_bookmarklet
 from .web_clips.capture_server import run_capture_server
 from .weekly import generate_weekly_snapshot
+
+WEB_CLIPPER_TOKEN_ENV_VAR = "OBSIDIAN_WEB_CLIPPER_TOKEN"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -161,8 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bookmarklet_parser.add_argument(
         "--token",
-        required=True,
-        help="Shared token sent by the bookmarklet to the local capture server.",
+        help=f"Shared token sent by the bookmarklet to the local capture server. Defaults to {WEB_CLIPPER_TOKEN_ENV_VAR}.",
     )
     serve_parser = web_clips_subparsers.add_parser(
         "serve",
@@ -170,8 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.add_argument(
         "--token",
-        required=True,
-        help="Shared token required for capture requests.",
+        help=f"Shared token required for capture requests. Defaults to {WEB_CLIPPER_TOKEN_ENV_VAR}.",
     )
     process_web_clips_parser = web_clips_subparsers.add_parser(
         "process",
@@ -180,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     process_web_clips_parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=None,
         dest="dry_run",
         help="Print intended web clip processing changes without writing files.",
     )
@@ -341,15 +343,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "web-clips":
         if args.web_clips_command == "bookmarklet":
+            token = _resolve_web_clipper_token(parser, args)
             print(
                 render_bookmarklet(
                     host=config.web_clips_capture_host,
                     port=config.web_clips_capture_port,
-                    token=args.token,
+                    token=token,
                 )
             )
             return 0
         if args.web_clips_command == "serve":
+            token = _resolve_web_clipper_token(parser, args)
             intake_dir = config.vault_path / config.web_clips_intake_dir
             print(f"web_clips_server_url: http://{config.web_clips_capture_host}:{config.web_clips_capture_port}")
             print(f"web_clips_intake_dir: {intake_dir}")
@@ -357,15 +361,16 @@ def main(argv: list[str] | None = None) -> int:
                 host=config.web_clips_capture_host,
                 port=config.web_clips_capture_port,
                 intake_dir=intake_dir,
-                token=args.token,
+                token=token,
             )
             return 0
         if args.web_clips_command == "process":
+            effective_dry_run = config.dry_run if args.dry_run is None else args.dry_run
             web_clip_summary = WebClipProcessor(config).process_all(dry_run=args.dry_run)
             print(f"web_clips_processed_files: {web_clip_summary.processed_files}")
             print(f"web_clips_written_reference_notes: {web_clip_summary.written_reference_notes}")
             print(f"web_clips_archived_raw_captures: {web_clip_summary.archived_raw_captures}")
-            if web_clip_summary.processed_files > 0 and not args.dry_run:
+            if web_clip_summary.processed_files > 0 and not effective_dry_run:
                 _maybe_auto_commit(config, vault_source_name="web clips")
             return 0
 
@@ -387,6 +392,15 @@ def _maybe_auto_commit(config: Config, *, vault_source_name: str) -> None:
         print("git auto-commit project: skipped (manual review required; commit project changes outside the agent)")
     else:
         print("git auto-commit project: skipped (disabled)")
+
+
+def _resolve_web_clipper_token(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    token = args.token or os.environ.get(WEB_CLIPPER_TOKEN_ENV_VAR)
+    if not token:
+        parser.error(
+            f"`obsidian-agent web-clips {args.web_clips_command}` requires --token or {WEB_CLIPPER_TOKEN_ENV_VAR}."
+        )
+    return token
 
 
 def _format_git_status(repo_name: str, state: str, repo_path: Path) -> str:
