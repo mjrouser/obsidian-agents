@@ -289,6 +289,84 @@ class MainCliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("processing_warning: vtt_extraction_fallback reason=Codex CLI timed out", stdout.getvalue())
 
+    def test_web_clips_bookmarklet_prints_javascript_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "web-clips",
+                        "bookmarklet",
+                        "--token",
+                        "test-token",
+                    ]
+                )
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output.startswith("javascript:"))
+            self.assertIn("http://127.0.0.1:8765/capture", output)
+            self.assertIn("X-Obsidian-Web-Clipper-Token", output)
+            self.assertIn("test-token", output)
+
+    def test_web_clips_bookmarklet_requires_token(self) -> None:
+        with self.assertRaises(SystemExit) as exc:
+            main(["web-clips", "bookmarklet"])
+
+        self.assertEqual(exc.exception.code, 2)
+
+    def test_web_clips_process_prints_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            intake_dir.mkdir(parents=True)
+            (intake_dir / "2026-05-18 - Example Article.md").write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "type: web_clip_intake",
+                        "status: unprocessed",
+                        'captured_at: "2026-05-18T10:00:00+00:00"',
+                        'source_url: "https://example.com/article"',
+                        'source_title: "Example Article"',
+                        "---",
+                        "",
+                        "# Example Article",
+                        "",
+                        "Source: https://example.com/article",
+                        "",
+                        "## Why This Matters",
+                        "",
+                        "Useful context for the web clip CLI.",
+                        "",
+                        "## Captured Passages",
+                        "",
+                        "> A concise captured passage.",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config_path = _write_config(repo, vault)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(["--config", str(config_path), "web-clips", "process", "--dry-run"])
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("DRY RUN: would write web clip reference note:", output)
+            self.assertIn("DRY RUN: would archive web clip intake note:", output)
+            self.assertIn("web_clips_processed_files: 1", output)
+            self.assertIn("web_clips_written_reference_notes: 0", output)
+            self.assertIn("web_clips_archived_raw_captures: 0", output)
+
     def test_meetings_sync_transcripts_requires_exactly_one_mode_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)

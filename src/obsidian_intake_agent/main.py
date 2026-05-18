@@ -27,7 +27,10 @@ from .meetings import (
     write_planned_bundle_notes,
 )
 from .processors.meeting_processor import MeetingProcessor
+from .processors.web_clip_processor import WebClipProcessor
 from .utils.git import auto_commit_repo
+from .web_clips.bookmarklet import render_bookmarklet
+from .web_clips.capture_server import run_capture_server
 from .weekly import generate_weekly_snapshot
 
 
@@ -149,6 +152,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     attach_parser.add_argument("--event-id", required=True, help="Outlook event ID from the meeting bundle metadata.")
     attach_parser.add_argument("--file", required=True, help="Local .vtt, .md, or .docx transcript file to attach.")
+
+    web_clips_parser = subparsers.add_parser("web-clips", help="Capture and process web clips.")
+    web_clips_subparsers = web_clips_parser.add_subparsers(dest="web_clips_command", required=True)
+    bookmarklet_parser = web_clips_subparsers.add_parser(
+        "bookmarklet",
+        help="Print a bookmarklet for capturing web clips.",
+    )
+    bookmarklet_parser.add_argument(
+        "--token",
+        required=True,
+        help="Shared token sent by the bookmarklet to the local capture server.",
+    )
+    serve_parser = web_clips_subparsers.add_parser(
+        "serve",
+        help="Run the local web clip capture server.",
+    )
+    serve_parser.add_argument(
+        "--token",
+        required=True,
+        help="Shared token required for capture requests.",
+    )
+    process_web_clips_parser = web_clips_subparsers.add_parser(
+        "process",
+        help="Process raw web clip captures into reference notes.",
+    )
+    process_web_clips_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print intended web clip processing changes without writing files.",
+    )
 
     return parser
 
@@ -303,6 +337,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"meeting_bundle_transcript_attached: {attach_result.attached_path}")
             print(f"meeting_bundle_metadata_updated: {attach_result.metadata_path}")
             print(f"meeting_bundle_preferred_source: {attach_result.source_name}")
+            return 0
+
+    if args.command == "web-clips":
+        if args.web_clips_command == "bookmarklet":
+            print(
+                render_bookmarklet(
+                    host=config.web_clips_capture_host,
+                    port=config.web_clips_capture_port,
+                    token=args.token,
+                )
+            )
+            return 0
+        if args.web_clips_command == "serve":
+            intake_dir = config.vault_path / config.web_clips_intake_dir
+            print(f"web_clips_server_url: http://{config.web_clips_capture_host}:{config.web_clips_capture_port}")
+            print(f"web_clips_intake_dir: {intake_dir}")
+            run_capture_server(
+                host=config.web_clips_capture_host,
+                port=config.web_clips_capture_port,
+                intake_dir=intake_dir,
+                token=args.token,
+            )
+            return 0
+        if args.web_clips_command == "process":
+            web_clip_summary = WebClipProcessor(config).process_all(dry_run=args.dry_run)
+            print(f"web_clips_processed_files: {web_clip_summary.processed_files}")
+            print(f"web_clips_written_reference_notes: {web_clip_summary.written_reference_notes}")
+            print(f"web_clips_archived_raw_captures: {web_clip_summary.archived_raw_captures}")
+            if web_clip_summary.processed_files > 0 and not args.dry_run:
+                _maybe_auto_commit(config, vault_source_name="web clips")
             return 0
 
     parser.error("Unknown command.")
