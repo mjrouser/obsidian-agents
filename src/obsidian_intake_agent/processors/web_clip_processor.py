@@ -28,6 +28,7 @@ class WebClipProcessor:
 
     def process_all(self, dry_run: bool | None = None) -> WebClipProcessingSummary:
         effective_dry_run = self.config.dry_run if dry_run is None else dry_run
+        self.intake_path = _validate_vault_destination(self.vault_path, self.intake_path)
         if not self.intake_path.exists():
             return WebClipProcessingSummary()
 

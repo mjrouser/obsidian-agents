@@ -103,6 +103,20 @@ class WebClipProcessorTests(unittest.TestCase):
             self.assertTrue(raw.exists())
             self.assertFalse(outside.exists())
 
+    def test_process_rejects_intake_path_outside_vault_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            outside = Path(tmp_dir) / "outside"
+            raw = outside / "2026-05-18 - Article.md"
+            raw.parent.mkdir(parents=True)
+            raw.write_text(_raw_note(), encoding="utf-8")
+            processor = WebClipProcessor(replace(config(vault, dry_run=False), web_clips_intake_dir="../outside"))
+
+            with self.assertRaisesRegex(ValueError, "outside the vault"):
+                processor.process_all(dry_run=False)
+
+            self.assertTrue(raw.exists())
+
 
 def _raw_note() -> str:
     return """---
