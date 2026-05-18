@@ -38,15 +38,28 @@ def capture_payload_to_note(payload: dict[str, Any], *, intake_dir: Path) -> Pat
     return note_path
 
 
-def is_valid_capture_token(headers: Any, token: str | None) -> bool:
-    return token is None or headers.get(TOKEN_HEADER) == token
+def is_valid_capture_token(headers: Any, token: str) -> bool:
+    _validate_token(token)
+    return headers.get(TOKEN_HEADER) == token
 
 
-def is_request_size_allowed(content_length: int) -> bool:
-    return content_length <= MAX_REQUEST_BYTES
+def parse_content_length(value: str | None) -> int:
+    if value is None:
+        raise ValueError("Content-Length is required.")
+    try:
+        content_length = int(value)
+    except ValueError as exc:
+        raise ValueError("Content-Length must be an integer.") from exc
+    if content_length <= 0:
+        raise ValueError("Content-Length must be positive.")
+    if content_length > MAX_REQUEST_BYTES:
+        raise ValueError("request is too large.")
+    return content_length
 
 
-def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str | None = None) -> None:
+def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str) -> None:
+    _validate_token(token)
+
     class CaptureRequestHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
             self._send_empty(204)
@@ -56,12 +69,14 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str | N
                 self._send_json(404, {"error": "not found"})
                 return
 
-            length = int(self.headers.get("Content-Length", "0"))
             if not is_valid_capture_token(self.headers, token):
                 self._send_json(403, {"error": "invalid token"})
                 return
-            if not is_request_size_allowed(length):
-                self._send_json(413, {"error": "request is too large"})
+            try:
+                length = parse_content_length(self.headers.get("Content-Length"))
+            except ValueError as exc:
+                status = 413 if str(exc) == "request is too large." else 400
+                self._send_json(status, {"error": str(exc)})
                 return
 
             try:
@@ -99,6 +114,11 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str | N
             self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
 
     HTTPServer((host, port), CaptureRequestHandler).serve_forever()
+
+
+def _validate_token(token: str) -> None:
+    if not token:
+        raise ValueError("token is required.")
 
 
 def _capture_from_payload(payload: dict[str, Any]) -> WebClipCapture:

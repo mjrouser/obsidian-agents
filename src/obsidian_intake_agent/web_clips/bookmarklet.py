@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 
 
-def render_bookmarklet(host: str, port: int, token: str | None = None) -> str:
+def render_bookmarklet(host: str, port: int, token: str) -> str:
+    if not token:
+        raise ValueError("token is required.")
     endpoint = f"http://{host}:{port}/capture"
-    headers = {"Content-Type": "application/json"}
-    if token is not None:
-        headers["X-Obsidian-Web-Clipper-Token"] = token
+    headers = {"Content-Type": "application/json", "X-Obsidian-Web-Clipper-Token": token}
     script = f"""
 (() => {{
   const endpoint = {json.dumps(endpoint)};
