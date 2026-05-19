@@ -18,6 +18,7 @@ def main() -> int:
         vault = workspace / "vault"
         intake = vault / "00_Intake"
         intake.mkdir(parents=True)
+        archive_intake_dir = "_Archive/Intake"
         source = intake / "2026-03-12 - Teams - Smoke Test.md"
         source.write_text(
             "Agenda\n\nAction: Matthew will verify the CLI smoke test by Friday.\n",
@@ -34,7 +35,7 @@ def main() -> int:
                     'intake_dir: "00_Intake"',
                     'meetings_dir: "01_Meetings"',
                     'actions_dir: "07_Actions"',
-                    'archive_intake_dir: "_Archive/Intake"',
+                    f'archive_intake_dir: "{archive_intake_dir}"',
                     'weekly_reviews_dir: "09_Weekly Reviews"',
                     'templates_dir: "Templates"',
                     'owner_filter: "Matthew"',
@@ -85,6 +86,66 @@ def main() -> int:
         assert_file_contains(archived, "STATUS: PROCESSED")
         if source.exists():
             raise AssertionError(f"expected source to be archived: {source}")
+
+        web_clips_intake = intake / "Web Clips"
+        web_clips_intake.mkdir(parents=True)
+        raw_web_clip = web_clips_intake / "2026-05-18 - Smoke Web Clip.md"
+        raw_web_clip.write_text(
+            "\n".join(
+                [
+                    "---",
+                    "type: web_clip_intake",
+                    "status: unprocessed",
+                    'captured_at: "2026-05-18T10:00:00+00:00"',
+                    'source_url: "https://example.com/smoke-web-clip"',
+                    'source_title: "Smoke Web Clip"',
+                    "---",
+                    "",
+                    "# Smoke Web Clip",
+                    "",
+                    "Source: https://example.com/smoke-web-clip",
+                    "",
+                    "## Why This Matters",
+                    "",
+                    "Useful context for smoke coverage of saved web clips.",
+                    "",
+                    "## Captured Passages",
+                    "",
+                    "> Saved clips should process into reference notes.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        web_clip_completed = subprocess.run(
+            [
+                str(python_bin),
+                "-m",
+                "obsidian_intake_agent.main",
+                "--config",
+                str(config_path),
+                "web-clips",
+                "process",
+            ],
+            check=True,
+            cwd=str(repo_root),
+            env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
+            capture_output=True,
+            text=True,
+        )
+
+        web_clip_reference = vault / "10_References" / "Web Clips" / raw_web_clip.name
+        web_clip_archive = vault / archive_intake_dir / "Web Clips" / raw_web_clip.name
+
+        assert_contains(web_clip_completed.stdout, "web_clips_processed_files: 1")
+        assert_contains(web_clip_completed.stdout, "web_clips_written_reference_notes: 1")
+        assert_contains(web_clip_completed.stdout, "web_clips_archived_raw_captures: 1")
+        assert_file_contains(web_clip_reference, "# Smoke Web Clip")
+        assert_file_contains(web_clip_reference, "[[_Archive/Intake/Web Clips/2026-05-18 - Smoke Web Clip.md]]")
+        assert_file_contains(web_clip_archive, "type: web_clip_intake")
+        if raw_web_clip.exists():
+            raise AssertionError(f"expected web clip source to be archived: {raw_web_clip}")
 
     print("[OK] CLI smoke test passed")
     return 0

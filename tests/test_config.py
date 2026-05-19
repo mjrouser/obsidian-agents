@@ -35,6 +35,42 @@ class ConfigCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(loaded.weekly_reviews_dir, "09_Weekly Reviews")
 
+    def test_web_clip_defaults_load_when_omitted(self) -> None:
+        config_path = _write_config(self)
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.web_clips_intake_dir, "00_Intake/Web Clips")
+        self.assertEqual(loaded.web_clips_references_dir, "10_References/Web Clips")
+        self.assertEqual(loaded.web_clips_capture_host, "127.0.0.1")
+        self.assertEqual(loaded.web_clips_capture_port, 8765)
+        self.assertEqual(loaded.web_clips_max_weekly_results, 3)
+
+    def test_web_clip_settings_can_be_overridden(self) -> None:
+        config_path = _write_config(
+            self,
+            'web_clips_intake_dir: "00_Intake/Clips"',
+            'web_clips_references_dir: "10_References/Clips"',
+            'web_clips_capture_host: "127.0.0.1"',
+            "web_clips_capture_port: 9876",
+            "web_clips_max_weekly_results: 5",
+        )
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.web_clips_intake_dir, "00_Intake/Clips")
+        self.assertEqual(loaded.web_clips_references_dir, "10_References/Clips")
+        self.assertEqual(loaded.web_clips_capture_host, "127.0.0.1")
+        self.assertEqual(loaded.web_clips_capture_port, 9876)
+        self.assertEqual(loaded.web_clips_max_weekly_results, 5)
+
+    def test_web_clip_numeric_settings_must_be_positive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "web_clips_capture_port must be a positive integer"):
+            Config.load(_write_config(self, "web_clips_capture_port: 0"))
+
+        with self.assertRaisesRegex(ValueError, "web_clips_max_weekly_results must be a positive integer"):
+            Config.load(_write_config(self, "web_clips_max_weekly_results: 0"))
+
     def test_codex_timeout_defaults_to_300_seconds(self) -> None:
         config_path = _write_config(self)
 

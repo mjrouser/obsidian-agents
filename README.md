@@ -1,6 +1,6 @@
 # Obsidian Agents
 
-`obsidian_intake_agent` watches or processes files from an Obsidian intake folder, writes canonical meeting notes into `01_Meetings`, appends a weekly actions note in `07_Actions`, and can update weekly review notes in `09_Weekly Reviews`.
+`obsidian_intake_agent` watches or processes files from an Obsidian intake folder, writes canonical meeting notes into `01_Meetings`, appends a weekly actions note in `07_Actions`, saves processed web clips into `10_References`, and can update weekly review notes in `09_Weekly Reviews`.
 
 For day-to-day commands, automation checks, troubleshooting, and recovery steps,
 see [`USAGE.md`](USAGE.md).
@@ -89,6 +89,11 @@ actions_archive_dir: "Actions Archive"
 weekly_reviews_archive_dir: "Review & Wrap Archive"
 archive_retention_count: 4
 templates_dir: "Templates"
+web_clips_intake_dir: "00_Intake/Web Clips"
+web_clips_references_dir: "10_References/Web Clips"
+web_clips_capture_host: "127.0.0.1"
+web_clips_capture_port: 8765
+web_clips_max_weekly_results: 3
 owner_filter: "Matthew"
 dry_run: true
 include_unassigned: false
@@ -125,6 +130,9 @@ outlook_graph_api_base_url: "https://graph.microsoft.com/v1.0"
 
 Set `dry_run: false` when you want the agent to write files instead of printing planned changes.
 Set `include_unassigned: true` if weekly action notes should also include items without a parsed owner.
+Set `web_clips_intake_dir` and `web_clips_references_dir` to override where raw captures and processed reference notes are stored inside the vault.
+Set `web_clips_capture_host` and `web_clips_capture_port` to control the local capture server bind address.
+Set `web_clips_max_weekly_results` to bound how many saved clips can appear in the weekly source bundle.
 Set `codex_timeout_seconds` to control how long Codex CLI extraction and weekly generation may run. VTT extraction falls back to heuristic extraction on timeout; weekly generation still fails clearly. Use `null` only when you intentionally want no timeout.
 Set `automation_error_dir` to control where automation failure notes are written inside the vault.
 Set `git_auto_commit_vault: true` to auto-commit vault output changes after a successful non-dry-run processing command.
@@ -164,6 +172,32 @@ Generate or update the Friday weekly wrap block:
 
 ```bash
 obsidian-agent weekly wrap
+```
+
+Print the web clipper bookmarklet. Prefer the environment variable so the token
+does not land in shell history:
+
+```bash
+OBSIDIAN_WEB_CLIPPER_TOKEN="..." obsidian-agent web-clips bookmarklet
+```
+
+Run the local web clip capture server with the same token:
+
+```bash
+OBSIDIAN_WEB_CLIPPER_TOKEN="..." obsidian-agent web-clips serve
+```
+
+The bookmarklet embeds this token and runs in the current page context. Treat it
+as sensitive, rotate it if exposed, and avoid running the bookmarklet on pages
+you do not trust.
+
+Process raw web clip captures. `--dry-run` previews planned writes; without a
+flag, the command follows `dry_run` from `config.yaml`, so set `dry_run: false`
+for normal write mode:
+
+```bash
+obsidian-agent web-clips process --dry-run
+obsidian-agent web-clips process
 ```
 
 Process a specific file:
@@ -292,6 +326,10 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - `YYYY-MM-DD Weekly Briefing.md`
 - `YYYY-MM-DD Weekly Wrap.md`
 - Both filenames use the Monday date of the relevant week.
+- Raw web clip captures are written to `vault_path/00_Intake/Web Clips`.
+- Processed web clip references are written to `vault_path/10_References/Web Clips`.
+- Processed raw web clip captures are archived under `archive_intake_dir/Web Clips`.
+- Weekly briefing and wrap generation may include a bounded `Relevant Saved Clips` source block from processed web clip references.
 - After successful non-dry-run writes, the agent keeps the four newest dated Markdown records in `07_Actions` and `09_Weekly Reviews` and moves older dated records into their configured archive subfolders. Recency is based on the leading `YYYY-MM-DD` filename date, not file modified time. Files without a leading date and files already inside archive folders are ignored.
 - Weekly actions only include items owned by `owner_filter`, plus `Unassigned` items when `include_unassigned: true`.
 - The intake file is prepended with `STATUS: PROCESSED — see [[...]]`.

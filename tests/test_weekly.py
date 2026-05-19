@@ -44,6 +44,34 @@ class WeeklySnapshotTests(unittest.TestCase):
             self.assertIn("2026-03-23 Weekly Briefing.md", bundle)
             self.assertIn("2026-03-28 - Teams - Sync.md", bundle)
 
+    def test_build_source_bundle_includes_relevant_web_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            (vault / "07_Actions").mkdir(parents=True)
+            (vault / "10_References" / "Web Clips").mkdir(parents=True)
+            (vault / "07_Actions" / "2026-03-30.md").write_text(
+                "- [ ] Plan CRM adoption messaging\n",
+                encoding="utf-8",
+            )
+            (vault / "10_References" / "Web Clips" / "CRM Adoption.md").write_text(
+                '---\ntype: web_clip\nsource_title: "CRM Adoption"\ntopics:\n  - crm\n  - adoption\n'
+                'source_url: "https://example.com"\ncaptured_at: "2026-05-18T14:30:00+00:00"\n---\n\n'
+                "# CRM Adoption\n\n## Summary\n\nRelevant saved clip.\n",
+                encoding="utf-8",
+            )
+
+            bundle = build_weekly_source_bundle(
+                _config(vault),
+                monday=date(2026, 3, 30),
+                run_date=date(2026, 4, 3),
+                mode="briefing",
+            )
+
+            self.assertIn("Relevant Saved Clips", bundle)
+            self.assertIn("[[10_References/Web Clips/CRM Adoption.md|CRM Adoption]]", bundle)
+            self.assertIn("- Source: https://example.com", bundle)
+            self.assertIn("- Summary: Relevant saved clip.", bundle)
+
     def test_generate_weekly_snapshot_writes_mode_specific_note(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
