@@ -41,7 +41,7 @@ from obsidian_intake_agent.processors.meeting_processor import ProcessResult
 
 class TranscriptSyncPlannerTests(unittest.TestCase):
     def test_fetch_graph_json_omits_outlook_timezone_preference_by_default(self) -> None:
-        captured: dict[str, str | None] = {}
+        captured: dict[str, object] = {}
 
         class _FakeResponse:
             def __enter__(self) -> _FakeResponse:
@@ -53,8 +53,9 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             def read(self) -> bytes:
                 return json.dumps({"value": []}).encode("utf-8")
 
-        def _fake_urlopen(request):
+        def _fake_urlopen(request, *, timeout=None):
             captured["prefer"] = request.headers.get("Prefer")
+            captured["timeout"] = timeout
             return _FakeResponse()
 
         with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
@@ -65,9 +66,10 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(payload, {"value": []})
         self.assertIsNone(captured["prefer"])
+        self.assertEqual(captured["timeout"], meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
 
     def test_fetch_graph_json_can_request_outlook_timezone_preference(self) -> None:
-        captured: dict[str, str | None] = {}
+        captured: dict[str, object] = {}
 
         class _FakeResponse:
             def __enter__(self) -> _FakeResponse:
@@ -79,8 +81,9 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             def read(self) -> bytes:
                 return json.dumps({"value": []}).encode("utf-8")
 
-        def _fake_urlopen(request):
+        def _fake_urlopen(request, *, timeout=None):
             captured["prefer"] = request.headers.get("Prefer")
+            captured["timeout"] = timeout
             return _FakeResponse()
 
         with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
@@ -92,6 +95,35 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         self.assertEqual(payload, {"value": []})
         self.assertEqual(captured["prefer"], 'outlook.timezone="UTC"')
+        self.assertEqual(captured["timeout"], meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
+
+    def test_fetch_graph_bytes_uses_timeout(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            def __enter__(self) -> _FakeResponse:
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            def read(self) -> bytes:
+                return b"WEBVTT\n"
+
+        def _fake_urlopen(request, *, timeout=None):
+            captured["accept"] = request.headers.get("Accept")
+            captured["timeout"] = timeout
+            return _FakeResponse()
+
+        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+            content = meeting_sync_module._fetch_graph_bytes(
+                "https://graph.microsoft.com/v1.0/me/onlineMeetings/transcripts/content",
+                "token",
+            )
+
+        self.assertEqual(content, b"WEBVTT\n")
+        self.assertEqual(captured["accept"], "text/vtt")
+        self.assertEqual(captured["timeout"], meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
 
     def test_skips_canceled_declined_all_day_and_focus_without_meeting_content(self) -> None:
         now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")

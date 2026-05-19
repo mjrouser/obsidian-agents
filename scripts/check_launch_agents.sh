@@ -9,6 +9,7 @@ labels=(
   "com.obsidian.agent.weekly-briefing"
   "com.obsidian.agent.weekly-wrap"
   "com.obsidian.agent.web-clipper"
+  "com.obsidian.agent.meeting-sync"
 )
 
 for label in "${labels[@]}"; do
@@ -28,7 +29,9 @@ for log_name in \
   "weekly-wrap.stdout.log" \
   "weekly-wrap.stderr.log" \
   "web-clipper.stdout.log" \
-  "web-clipper.stderr.log"
+  "web-clipper.stderr.log" \
+  "meeting-sync.stdout.log" \
+  "meeting-sync.stderr.log"
 do
   if [ -f "logs/$log_name" ]; then
     echo "log present: logs/$log_name"

@@ -25,6 +25,7 @@ ARTIFACT_SOURCE_PRIORITY = (
     "Outlook calendar metadata",
     "Manual / semi-manual intake",
 )
+GRAPH_REQUEST_TIMEOUT_SECONDS = 30
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 PlanDecision = Literal["process", "skip"]
@@ -1860,7 +1861,7 @@ def _fetch_graph_json(
         url,
         headers=headers,
     )
-    with urlopen(request) as response:
+    with urlopen(request, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -1872,7 +1873,7 @@ def _fetch_graph_bytes(url: str, access_token: str) -> bytes:
             "Accept": "text/vtt",
         },
     )
-    with urlopen(request) as response:
+    with urlopen(request, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS) as response:
         return response.read()
 
 
