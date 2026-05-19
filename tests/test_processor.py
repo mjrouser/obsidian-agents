@@ -4,10 +4,12 @@ import io
 import os
 import tempfile
 import unittest
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from obsidian_intake_agent.meetings.sync import MeetingAttendee, MeetingDiscoverySnapshot, OutlookMeetingCandidate
 from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor
 from tests.helpers import config as _config
@@ -448,6 +450,118 @@ class MeetingProcessorTests(unittest.TestCase):
                 "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
                 "[[2026-03-12 - Teams - Platform Sync.md]]",
                 actions_text,
+            )
+
+    def test_manual_vtt_enriches_unique_outlook_calendar_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-05-04 - Teams - Platform Sync.vtt"
+            source.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nAction: Matthew will send notes.\n",
+                encoding="utf-8",
+            )
+            join_url = "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_platform%40thread.v2/0?context=%7B%7D"
+            discovery_client = _StubMeetingDiscoveryClient(
+                meetings=(
+                    OutlookMeetingCandidate(
+                        event_id="evt-platform",
+                        subject="Platform Sync",
+                        start_at=datetime(2026, 5, 4, 13, 0, tzinfo=UTC),
+                        end_at=datetime(2026, 5, 4, 13, 30, tzinfo=UTC),
+                        organizer="Morgan Lee",
+                        attendees=(
+                            MeetingAttendee(
+                                name="Matthew Rouser",
+                                email="matthew@example.com",
+                                role="required",
+                                response_status="accepted",
+                            ),
+                        ),
+                        response_status="accepted",
+                        online_meeting_provider="teamsForBusiness",
+                        join_url=join_url,
+                    ),
+                )
+            )
+
+            processor = MeetingProcessor(
+                _config(vault, dry_run=False, llm_provider="none"),
+                meeting_discovery_client=discovery_client,
+            )
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            self.assertEqual(discovery_client.calls, [(date(2026, 5, 4), datetime(2026, 5, 5, tzinfo=UTC))])
+            meeting_text = (vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            self.assertIn('organizer: "Morgan Lee"', meeting_text)
+            self.assertIn('attendees: ["Matthew Rouser <matthew@example.com> (required, accepted)"]', meeting_text)
+            self.assertIn('outlook_event_id: "evt-platform"', meeting_text)
+            self.assertIn('teams_meeting_id: "19:meeting_platform@thread.v2"', meeting_text)
+            self.assertIn(f'join_url: "{join_url}"', meeting_text)
+            self.assertIn('attendance_confidence: "partial_visibility"', meeting_text)
+            self.assertIn('sources_used: ["Teams .vtt transcript", "Outlook calendar metadata"]', meeting_text)
+            self.assertIn("Known from calendar invite; attendance not guaranteed.", meeting_text)
+
+    def test_manual_vtt_does_not_enrich_ambiguous_outlook_calendar_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-05-04 - Teams - Platform Sync.vtt"
+            source.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nDiscussion.\n", encoding="utf-8")
+            discovery_client = _StubMeetingDiscoveryClient(
+                meetings=(
+                    _outlook_meeting("evt-one", "Platform Sync"),
+                    _outlook_meeting("evt-two", "Platform Sync"),
+                )
+            )
+            processor = MeetingProcessor(
+                _config(vault, dry_run=False, llm_provider="none"),
+                meeting_discovery_client=discovery_client,
+            )
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            self.assertIn(
+                "manual_vtt_graph_enrichment ambiguous_matches event_ids=evt-one, evt-two", result.processing_warnings
+            )
+            meeting_text = (vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            self.assertIn("outlook_event_id: null", meeting_text)
+            self.assertIn("teams_meeting_id: null", meeting_text)
+            self.assertIn("Multiple plausible Outlook calendar matches were found", meeting_text)
+
+    def test_manual_vtt_notes_graph_unavailable_limitation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-05-04 - Teams - Platform Sync.vtt"
+            source.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nDiscussion.\n", encoding="utf-8")
+            discovery_client = _StubMeetingDiscoveryClient(
+                meetings=(),
+                warning="Outlook calendar discovery is not configured yet.",
+            )
+            processor = MeetingProcessor(
+                _config(vault, dry_run=False, llm_provider="none"),
+                meeting_discovery_client=discovery_client,
+            )
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            self.assertIn(
+                "manual_vtt_graph_enrichment unavailable: Outlook calendar discovery is not configured yet.",
+                result.processing_warnings,
+            )
+            meeting_text = (vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            self.assertIn("outlook_event_id: null", meeting_text)
+            self.assertIn(
+                "Outlook calendar metadata was not available: Outlook calendar discovery is not configured yet.",
+                meeting_text,
             )
 
     def test_identical_vtt_copy_is_skipped_even_with_different_filename(self) -> None:
@@ -989,6 +1103,37 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue(result.processed)
             self.assertIsNone(result.actions_file_path)
             self.assertFalse((vault / "07_Actions" / "2026-03-09.md").exists())
+
+
+@dataclass(slots=True)
+class _StubMeetingDiscoveryClient:
+    meetings: tuple[OutlookMeetingCandidate, ...]
+    warning: str | None = None
+    calls: list[tuple[date, datetime]] = field(default_factory=list)
+
+    def list_recently_ended_meetings(
+        self,
+        *,
+        since: date,
+        now: datetime,
+    ) -> MeetingDiscoverySnapshot:
+        self.calls.append((since, now))
+        return MeetingDiscoverySnapshot(
+            meetings=self.meetings,
+            provider_label="stub_outlook_calendar",
+            warning=self.warning,
+        )
+
+
+def _outlook_meeting(event_id: str, subject: str) -> OutlookMeetingCandidate:
+    return OutlookMeetingCandidate(
+        event_id=event_id,
+        subject=subject,
+        start_at=datetime(2026, 5, 4, 13, 0, tzinfo=UTC),
+        end_at=datetime(2026, 5, 4, 13, 30, tzinfo=UTC),
+        online_meeting_provider="teamsForBusiness",
+        join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_platform%40thread.v2/0?context=%7B%7D",
+    )
 
 
 if __name__ == "__main__":
