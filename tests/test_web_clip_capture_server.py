@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import json
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
+from http.client import HTTPConnection
 from pathlib import Path
 
+from obsidian_intake_agent.processors.web_clip_processor import WebClipFileProcessingResult
 from obsidian_intake_agent.web_clips.bookmarklet import render_bookmarklet
 from obsidian_intake_agent.web_clips.capture_server import (
     MAX_FIELD_CHARS,
     MAX_PASSAGES,
     MAX_REQUEST_BYTES,
     capture_payload_to_note,
+    create_capture_server,
     is_valid_capture_token,
     parse_content_length,
     run_capture_server,
@@ -140,6 +145,15 @@ class WebClipCaptureServerTests(unittest.TestCase):
         self.assertIn("X-Obsidian-Web-Clipper-Token", bookmarklet)
         self.assertIn("secret-token", bookmarklet)
 
+    def test_bookmarklet_reports_processed_and_partial_failure_statuses(self) -> None:
+        bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
+
+        self.assertIn("Saved and processed.", bookmarklet)
+        self.assertIn("Saved and processed, but follow-up failed:", bookmarklet)
+        self.assertIn("Saved, but processing failed:", bookmarklet)
+        self.assertIn("Failed: ${responseBody.error || responseText}", bookmarklet)
+        self.assertIn("catch (error)", bookmarklet)
+
     def test_bookmarklet_rejects_blank_token(self) -> None:
         with self.assertRaisesRegex(ValueError, "token is required"):
             render_bookmarklet(host="127.0.0.1", port=8765, token="")
@@ -225,6 +239,197 @@ class WebClipCaptureServerTests(unittest.TestCase):
                     vault_path=vault,
                 )
 
+    def test_capture_server_processes_written_raw_clip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            seen_paths: list[Path] = []
+
+            def process_capture(raw_path: Path) -> WebClipFileProcessingResult:
+                seen_paths.append(raw_path)
+                return WebClipFileProcessingResult(
+                    raw_capture_path=raw_path,
+                    processed=True,
+                    reference_note_path=vault / "10_References" / "Web Clips" / raw_path.name,
+                    archived_raw_capture_path=vault / "_Archive" / "Intake" / "Web Clips" / raw_path.name,
+                    written_reference_notes=1,
+                    archived_raw_captures=1,
+                )
+
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+                process_capture=process_capture,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, body = _post_capture(server.server_port, _payload())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 201)
+            self.assertEqual(len(seen_paths), 1)
+            self.assertEqual(body["status"], "processed")
+            self.assertEqual(body["path"], str(seen_paths[0]))
+            self.assertEqual(body["reference_path"], str(vault / "10_References" / "Web Clips" / seen_paths[0].name))
+            self.assertEqual(
+                body["archive_path"],
+                str(vault / "_Archive" / "Intake" / "Web Clips" / seen_paths[0].name),
+            )
+
+    def test_capture_server_preserves_raw_clip_when_processing_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+
+            def process_capture(raw_path: Path) -> WebClipFileProcessingResult:
+                raise RuntimeError("processor exploded")
+
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+                process_capture=process_capture,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, body = _post_capture(server.server_port, _payload())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 500)
+            self.assertEqual(body["status"], "saved_processing_failed")
+            self.assertIn("processor exploded", body["error"])
+            self.assertTrue(Path(str(body["path"])).exists())
+
+    def test_capture_server_calls_processed_callback_after_successful_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            callback_results: list[WebClipFileProcessingResult] = []
+
+            def process_capture(raw_path: Path) -> WebClipFileProcessingResult:
+                return WebClipFileProcessingResult(
+                    raw_capture_path=raw_path,
+                    processed=True,
+                    reference_note_path=vault / "10_References" / "Web Clips" / raw_path.name,
+                    archived_raw_capture_path=vault / "_Archive" / "Intake" / "Web Clips" / raw_path.name,
+                    written_reference_notes=1,
+                    archived_raw_captures=1,
+                )
+
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+                process_capture=process_capture,
+                on_processed=callback_results.append,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, _body = _post_capture(server.server_port, _payload())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 201)
+            self.assertEqual(len(callback_results), 1)
+            self.assertTrue(callback_results[0].processed)
+
+    def test_capture_server_callback_failure_returns_processed_response_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+
+            def process_capture(raw_path: Path) -> WebClipFileProcessingResult:
+                return WebClipFileProcessingResult(
+                    raw_capture_path=raw_path,
+                    processed=True,
+                    reference_note_path=vault / "10_References" / "Web Clips" / raw_path.name,
+                    archived_raw_capture_path=vault / "_Archive" / "Intake" / "Web Clips" / raw_path.name,
+                    written_reference_notes=1,
+                    archived_raw_captures=1,
+                )
+
+            def on_processed(_result: WebClipFileProcessingResult) -> None:
+                raise RuntimeError("auto-commit exploded")
+
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+                process_capture=process_capture,
+                on_processed=on_processed,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, body = _post_capture(server.server_port, _payload())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 201)
+            self.assertEqual(body["status"], "processed")
+            self.assertEqual(
+                body["reference_path"], str(vault / "10_References" / "Web Clips" / Path(str(body["path"])).name)
+            )
+            self.assertEqual(
+                body["archive_path"],
+                str(vault / "_Archive" / "Intake" / "Web Clips" / Path(str(body["path"])).name),
+            )
+            self.assertIn("post-processing callback failed", body["warning"])
+            self.assertIn("auto-commit exploded", body["warning"])
+
+    def test_capture_server_does_not_call_processed_callback_for_unprocessed_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            callback_results: list[WebClipFileProcessingResult] = []
+
+            def process_capture(raw_path: Path) -> WebClipFileProcessingResult:
+                return WebClipFileProcessingResult(raw_capture_path=raw_path, processed=False)
+
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+                process_capture=process_capture,
+                on_processed=callback_results.append,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, body = _post_capture(server.server_port, _payload())
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 201)
+            self.assertEqual(body["status"], "saved_unprocessed")
+            self.assertEqual(callback_results, [])
+
 
 def _payload() -> dict[str, object]:
     return {
@@ -234,3 +439,24 @@ def _payload() -> dict[str, object]:
         "why": "Use this.",
         "passages": ["Useful passage."],
     }
+
+
+def _post_capture(port: int, payload: dict[str, object], token: str = "secret-token") -> tuple[int, dict[str, object]]:
+    body_text = json.dumps(payload)
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(
+            "POST",
+            "/capture",
+            body=body_text,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body_text.encode("utf-8"))),
+                "X-Obsidian-Web-Clipper-Token": token,
+            },
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        return response.status, body
+    finally:
+        connection.close()

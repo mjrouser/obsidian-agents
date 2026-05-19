@@ -45,6 +45,112 @@ class WebClipProcessorTests(unittest.TestCase):
             self.assertIn("> First exact passage.", text)
             self.assertIn("[[_Archive/Intake/Web Clips/2026-05-18 - Article.md]]", text)
 
+    def test_process_file_writes_reference_note_and_archives_only_requested_raw_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake = vault / "00_Intake" / "Web Clips"
+            requested = intake / "2026-05-18 - Article.md"
+            untouched = intake / "2026-05-18 - Other.md"
+            intake.mkdir(parents=True)
+            requested.write_text(_raw_note(), encoding="utf-8")
+            untouched.write_text(_raw_note().replace("Article", "Other"), encoding="utf-8")
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            result = processor.process_file(requested, dry_run=False)
+
+            self.assertTrue(result.processed)
+            self.assertEqual(result.raw_capture_path, requested)
+            self.assertEqual(
+                result.reference_note_path,
+                (vault / "10_References" / "Web Clips" / "2026-05-18 - Article.md").resolve(),
+            )
+            self.assertEqual(
+                result.archived_raw_capture_path,
+                (vault / "_Archive" / "Intake" / "Web Clips" / "2026-05-18 - Article.md").resolve(),
+            )
+            self.assertEqual(result.written_reference_notes, 1)
+            self.assertEqual(result.archived_raw_captures, 1)
+            self.assertTrue(result.reference_note_path.exists())
+            self.assertTrue(result.archived_raw_capture_path.exists())
+            self.assertFalse(requested.exists())
+            self.assertTrue(untouched.exists())
+
+    def test_process_file_rejects_path_outside_web_clip_intake(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            outside_raw = vault / "00_Intake" / "Other" / "2026-05-18 - Article.md"
+            outside_raw.parent.mkdir(parents=True)
+            outside_raw.write_text(_raw_note(), encoding="utf-8")
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            with self.assertRaisesRegex(ValueError, "web clip intake note must be under"):
+                processor.process_file(outside_raw, dry_run=False)
+
+            self.assertTrue(outside_raw.exists())
+            self.assertFalse((vault / "10_References" / "Web Clips").exists())
+            self.assertFalse((vault / "_Archive" / "Intake" / "Web Clips").exists())
+
+    def test_process_file_recovers_existing_reference_without_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            raw = vault / "00_Intake" / "Web Clips" / "2026-05-18 - Article.md"
+            reference = vault / "10_References" / "Web Clips" / "2026-05-18 - Article.md"
+            archive = vault / "_Archive" / "Intake" / "Web Clips" / "2026-05-18 - Article.md"
+            raw.parent.mkdir(parents=True)
+            reference.parent.mkdir(parents=True)
+            raw.write_text(_raw_note(), encoding="utf-8")
+            reference.write_text(
+                "existing processed note\n[[_Archive/Intake/Web Clips/2026-05-18 - Article.md]]\n",
+                encoding="utf-8",
+            )
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            result = processor.process_file(raw, dry_run=False)
+
+            self.assertTrue(result.processed)
+            self.assertEqual(result.reference_note_path, reference.resolve())
+            self.assertEqual(result.archived_raw_capture_path, archive.resolve())
+            self.assertEqual(result.written_reference_notes, 0)
+            self.assertEqual(result.archived_raw_captures, 1)
+            self.assertTrue(archive.exists())
+            self.assertFalse(raw.exists())
+            self.assertFalse((vault / "10_References" / "Web Clips" / "2026-05-18 - Article 2.md").exists())
+
+    def test_process_file_returns_unprocessed_for_malformed_raw_clip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            raw = vault / "00_Intake" / "Web Clips" / "2026-05-18 - Broken.md"
+            raw.parent.mkdir(parents=True)
+            raw.write_text("---\ntype: web_clip_intake\nstatus: unprocessed\n", encoding="utf-8")
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            result = processor.process_file(raw, dry_run=False)
+
+            self.assertFalse(result.processed)
+            self.assertEqual(result.raw_capture_path, raw)
+            self.assertIsNone(result.reference_note_path)
+            self.assertIsNone(result.archived_raw_capture_path)
+            self.assertTrue(raw.exists())
+
+    def test_process_all_summary_counts_match_single_file_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake = vault / "00_Intake" / "Web Clips"
+            intake.mkdir(parents=True)
+            (intake / "2026-05-18 - Article.md").write_text(_raw_note(), encoding="utf-8")
+            (intake / "2026-05-18 - Broken.md").write_text(
+                "---\ntype: web_clip_intake\nstatus: unprocessed\n",
+                encoding="utf-8",
+            )
+            processor = WebClipProcessor(config(vault, dry_run=False))
+
+            result = processor.process_all(dry_run=False)
+
+            self.assertEqual(result.processed_files, 1)
+            self.assertEqual(result.written_reference_notes, 1)
+            self.assertEqual(result.archived_raw_captures, 1)
+            self.assertTrue((vault / "00_Intake" / "Web Clips" / "2026-05-18 - Broken.md").exists())
+
     def test_rerun_is_idempotent_when_raw_capture_was_archived(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"

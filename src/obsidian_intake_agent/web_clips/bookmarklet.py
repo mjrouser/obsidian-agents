@@ -57,12 +57,29 @@ def render_bookmarklet(host: str, port: int, token: str) -> str:
       passages: passages.value.split(/\\n\\s*\\n/).map((text) => text.trim()).filter(Boolean),
     }};
     status.textContent = "Saving...";
-    const response = await fetch(endpoint, {{
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    }});
-    status.textContent = response.ok ? "Saved." : `Failed: ${{await response.text()}}`;
+    try {{
+      const response = await fetch(endpoint, {{
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      }});
+      const responseText = await response.text();
+      let responseBody = {{}};
+      try {{ responseBody = responseText ? JSON.parse(responseText) : {{}}; }} catch (_) {{}}
+      if (response.ok && responseBody.status === "processed" && responseBody.warning) {{
+        status.textContent = `Saved and processed, but follow-up failed: ${{responseBody.warning}}`;
+      }} else if (response.ok && responseBody.status === "processed") {{
+        status.textContent = "Saved and processed.";
+      }} else if (responseBody.status === "saved_processing_failed") {{
+        status.textContent = `Saved, but processing failed: ${{responseBody.error || responseText}}`;
+      }} else if (response.ok) {{
+        status.textContent = "Saved.";
+      }} else {{
+        status.textContent = `Failed: ${{responseBody.error || responseText}}`;
+      }}
+    }} catch (error) {{
+      status.textContent = `Failed: ${{error.message || error}}`;
+    }}
   }});
 }})();
 """

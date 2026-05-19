@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from obsidian_intake_agent.rendering.web_clip_renderer import render_raw_web_clip_note
 from obsidian_intake_agent.utils.fs import safe_write_text
@@ -64,7 +64,16 @@ def validate_loopback_host(host: str) -> None:
         raise ValueError("web clip capture host must be loopback-only.")
 
 
-def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str, vault_path: Path) -> None:
+def create_capture_server(
+    *,
+    host: str,
+    port: int,
+    intake_dir: Path,
+    token: str,
+    vault_path: Path,
+    process_capture: Callable[[Path], Any] | None = None,
+    on_processed: Callable[[Any], None] | None = None,
+) -> HTTPServer:
     validate_loopback_host(host)
     _validate_token(token)
     resolved_intake_dir = validate_vault_path(vault_path, intake_dir, label="web clip intake directory")
@@ -98,7 +107,40 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str, va
                 self._send_json(400, {"error": str(exc)})
                 return
 
-            self._send_json(201, {"path": str(written)})
+            try:
+                result = process_capture(written) if process_capture is not None else None
+            except Exception as exc:
+                self._send_json(
+                    500,
+                    {
+                        "status": "saved_processing_failed",
+                        "path": str(written),
+                        "error": str(exc),
+                    },
+                )
+                return
+
+            processed = result is not None and getattr(result, "processed", False)
+            warning = None
+            if processed and on_processed is not None:
+                try:
+                    on_processed(result)
+                except Exception as exc:
+                    warning = f"post-processing callback failed: {exc}"
+
+            response_body = {
+                "status": "processed" if processed else "saved_unprocessed",
+                "path": str(written),
+                "reference_path": str(result.reference_note_path)
+                if result is not None and result.reference_note_path
+                else None,
+                "archive_path": str(result.archived_raw_capture_path)
+                if result is not None and result.archived_raw_capture_path
+                else None,
+            }
+            if warning is not None:
+                response_body["warning"] = warning
+            self._send_json(201, response_body)
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -122,7 +164,28 @@ def run_capture_server(*, host: str, port: int, intake_dir: Path, token: str, va
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
 
-    HTTPServer((host, port), CaptureRequestHandler).serve_forever()
+    return HTTPServer((host, port), CaptureRequestHandler)
+
+
+def run_capture_server(
+    *,
+    host: str,
+    port: int,
+    intake_dir: Path,
+    token: str,
+    vault_path: Path,
+    process_capture: Callable[[Path], Any] | None = None,
+    on_processed: Callable[[Any], None] | None = None,
+) -> None:
+    create_capture_server(
+        host=host,
+        port=port,
+        intake_dir=intake_dir,
+        token=token,
+        vault_path=vault_path,
+        process_capture=process_capture,
+        on_processed=on_processed,
+    ).serve_forever()
 
 
 def _validate_token(token: str) -> None:
