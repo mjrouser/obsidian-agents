@@ -98,6 +98,8 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - Keep dependency changes reflected in both `pyproject.toml` and
   `requirements.lock`.
 - Run `make audit` after dependency changes.
+- Before opening or updating a PR, run `make audit` even when the current
+  change did not touch dependencies; GitHub Actions runs the audit on every PR.
 - Treat Python 3.11 as the compatibility floor. If code requires newer Python
   syntax, standard-library behavior, or packaging assumptions, update
   `pyproject.toml`, CI, and `README.md` together.
@@ -164,7 +166,8 @@ A task is done when:
 3. `make smoke` passes when CLI behavior, processing orchestration, packaging,
    or command wiring changes.
 4. `make build` passes, or an explicitly documented equivalent passes.
-5. `make audit` passes when dependencies or packaging change.
+5. `make audit` passes before opening or updating a PR, and after dependency or
+   packaging changes.
 6. Relevant docs are updated.
 7. Behavior changes include tests where practical.
 8. Transcript-processing changes are verified with dry-run output when applicable.
