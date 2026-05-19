@@ -195,12 +195,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = Config.load(Path(args.config))
-    processor = MeetingProcessor(config)
+    processor: MeetingProcessor | None = None
+
+    def get_processor() -> MeetingProcessor:
+        nonlocal processor
+        if processor is None:
+            processor = MeetingProcessor(
+                config,
+                meeting_discovery_client=_build_meeting_discovery_client(config),
+            )
+        return processor
 
     if args.command == "run":
         if not args.once:
             parser.error("`obsidian-agent run` currently requires `--once`.")
-        summary = processor.process_all_unprocessed()
+        summary = get_processor().process_all_unprocessed()
         print(f"processed_files: {summary.processed_files}")
         print(
             "skipped_files: "
@@ -219,11 +228,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch":
         from .watcher import watch_intake
 
-        watch_intake(processor)
+        watch_intake(get_processor())
         return 0
 
     if args.command == "process":
-        result = processor.process_file(Path(args.path), force=args.force, dry_run=args.dry_run)
+        result = get_processor().process_file(Path(args.path), force=args.force, dry_run=args.dry_run)
         if result.canonical_note_path is not None:
             print(f"canonical_output_file: {result.canonical_note_path}")
         for warning in result.processing_warnings:
@@ -309,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             bundle_processor = MeetingProcessor(
                 config,
                 output_mode="validation" if args.validation else "normal",
+                meeting_discovery_client=_build_meeting_discovery_client(config),
             )
             bundle_plan = build_bundle_processing_plan(
                 intake_root=config.vault_path / config.intake_dir / "bundles",

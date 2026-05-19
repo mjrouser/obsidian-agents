@@ -6,6 +6,8 @@ from pathlib import Path
 
 FRONT_MATTER_KEYS = [
     "date",
+    "start_at",
+    "end_at",
     "source",
     "title",
     "participants",
@@ -15,7 +17,11 @@ FRONT_MATTER_KEYS = [
     "intake_file",
     "outlook_event_id",
     "teams_meeting_id",
+    "join_url",
     "transcript_id",
+    "attendance_confidence",
+    "sources_used",
+    "source_limitations",
 ]
 
 
@@ -72,7 +78,13 @@ def render_extracted_meeting_note(
         attendees=_string_list(context.get("attendees", [])),
         outlook_event_id=_optional_string(context.get("outlook_event_id")),
         teams_meeting_id=_optional_string(context.get("teams_meeting_id")),
+        join_url=_optional_string(context.get("join_url")),
         transcript_id=_optional_string(context.get("transcript_id")),
+        start_at=_optional_string(context.get("start_at")),
+        end_at=_optional_string(context.get("end_at")),
+        attendance_confidence=_optional_string(context.get("attendance_confidence")),
+        sources_used=_string_list(context.get("sources_used", [])),
+        source_limitations=_string_list(context.get("source_limitations", [])),
     )
     return (
         f"{front_matter}"
@@ -108,7 +120,13 @@ def render_meeting_note(
         owner_filter=owner_filter,
         outlook_event_id=_optional_string(context.get("outlook_event_id")),
         teams_meeting_id=_optional_string(context.get("teams_meeting_id")),
+        join_url=_optional_string(context.get("join_url")),
         transcript_id=_optional_string(context.get("transcript_id")),
+        start_at=_optional_string(context.get("start_at")),
+        end_at=_optional_string(context.get("end_at")),
+        attendance_confidence=_optional_string(context.get("attendance_confidence")),
+        sources_used=_string_list(context.get("sources_used", [])),
+        source_limitations=_string_list(context.get("source_limitations", [])),
     )
     return (
         f"{front_matter}"
@@ -135,10 +153,18 @@ def render_meeting_front_matter(
     owner_filter: str | None = None,
     outlook_event_id: str | None = None,
     teams_meeting_id: str | None = None,
+    join_url: str | None = None,
     transcript_id: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    attendance_confidence: str | None = None,
+    sources_used: list[str] | None = None,
+    source_limitations: list[str] | None = None,
 ) -> str:
     values: dict[str, object] = {
         "date": date,
+        "start_at": start_at,
+        "end_at": end_at,
         "source": source,
         "title": title,
         "participants": participants or [],
@@ -148,7 +174,11 @@ def render_meeting_front_matter(
         "intake_file": _path_value(intake_file),
         "outlook_event_id": outlook_event_id,
         "teams_meeting_id": teams_meeting_id,
+        "join_url": join_url,
         "transcript_id": transcript_id,
+        "attendance_confidence": attendance_confidence,
+        "sources_used": sources_used or [],
+        "source_limitations": source_limitations or [],
     }
     lines = ["---"]
     for key in FRONT_MATTER_KEYS:
