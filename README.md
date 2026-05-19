@@ -179,18 +179,34 @@ Print the web clipper bookmarklet. Prefer the environment variable so the token
 does not land in shell history:
 
 ```bash
-OBSIDIAN_WEB_CLIPPER_TOKEN="..." obsidian-agent web-clips bookmarklet
+OBSIDIAN_WEB_CLIPPER_TOKEN="..." ./.venv/bin/obsidian-agent web-clips bookmarklet
 ```
 
 Run the local web clip capture server with the same token:
 
 ```bash
-OBSIDIAN_WEB_CLIPPER_TOKEN="..." obsidian-agent web-clips serve
+OBSIDIAN_WEB_CLIPPER_TOKEN="..." ./.venv/bin/obsidian-agent web-clips serve
 ```
 
 The bookmarklet embeds this token and runs in the current page context. Treat it
 as sensitive, rotate it if exposed, and avoid running the bookmarklet on pages
 you do not trust.
+
+For always-on local clipping, run the capture server as a LaunchAgent. Create a
+local token file outside the repo:
+
+```bash
+mkdir -p ~/.config/obsidian-agents
+(umask 077; printf 'OBSIDIAN_WEB_CLIPPER_TOKEN=%s\n' "$(openssl rand -base64 32)" > ~/.config/obsidian-agents/web-clipper.env)
+source ~/.config/obsidian-agents/web-clipper.env
+./.venv/bin/obsidian-agent web-clips bookmarklet | pbcopy
+```
+
+Then save the clipboard contents as a browser bookmark URL. The LaunchAgent
+wrapper loads `~/.config/obsidian-agents/web-clipper.env` by default; set
+`OBSIDIAN_WEB_CLIPPER_ENV_FILE` only if you want to use a different local token
+file. To rotate the token, update the env file, regenerate the bookmarklet, and
+restart the LaunchAgent.
 
 Process raw web clip captures. `--dry-run` previews planned writes; without a
 flag, the command follows `dry_run` from `config.yaml`, so set `dry_run: false`
@@ -414,7 +430,8 @@ The simplest local v1 setup on macOS is:
 
 1. Run the watcher continuously with `scripts/run_intake_watcher.sh`.
 2. Schedule Monday and Friday jobs with `launchd`.
-3. Inspect `logs/*.log` when a run needs debugging.
+3. Keep the web clipper capture server available with `launchd`.
+4. Inspect `logs/*.log` when a run needs debugging.
 
 Render launchd plist files:
 
@@ -428,11 +445,13 @@ That writes plist files into [`ops/launchd/rendered`](/Users/matthew.rouser/repo
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist 2>/dev/null || true
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist 2>/dev/null || true
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist 2>/dev/null || true
+launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.web-clipper.plist 2>/dev/null || true
 
 cp ops/launchd/rendered/*.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist
+launchctl load ~/Library/LaunchAgents/com.obsidian.agent.web-clipper.plist
 ```
 
 Quick health check after a restart:
@@ -446,6 +465,7 @@ Default schedule:
 - Monday `09:00`: weekly briefing
 - Friday `12:15`: weekly wrap
 - Watcher: starts at login and stays alive
+- Web clipper: starts at login and stays alive
 
 When a launchd wrapper exits with a real failure, it writes an Obsidian note to
 `vault_path/_System/Agent Errors` by default. The timestamped note preserves the

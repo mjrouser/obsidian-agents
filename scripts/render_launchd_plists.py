@@ -18,9 +18,20 @@ def main() -> int:
     scripts_dir = repo_root / "scripts"
     output_dir = (repo_root / args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    jobs = [
+    for label, script_path, schedule in build_jobs(label_prefix=args.label_prefix, scripts_dir=scripts_dir):
+        plist_path = output_dir / f"{label}.plist"
+        plist_path.write_text(
+            render_plist(label=label, script_path=script_path, schedule=schedule),
+            encoding="utf-8",
+        )
+        print(plist_path)
+    return 0
+
+
+def build_jobs(*, label_prefix: str, scripts_dir: Path) -> list[tuple[str, Path, dict[str, str]]]:
+    return [
         (
-            f"{args.label_prefix}.intake-watcher",
+            f"{label_prefix}.intake-watcher",
             scripts_dir / "run_intake_watcher.sh",
             {
                 "RunAtLoad": "<true/>",
@@ -28,7 +39,7 @@ def main() -> int:
             },
         ),
         (
-            f"{args.label_prefix}.weekly-briefing",
+            f"{label_prefix}.weekly-briefing",
             scripts_dir / "run_weekly_briefing.sh",
             {
                 "StartCalendarInterval": (
@@ -39,7 +50,7 @@ def main() -> int:
             },
         ),
         (
-            f"{args.label_prefix}.weekly-wrap",
+            f"{label_prefix}.weekly-wrap",
             scripts_dir / "run_weekly_wrap.sh",
             {
                 "StartCalendarInterval": (
@@ -49,15 +60,15 @@ def main() -> int:
                 ),
             },
         ),
+        (
+            f"{label_prefix}.web-clipper",
+            scripts_dir / "run_web_clipper_server.sh",
+            {
+                "RunAtLoad": "<true/>",
+                "KeepAlive": "<true/>",
+            },
+        ),
     ]
-    for label, script_path, schedule in jobs:
-        plist_path = output_dir / f"{label}.plist"
-        plist_path.write_text(
-            render_plist(label=label, script_path=script_path, schedule=schedule),
-            encoding="utf-8",
-        )
-        print(plist_path)
-    return 0
 
 
 def render_plist(*, label: str, script_path: Path, schedule: dict[str, str]) -> str:
