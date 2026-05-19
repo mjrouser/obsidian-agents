@@ -237,6 +237,43 @@ class BundleProcessingPlanTests(unittest.TestCase):
             rendered = render_bundle_processing_plan(plan)
             self.assertIn("meeting_bundle_process_blocked: 1", rendered)
 
+    def test_staged_identity_marker_does_not_block_ready_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_root = vault / "00_Intake"
+            bundle_root = intake_root / "bundles"
+            bundle_root.mkdir(parents=True)
+            transcript_path = bundle_root / "raw_transcripts" / "2026-05-04 - Teams - Delivery Review.vtt"
+            transcript_path.parent.mkdir(parents=True, exist_ok=True)
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            identity_path = bundle_root / "_meeting_sync" / "identities" / "evt-staged.json"
+            identity_path.parent.mkdir(parents=True, exist_ok=True)
+            identity_path.write_text(
+                '{"source_type": "meeting_sync_identity"}\n',
+                encoding="utf-8",
+            )
+
+            _write_bundle_metadata_sidecar(
+                intake_root=intake_root,
+                meeting=_meeting(event_id="evt-staged", subject="Delivery Review"),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=bundle_root),
+            )
+
+            metadata_path = bundle_root / "2026-05-04 - Teams - Delivery Review (outlook).json"
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata_payload["processed_marker_path"] = str(identity_path)
+            metadata_path.write_text(json.dumps(metadata_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=_processor_for_vault(vault),
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.ready_count, 1)
+            self.assertEqual(plan.blocked_count, 0)
+            self.assertEqual(plan.items[0].decision, "ready")
+
     def test_execute_processes_ready_bundle_and_renders_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
