@@ -79,6 +79,7 @@ Default config:
 ```yaml
 vault_path: "/PATH/TO/YOUR/VAULT"
 intake_dir: "00_Intake"
+intake_notes_dir: "00_Intake/Intake Notes"
 meetings_dir: "01_Meetings"
 actions_dir: "07_Actions"
 validation_meetings_dir: "99_Test Notes/Meetings"
@@ -314,7 +315,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   participant, attendee, organizer, Outlook event, Teams meeting, transcript,
   and source-file fields when that context is available.
 - Markdown intake files extract action items from `Action:` lines and `- [ ]` checkboxes.
-- Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake`.
+- Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake/Intake Notes`.
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
 - If Codex CLI times out during VTT extraction, the processor writes a heuristic note with an explicit source limitation instead of failing the watcher.
 - Timeout fallback events are also reported as `vtt_extraction_fallback` warnings in `logs/intake-watcher.log` and as `processing_warning:` lines during manual `process` runs.

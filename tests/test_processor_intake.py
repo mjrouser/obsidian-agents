@@ -150,9 +150,17 @@ class MeetingProcessorIntakeTests(unittest.TestCase):
 
             processor = MeetingProcessor(config(vault, dry_run=False, llm_provider="none"))
             first_summary = processor.process_all_unprocessed()
+            source.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAction: Matthew will ship it.\n",
+                encoding="utf-8",
+            )
             second_summary = processor.process_all_unprocessed()
 
             self.assertEqual(first_summary.processed_files, 1)
+            self.assertTrue(
+                (vault / "00_Intake" / "Intake Notes" / "2026-03-12 - Teams - Platform Sync (intake).md").exists()
+            )
+            self.assertFalse((vault / "00_Intake" / "2026-03-12 - Teams - Platform Sync (intake).md").exists())
             self.assertEqual(second_summary.processed_files, 0)
             self.assertEqual(second_summary.skipped_files, 1)
 

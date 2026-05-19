@@ -1,5 +1,6 @@
 vault_path: "/Users/yourname/Documents/MyVault"
 intake_dir: "00_Intake"
+intake_notes_dir: "00_Intake/Intake Notes"
 meetings_dir: "01_Meetings"
 actions_dir: "07_Actions"
 validation_meetings_dir: "99_Test Notes/Meetings"
