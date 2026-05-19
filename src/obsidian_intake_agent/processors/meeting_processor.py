@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from os.path import relpath
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ..config import Config
 from ..output_retention import apply_output_retention
@@ -57,10 +58,26 @@ class ActionNoteUpdate:
     changed: bool
 
 
+@dataclass(slots=True)
+class ManualVttMeetingEnrichment:
+    metadata: MeetingMetadata
+    context: dict[str, object] = field(default_factory=dict)
+    sources_used: list[str] = field(default_factory=list)
+    source_limitations: list[str] = field(default_factory=list)
+    processing_warnings: list[str] = field(default_factory=list)
+
+
 class MeetingProcessor:
-    def __init__(self, config: Config, *, output_mode: OutputMode = "normal") -> None:
+    def __init__(
+        self,
+        config: Config,
+        *,
+        output_mode: OutputMode = "normal",
+        meeting_discovery_client: Any | None = None,
+    ) -> None:
         self.config = config
         self.output_mode = output_mode
+        self.meeting_discovery_client = meeting_discovery_client
         self.vault_path = config.vault_path
         self.intake_path = self.vault_path / config.intake_dir
         self.intake_notes_path = self.vault_path / config.intake_notes_dir
@@ -213,7 +230,24 @@ class MeetingProcessor:
         transcript_hash = self._transcript_hash(transcript_text)
         extracted = extract_vtt_meeting_data(transcript_text=transcript_text, metadata=metadata, config=self.config)
         extracted = normalize_extracted_meeting_data(extracted, metadata)
+        enrichment = self._manual_vtt_meeting_enrichment(metadata)
+        if enrichment.sources_used:
+            extracted["sources_used"] = self._merged_string_list(
+                extracted.get("sources_used", []), enrichment.sources_used
+            )
+        if enrichment.source_limitations:
+            extracted["source_limitations"] = self._merged_string_list(
+                extracted.get("source_limitations", []),
+                enrichment.source_limitations,
+            )
+        if enrichment.context.get("attendance_confidence") and extracted.get("attendance_confidence") == "unknown":
+            extracted["attendance_confidence"] = enrichment.context["attendance_confidence"]
+        metadata = enrichment.metadata
+        extracted["date"] = metadata.date
+        extracted["source"] = metadata.source
+        extracted["title"] = metadata.title
         processing_warnings = self._processing_warnings_from_extracted(source_path, extracted)
+        processing_warnings.extend(enrichment.processing_warnings)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         canonical_note_name = metadata.canonical_basename
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
@@ -222,6 +256,7 @@ class MeetingProcessor:
                 heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
                 intake_file=self._vault_relative_path(archived_source_path),
                 extracted=extracted,
+                context=enrichment.context,
             )
         )
 
@@ -437,3 +472,111 @@ class MeetingProcessor:
             if "heuristic extraction used instead" in text:
                 warnings.append(f"vtt_extraction_fallback source={source_path} reason={text}")
         return warnings
+
+    def _manual_vtt_meeting_enrichment(self, metadata: MeetingMetadata) -> ManualVttMeetingEnrichment:
+        if self.meeting_discovery_client is None:
+            return ManualVttMeetingEnrichment(metadata=metadata)
+
+        try:
+            meeting_date = date.fromisoformat(metadata.date)
+        except ValueError:
+            return ManualVttMeetingEnrichment(
+                metadata=metadata,
+                source_limitations=["Outlook calendar metadata was not available because the VTT date is invalid."],
+                processing_warnings=["manual_vtt_graph_enrichment skipped: invalid meeting date"],
+            )
+
+        window_end = datetime.combine(meeting_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        snapshot = self.meeting_discovery_client.list_recently_ended_meetings(since=meeting_date, now=window_end)
+        if snapshot.warning:
+            return ManualVttMeetingEnrichment(
+                metadata=metadata,
+                source_limitations=[f"Outlook calendar metadata was not available: {snapshot.warning}"],
+                processing_warnings=[f"manual_vtt_graph_enrichment unavailable: {snapshot.warning}"],
+            )
+
+        matches = tuple(
+            meeting for meeting in snapshot.meetings if self._matches_manual_vtt_metadata(meeting, metadata)
+        )
+        if not matches:
+            return ManualVttMeetingEnrichment(
+                metadata=metadata,
+                source_limitations=["No confident Outlook calendar match was found for this manually uploaded VTT."],
+                processing_warnings=["manual_vtt_graph_enrichment no_confident_match"],
+            )
+        if len(matches) > 1:
+            match_ids = ", ".join(meeting.event_id for meeting in matches)
+            return ManualVttMeetingEnrichment(
+                metadata=metadata,
+                source_limitations=[
+                    "Multiple plausible Outlook calendar matches were found for this manually uploaded VTT; "
+                    "calendar metadata was not applied."
+                ],
+                processing_warnings=[f"manual_vtt_graph_enrichment ambiguous_matches event_ids={match_ids}"],
+            )
+        return self._enrichment_from_manual_vtt_match(metadata=metadata, meeting=matches[0])
+
+    def _matches_manual_vtt_metadata(self, meeting: Any, metadata: MeetingMetadata) -> bool:
+        if meeting.is_cancelled:
+            return False
+        if meeting.start_at.date().isoformat() != metadata.date:
+            return False
+        if metadata.source == "Teams" and not meeting.is_teams_meeting():
+            return False
+        return self._normalized_match_title(meeting.subject) == self._normalized_match_title(metadata.title)
+
+    def _enrichment_from_manual_vtt_match(
+        self,
+        *,
+        metadata: MeetingMetadata,
+        meeting: Any,
+    ) -> ManualVttMeetingEnrichment:
+        meeting_date = meeting.start_at.date().isoformat()
+        meeting_title = self._safe_meeting_title(meeting.subject) or metadata.title
+        meeting_source = "Teams" if meeting.is_teams_meeting() else metadata.source
+        enriched_metadata = MeetingMetadata(
+            date=meeting_date,
+            source=meeting_source,
+            title=meeting_title,
+            canonical_basename=f"{meeting_date} - {meeting_source} - {meeting_title}.md",
+            date_from_filename=metadata.date_from_filename,
+        )
+        source_limitations = ["Known from calendar invite; attendance not guaranteed."]
+        context = {
+            "organizer": meeting.organizer,
+            "attendees": [attendee.display_label() for attendee in meeting.attendees],
+            "outlook_event_id": meeting.event_id,
+            "teams_meeting_id": meeting.teams_meeting_id(),
+            "join_url": meeting.detected_join_url(),
+            "start_at": meeting.start_at.isoformat(),
+            "end_at": meeting.end_at.isoformat(),
+            "attendance_confidence": "partial_visibility",
+            "sources_used": ["Teams .vtt transcript", "Outlook calendar metadata"],
+            "source_limitations": source_limitations,
+        }
+        return ManualVttMeetingEnrichment(
+            metadata=enriched_metadata,
+            context=context,
+            sources_used=["Teams .vtt transcript", "Outlook calendar metadata"],
+            source_limitations=source_limitations,
+        )
+
+    def _normalized_match_title(self, value: str) -> str:
+        normalized = normalize_whitespace(value).casefold()
+        return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
+    def _safe_meeting_title(self, value: str) -> str:
+        title = normalize_whitespace(value)
+        return title.replace("/", "-").replace(":", "-").replace("\\", "-") or "Meeting"
+
+    def _merged_string_list(self, existing: object, additions: list[str]) -> list[str]:
+        merged: list[str] = []
+        for item in existing if isinstance(existing, list) else []:
+            text = str(item).strip()
+            if text and text not in merged:
+                merged.append(text)
+        for item in additions:
+            text = str(item).strip()
+            if text and text not in merged:
+                merged.append(text)
+        return merged
