@@ -40,11 +40,26 @@ class ConfigCompatibilityTests(unittest.TestCase):
 
         loaded = Config.load(config_path)
 
+        self.assertEqual(loaded.intake_notes_dir, "00_Intake/Intake Notes")
         self.assertEqual(loaded.web_clips_intake_dir, "00_Intake/Web Clips")
         self.assertEqual(loaded.web_clips_references_dir, "10_References/Web Clips")
         self.assertEqual(loaded.web_clips_capture_host, "127.0.0.1")
         self.assertEqual(loaded.web_clips_capture_port, 8765)
         self.assertEqual(loaded.web_clips_max_weekly_results, 3)
+
+    def test_intake_notes_dir_defaults_under_custom_intake_dir(self) -> None:
+        config_path = _write_config(self, 'intake_dir: "00_Inbox"')
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.intake_notes_dir, "00_Inbox/Intake Notes")
+
+    def test_intake_notes_dir_can_be_overridden(self) -> None:
+        config_path = _write_config(self, 'intake_notes_dir: "00_Intake/Meeting Intake Notes"')
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.intake_notes_dir, "00_Intake/Meeting Intake Notes")
 
     def test_web_clip_settings_can_be_overridden(self) -> None:
         config_path = _write_config(

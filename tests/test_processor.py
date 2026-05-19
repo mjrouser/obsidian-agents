@@ -408,7 +408,7 @@ class MeetingProcessorTests(unittest.TestCase):
 
             meeting_path = vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md"
             actions_path = vault / "07_Actions" / "2026-03-09.md"
-            sidecar_path = intake_dir / "2026-03-12 - Teams - Platform Sync (intake).md"
+            sidecar_path = intake_dir / "Intake Notes" / "2026-03-12 - Teams - Platform Sync (intake).md"
 
             self.assertTrue(meeting_path.exists())
             self.assertTrue(actions_path.exists())
@@ -438,8 +438,8 @@ class MeetingProcessorTests(unittest.TestCase):
             sidecar_text = sidecar_path.read_text(encoding="utf-8")
             self.assertIn("STATUS: PROCESSED — see [[2026-03-12 - Teams - Platform Sync.md]]", sidecar_text)
             self.assertIn(
-                "[../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt]"
-                "(../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt)",
+                "[../../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt]"
+                "(../../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt)",
                 sidecar_text,
             )
 
@@ -471,7 +471,9 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertTrue((vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md").exists())
             self.assertFalse((vault / "01_Meetings" / "2026-03-12 - Unknown - Platform Sync Copy.md").exists())
             self.assertTrue(duplicate.exists())
-            sidecar_text = (intake_dir / "2026-03-12 - Teams - Platform Sync (intake).md").read_text(encoding="utf-8")
+            sidecar_text = (intake_dir / "Intake Notes" / "2026-03-12 - Teams - Platform Sync (intake).md").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("- Transcript SHA256:", sidecar_text)
 
     def test_process_vtt_file_validation_mode_writes_meeting_note_under_test_lane(self) -> None:

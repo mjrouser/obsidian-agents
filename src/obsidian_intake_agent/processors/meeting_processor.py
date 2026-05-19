@@ -63,11 +63,16 @@ class MeetingProcessor:
         self.output_mode = output_mode
         self.vault_path = config.vault_path
         self.intake_path = self.vault_path / config.intake_dir
+        self.intake_notes_path = self.vault_path / config.intake_notes_dir
         self.meetings_path = self._resolve_meetings_path()
         self.actions_path = self._resolve_actions_path()
         self.archive_path = self.vault_path / config.archive_intake_dir
         self.action_owner_aliases = config.action_owner_aliases or {}
-        self.intake_state = IntakeState(intake_path=self.intake_path, archive_path=self.archive_path)
+        self.intake_state = IntakeState(
+            intake_path=self.intake_path,
+            archive_path=self.archive_path,
+            intake_notes_path=self.intake_notes_path,
+        )
 
     def _resolve_meetings_path(self) -> Path:
         if self.output_mode == "validation":
@@ -226,7 +231,7 @@ class MeetingProcessor:
             canonical_basename=canonical_note_name,
         )
 
-        sidecar_path = self.intake_path / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
+        sidecar_path = self.intake_state.vtt_sidecar_path(source_path)
         raw_relative_path = relpath(archived_source_path, sidecar_path.parent)
         sidecar_note = render_vtt_intake_sidecar(
             raw_relative_path=raw_relative_path,
@@ -417,7 +422,7 @@ class MeetingProcessor:
     def _vtt_hash_has_processed_sidecar(self, path: Path) -> bool:
         transcript_hash = self._transcript_hash(self._read_source(path))
         needle = f"- Transcript SHA256: {transcript_hash}"
-        for sidecar_path in self.intake_path.glob("* (intake).md"):
+        for sidecar_path in self.intake_notes_path.rglob("* (intake).md"):
             if sidecar_path.exists() and needle in sidecar_path.read_text(encoding="utf-8"):
                 return True
         return False

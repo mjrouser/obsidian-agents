@@ -22,6 +22,7 @@ class Config:
     archive_intake_dir: str
     templates_dir: str
     owner_filter: str
+    intake_notes_dir: str = "00_Intake/Intake Notes"
     validation_meetings_dir: str = "99_Test Notes/Meetings"
     validation_actions_dir: str = "99_Test Notes/Actions"
     dry_run: bool = True
@@ -60,9 +61,11 @@ class Config:
     def load(cls, path: Path) -> Config:
         data = _load_config_data(path)
         vault_path = Path(_required_string(data, "vault_path")).expanduser()
+        intake_dir = _required_string(data, "intake_dir")
         return cls(
             vault_path=vault_path,
-            intake_dir=_required_string(data, "intake_dir"),
+            intake_dir=intake_dir,
+            intake_notes_dir=str(data.get("intake_notes_dir", f"{intake_dir}/Intake Notes")),
             meetings_dir=_required_string(data, "meetings_dir"),
             actions_dir=_required_string(data, "actions_dir"),
             validation_meetings_dir=str(data.get("validation_meetings_dir", "99_Test Notes/Meetings")),

@@ -21,6 +21,7 @@ STATUS_PROCESSED_PREFIX = "STATUS: PROCESSED"
 class IntakeState:
     intake_path: Path
     archive_path: Path
+    intake_notes_path: Path | None = None
 
     def should_process(self, path: Path) -> bool:
         return self.skip_reason(path) is None
@@ -65,7 +66,8 @@ class IntakeState:
 
     def vtt_sidecar_path(self, path: Path) -> Path:
         metadata = normalize_meeting_metadata(path)
-        return self.intake_path / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
+        sidecar_root = self.intake_notes_path or self.intake_path
+        return sidecar_root / f"{metadata.date} - {metadata.source} - {metadata.title} (intake).md"
 
     def vtt_has_processed_sidecar(self, path: Path) -> bool:
         return self.is_processed(self.vtt_sidecar_path(path))
