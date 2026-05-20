@@ -395,7 +395,9 @@ def _plan_bundle_processing_item(
     reasons: list[str] = []
     preferred_input = metadata.processor_handoff.preferred_input_path
 
-    if metadata.processed_marker_path is not None and metadata.processed_marker_path.exists():
+    if metadata.processed_marker_path is not None and _marker_indicates_bundle_processed(
+        metadata.processed_marker_path
+    ):
         reasons.append("Durable processed marker indicates this bundle was already processed successfully.")
         return BundleProcessingPlanItem(decision="blocked", metadata=metadata, reasons=tuple(reasons))
 
@@ -428,6 +430,18 @@ def _plan_bundle_processing_item(
 
     reasons.append("Bundle has a processor-ready local artifact and can be handed to the existing intake processor.")
     return BundleProcessingPlanItem(decision="ready", metadata=metadata, reasons=tuple(reasons))
+
+
+def _marker_indicates_bundle_processed(marker_path: Path) -> bool:
+    if not marker_path.exists():
+        return False
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    return payload.get("source_type") == "meeting_bundle_processed"
 
 
 def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:

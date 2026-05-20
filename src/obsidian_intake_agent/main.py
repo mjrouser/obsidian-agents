@@ -365,6 +365,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.web_clips_command == "serve":
             token = _resolve_web_clipper_token(parser, args)
             intake_dir = config.vault_path / config.web_clips_intake_dir
+
+            def process_capture(raw_path: Path):
+                return WebClipProcessor(config).process_file(raw_path, dry_run=False)
+
+            def on_processed(result: object) -> None:
+                if getattr(result, "written_reference_notes", 0) > 0 or getattr(result, "archived_raw_captures", 0) > 0:
+                    _maybe_auto_commit(config, vault_source_name="web clips")
+
             print(f"web_clips_server_url: http://{config.web_clips_capture_host}:{config.web_clips_capture_port}")
             print(f"web_clips_intake_dir: {intake_dir}")
             run_capture_server(
@@ -373,6 +381,8 @@ def main(argv: list[str] | None = None) -> int:
                 intake_dir=intake_dir,
                 token=token,
                 vault_path=config.vault_path,
+                process_capture=process_capture,
+                on_processed=on_processed,
             )
             return 0
         if args.web_clips_command == "process":

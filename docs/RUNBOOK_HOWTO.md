@@ -25,6 +25,7 @@ To start manually:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.meeting-sync.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist
 ```
@@ -43,6 +44,7 @@ To stop everything:
 
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.meeting-sync.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist
 ```
@@ -55,10 +57,12 @@ Use this whenever you update code, config, or prompts.
 
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist 2>/dev/null || true
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.meeting-sync.plist 2>/dev/null || true
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist 2>/dev/null || true
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist 2>/dev/null || true
 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.meeting-sync.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist
 ```
@@ -102,6 +106,21 @@ tail -n 50 logs/intake-watcher.log
 ```bash
 tail -n 50 logs/weekly-briefing.stderr.log
 tail -n 50 logs/weekly-wrap.stderr.log
+```
+
+### Check Meeting Sync
+
+```bash
+tail -n 50 logs/meeting-sync.stdout.log
+tail -n 50 logs/meeting-sync.stderr.log
+```
+
+Meeting sync runs Monday-Friday at `:05` and `:35` from `08:35` through `18:05`.
+It uses a rolling seven-day window. If Graph auth expires, run:
+
+```bash
+./.venv/bin/obsidian-agent graph status
+./.venv/bin/obsidian-agent graph login
 ```
 
 If `config.yaml` is missing or broken, check `logs/automation-failures/` too.

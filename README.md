@@ -429,9 +429,10 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 The simplest local v1 setup on macOS is:
 
 1. Run the watcher continuously with `scripts/run_intake_watcher.sh`.
-2. Schedule Monday and Friday jobs with `launchd`.
-3. Keep the web clipper capture server available with `launchd`.
-4. Inspect `logs/*.log` when a run needs debugging.
+2. Poll meeting transcripts during the workweek with `scripts/run_meeting_sync.sh`.
+3. Schedule Monday and Friday jobs with `launchd`.
+4. Keep the web clipper capture server available with `launchd`.
+5. Inspect `logs/*.log` when a run needs debugging.
 
 Render launchd plist files:
 
@@ -443,12 +444,14 @@ That writes plist files into [`ops/launchd/rendered`](/Users/matthew.rouser/repo
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist 2>/dev/null || true
+launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.meeting-sync.plist 2>/dev/null || true
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist 2>/dev/null || true
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist 2>/dev/null || true
 launchctl unload ~/Library/LaunchAgents/com.obsidian.agent.web-clipper.plist 2>/dev/null || true
 
 cp ops/launchd/rendered/*.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.intake-watcher.plist
+launchctl load ~/Library/LaunchAgents/com.obsidian.agent.meeting-sync.plist
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.weekly-briefing.plist
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.weekly-wrap.plist
 launchctl load ~/Library/LaunchAgents/com.obsidian.agent.web-clipper.plist
@@ -465,7 +468,13 @@ Default schedule:
 - Monday `09:00`: weekly briefing
 - Friday `12:15`: weekly wrap
 - Watcher: starts at login and stays alive
+- Meeting sync: Monday-Friday at `:05` and `:35`, from `08:35` through `18:05`
 - Web clipper: starts at login and stays alive
+
+Meeting sync uses a rolling seven-day window and processes only ready bundles.
+Calendar-only and permission-blocked bundles remain staged/blocked until a real
+transcript or fallback artifact is available. If a previous meeting-sync run is
+still active, the next tick logs a skip and exits successfully.
 
 When a launchd wrapper exits with a real failure, it writes an Obsidian note to
 `vault_path/_System/Agent Errors` by default. The timestamped note preserves the

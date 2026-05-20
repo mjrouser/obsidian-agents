@@ -19,6 +19,16 @@ class WebClipProcessingSummary:
     archived_raw_captures: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class WebClipFileProcessingResult:
+    raw_capture_path: Path
+    processed: bool = False
+    reference_note_path: Path | None = None
+    archived_raw_capture_path: Path | None = None
+    written_reference_notes: int = 0
+    archived_raw_captures: int = 0
+
+
 class WebClipProcessor:
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -37,55 +47,84 @@ class WebClipProcessor:
         written_reference_notes = 0
         archived_raw_captures = 0
         for raw_path in sorted(self.intake_path.glob("*.md")):
-            if raw_path.is_symlink():
+            result = self.process_file(raw_path, dry_run=effective_dry_run)
+            if not result.processed:
                 continue
-            try:
-                raw_path = validate_vault_path(self.vault_path, raw_path, label="web clip intake note")
-            except ValueError:
-                continue
-            raw_text = raw_path.read_text(encoding="utf-8")
-            parsed = _parse_raw_note(raw_text)
-            if parsed is None:
-                continue
-
-            base_reference_path = validate_vault_path(
-                self.vault_path, self.references_path / raw_path.name, label="web clip reference note"
-            )
-            base_archive_path = validate_vault_path(
-                self.vault_path, self.archive_path / raw_path.name, label="web clip archive note"
-            )
             processed_files += 1
-
-            recoverable_archive_path = _recoverable_archive_path_for_existing_reference(
-                vault_path=self.vault_path,
-                references_path=self.references_path,
-                archive_path=self.archive_path,
-                raw_name=raw_path.name,
-            )
-            if not effective_dry_run and recoverable_archive_path is not None:
-                recoverable_archive_path.parent.mkdir(parents=True, exist_ok=True)
-                raw_path.replace(recoverable_archive_path)
-                archived_raw_captures += 1
-                continue
-
-            reference_path = _unique_path(base_reference_path)
-            archive_path = _unique_path(base_archive_path)
-            if effective_dry_run:
-                print(f"DRY RUN: would write web clip reference note: {reference_path}")
-                print(f"DRY RUN: would archive web clip intake note: {archive_path}")
-                continue
-
-            processed = _build_processed_clip(parsed, vault_relative_path(self.vault_path, archive_path))
-            safe_write_text(reference_path, render_processed_web_clip_note(processed))
-            archive_path.parent.mkdir(parents=True, exist_ok=True)
-            raw_path.replace(archive_path)
-            written_reference_notes += 1
-            archived_raw_captures += 1
+            written_reference_notes += result.written_reference_notes
+            archived_raw_captures += result.archived_raw_captures
 
         return WebClipProcessingSummary(
             processed_files=processed_files,
             written_reference_notes=written_reference_notes,
             archived_raw_captures=archived_raw_captures,
+        )
+
+    def process_file(self, raw_path: Path, dry_run: bool | None = None) -> WebClipFileProcessingResult:
+        effective_dry_run = self.config.dry_run if dry_run is None else dry_run
+        self.intake_path = validate_vault_path(self.vault_path, self.intake_path, label="web clip intake directory")
+        raw_capture_path = raw_path
+
+        if raw_path.parent.resolve() != self.intake_path:
+            raise ValueError("web clip intake note must be under the configured web clip intake directory.")
+
+        if not raw_path.exists() or raw_path.is_symlink():
+            return WebClipFileProcessingResult(raw_capture_path=raw_capture_path)
+
+        raw_path = validate_vault_path(self.vault_path, raw_path, label="web clip intake note")
+        raw_text = raw_path.read_text(encoding="utf-8")
+        parsed = _parse_raw_note(raw_text)
+        if parsed is None:
+            return WebClipFileProcessingResult(raw_capture_path=raw_capture_path)
+
+        base_reference_path = validate_vault_path(
+            self.vault_path, self.references_path / raw_path.name, label="web clip reference note"
+        )
+        base_archive_path = validate_vault_path(
+            self.vault_path, self.archive_path / raw_path.name, label="web clip archive note"
+        )
+
+        recoverable_existing_reference = _recoverable_existing_reference(
+            vault_path=self.vault_path,
+            references_path=self.references_path,
+            archive_path=self.archive_path,
+            raw_name=raw_path.name,
+        )
+        if not effective_dry_run and recoverable_existing_reference is not None:
+            reference_path, recoverable_archive_path = recoverable_existing_reference
+            recoverable_archive_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.replace(recoverable_archive_path)
+            return WebClipFileProcessingResult(
+                raw_capture_path=raw_capture_path,
+                processed=True,
+                reference_note_path=reference_path,
+                archived_raw_capture_path=recoverable_archive_path,
+                archived_raw_captures=1,
+            )
+
+        reference_path = _unique_path(base_reference_path)
+        archive_path = _unique_path(base_archive_path)
+        if effective_dry_run:
+            print(f"DRY RUN: would write web clip reference note: {reference_path}")
+            print(f"DRY RUN: would archive web clip intake note: {archive_path}")
+            return WebClipFileProcessingResult(
+                raw_capture_path=raw_capture_path,
+                processed=True,
+                reference_note_path=reference_path,
+                archived_raw_capture_path=archive_path,
+            )
+
+        processed = _build_processed_clip(parsed, vault_relative_path(self.vault_path, archive_path))
+        safe_write_text(reference_path, render_processed_web_clip_note(processed))
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.replace(archive_path)
+        return WebClipFileProcessingResult(
+            raw_capture_path=raw_capture_path,
+            processed=True,
+            reference_note_path=reference_path,
+            archived_raw_capture_path=archive_path,
+            written_reference_notes=1,
+            archived_raw_captures=1,
         )
 
 
@@ -233,13 +272,13 @@ def _unique_path(path: Path) -> Path:
         counter += 1
 
 
-def _recoverable_archive_path_for_existing_reference(
+def _recoverable_existing_reference(
     *,
     vault_path: Path,
     references_path: Path,
     archive_path: Path,
     raw_name: str,
-) -> Path | None:
+) -> tuple[Path, Path] | None:
     reference_name_pattern = _unique_name_pattern(raw_name)
     archive_root = validate_vault_path(vault_path, archive_path, label="web clip archive directory")
     for reference_path in sorted(references_path.glob("*.md")):
@@ -261,7 +300,7 @@ def _recoverable_archive_path_for_existing_reference(
                 and archive_target.name == reference_path.name
                 and not archive_target.exists()
             ):
-                return archive_target
+                return reference_path, archive_target
     return None
 
 

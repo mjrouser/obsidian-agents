@@ -4,6 +4,29 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+MEETING_SYNC_TIMES = (
+    (8, 35),
+    (9, 5),
+    (9, 35),
+    (10, 5),
+    (10, 35),
+    (11, 5),
+    (11, 35),
+    (12, 5),
+    (12, 35),
+    (13, 5),
+    (13, 35),
+    (14, 5),
+    (14, 35),
+    (15, 5),
+    (15, 35),
+    (16, 5),
+    (16, 35),
+    (17, 5),
+    (17, 35),
+    (18, 5),
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Render launchd plist files for the local automation jobs.")
@@ -28,6 +51,20 @@ def main() -> int:
     return 0
 
 
+def meeting_sync_start_calendar_interval() -> str:
+    entries: list[str] = []
+    for weekday in range(1, 6):
+        for hour, minute in MEETING_SYNC_TIMES:
+            entries.append(
+                "<dict>"
+                f"<key>Weekday</key><integer>{weekday}</integer>"
+                f"<key>Hour</key><integer>{hour}</integer>"
+                f"<key>Minute</key><integer>{minute}</integer>"
+                "</dict>"
+            )
+    return "<array>" + "".join(entries) + "</array>"
+
+
 def build_jobs(*, label_prefix: str, scripts_dir: Path) -> list[tuple[str, Path, dict[str, str]]]:
     return [
         (
@@ -36,6 +73,13 @@ def build_jobs(*, label_prefix: str, scripts_dir: Path) -> list[tuple[str, Path,
             {
                 "RunAtLoad": "<true/>",
                 "KeepAlive": "<true/>",
+            },
+        ),
+        (
+            f"{label_prefix}.meeting-sync",
+            scripts_dir / "run_meeting_sync.sh",
+            {
+                "StartCalendarInterval": meeting_sync_start_calendar_interval(),
             },
         ),
         (
