@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from obsidian_intake_agent.meetings import (
     BundleWriteResult,
@@ -97,6 +97,52 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(captured["prefer"], 'outlook.timezone="UTC"')
         self.assertEqual(captured["timeout"], meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
 
+    def test_fetch_graph_json_wraps_timeout_error(self) -> None:
+        def _fake_urlopen(request, *, timeout=None):
+            del request, timeout
+            raise TimeoutError("The read operation timed out")
+
+        with (
+            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError) as exc,
+        ):
+            meeting_sync_module._fetch_graph_json(
+                "https://graph.microsoft.com/v1.0/me/calendarView",
+                "token",
+            )
+
+        self.assertEqual(exc.exception.operation, "Microsoft Graph JSON request")
+        self.assertEqual(exc.exception.timeout_seconds, meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
+        self.assertIn("Microsoft Graph did not respond within 30 seconds", str(exc.exception))
+
+    def test_fetch_graph_json_wraps_urlerror_timeout_reason(self) -> None:
+        def _fake_urlopen(request, *, timeout=None):
+            del request, timeout
+            raise URLError(TimeoutError("timed out"))
+
+        with (
+            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError),
+        ):
+            meeting_sync_module._fetch_graph_json(
+                "https://graph.microsoft.com/v1.0/me/calendarView",
+                "token",
+            )
+
+    def test_fetch_graph_json_preserves_non_timeout_urlerror(self) -> None:
+        def _fake_urlopen(request, *, timeout=None):
+            del request, timeout
+            raise URLError("temporary DNS failure")
+
+        with (
+            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            self.assertRaises(URLError),
+        ):
+            meeting_sync_module._fetch_graph_json(
+                "https://graph.microsoft.com/v1.0/me/calendarView",
+                "token",
+            )
+
     def test_fetch_graph_bytes_uses_timeout(self) -> None:
         captured: dict[str, object] = {}
 
@@ -124,6 +170,23 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(content, b"WEBVTT\n")
         self.assertEqual(captured["accept"], "text/vtt")
         self.assertEqual(captured["timeout"], meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
+
+    def test_fetch_graph_bytes_wraps_timeout_error(self) -> None:
+        def _fake_urlopen(request, *, timeout=None):
+            del request, timeout
+            raise TimeoutError("The read operation timed out")
+
+        with (
+            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError) as exc,
+        ):
+            meeting_sync_module._fetch_graph_bytes(
+                "https://graph.microsoft.com/v1.0/me/onlineMeetings/transcripts/content",
+                "token",
+            )
+
+        self.assertEqual(exc.exception.operation, "Microsoft Graph content request")
+        self.assertEqual(exc.exception.timeout_seconds, meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS)
 
     def test_skips_canceled_declined_all_day_and_focus_without_meeting_content(self) -> None:
         now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
@@ -1128,6 +1191,22 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 ),
             ),
         )
+
+    def test_graph_calendar_discovery_propagates_graph_timeout_for_cli_handling(self) -> None:
+        def _fake_fetch_json(url: str, token: str) -> dict[str, object]:
+            del url, token
+            raise meeting_sync_module.MeetingSyncGraphTimeoutError(
+                operation="Microsoft Graph JSON request",
+                timeout_seconds=meeting_sync_module.GRAPH_REQUEST_TIMEOUT_SECONDS,
+            )
+
+        client = GraphOutlookMeetingDiscoveryClient(access_token="token", fetch_json=_fake_fetch_json)
+
+        with self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError):
+            client.list_recently_ended_meetings(
+                since=date(2026, 5, 1),
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
 
     def test_graph_client_uses_event_body_for_teams_join_url_when_online_meeting_is_missing(self) -> None:
         requested_urls: list[str] = []
