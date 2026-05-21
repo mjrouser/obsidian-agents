@@ -9,7 +9,7 @@ import socket
 from base64 import urlsafe_b64decode
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
@@ -27,6 +27,10 @@ ARTIFACT_SOURCE_PRIORITY = (
     "Manual / semi-manual intake",
 )
 GRAPH_REQUEST_TIMEOUT_SECONDS = 30
+PENDING_MARKER_SOURCE_TYPE = "meeting_sync_pending"
+LEGACY_PENDING_MARKER_SOURCE_TYPE = "meeting_sync_identity"
+PROCESSED_MARKER_SOURCE_TYPE = "meeting_bundle_processed"
+PENDING_ARTIFACT_RETRY_HOURS = 24
 
 
 class MeetingSyncGraphTimeoutError(RuntimeError):
@@ -284,6 +288,8 @@ class MeetingArtifactDiscoveryClient(Protocol):
 
 
 class NoopMeetingArtifactDiscoveryClient:
+    uses_network = False
+
     def discover_artifacts(
         self,
         *,
@@ -296,6 +302,14 @@ class NoopMeetingArtifactDiscoveryClient:
 class ChainedMeetingArtifactDiscoveryClient:
     def __init__(self, *clients: MeetingArtifactDiscoveryClient) -> None:
         self._clients = clients
+
+    def without_network(self) -> MeetingArtifactDiscoveryClient:
+        local_clients = tuple(client for client in self._clients if not _artifact_client_uses_network(client))
+        if not local_clients:
+            return NoopMeetingArtifactDiscoveryClient()
+        if len(local_clients) == 1:
+            return local_clients[0]
+        return ChainedMeetingArtifactDiscoveryClient(*local_clients)
 
     def discover_artifacts(
         self,
@@ -315,6 +329,8 @@ class ChainedMeetingArtifactDiscoveryClient:
 
 
 class LocalIntakeTranscriptDiscoveryClient:
+    uses_network = False
+
     def __init__(self, *, intake_root: Path) -> None:
         self._intake_root = intake_root
 
@@ -484,6 +500,8 @@ class GraphOutlookMeetingDiscoveryClient:
 
 
 class GraphTranscriptDiscoveryClient:
+    uses_network = True
+
     def __init__(
         self,
         *,
@@ -586,6 +604,8 @@ class GraphTranscriptDiscoveryClient:
 
 
 class GraphTranscriptDownloadClient:
+    uses_network = True
+
     def __init__(
         self,
         *,
@@ -818,6 +838,8 @@ class GraphTranscriptDownloadClient:
 
 
 class GraphMeetingFallbackSummaryClient:
+    uses_network = True
+
     def __init__(
         self,
         *,
@@ -1128,9 +1150,17 @@ def build_transcript_sync_plan(
         if _should_prefilter_artifact_discovery(meeting, now=generated_at, intake_root=intake_root):
             items.append(_plan_item(meeting, now=generated_at, intake_root=intake_root))
             continue
+        artifact_client = effective_artifact_discovery_client
+        marker_path = _meeting_identity_path(meeting, intake_root=intake_root)
+        if (
+            marker_path is not None
+            and marker_path.exists()
+            and _pending_retry_expired(meeting, marker_path=marker_path, now=generated_at)
+        ):
+            artifact_client = _artifact_client_without_network(effective_artifact_discovery_client)
         items.append(
             _plan_item(
-                _discover_meeting_artifacts(meeting, artifact_discovery_client=effective_artifact_discovery_client),
+                _discover_meeting_artifacts(meeting, artifact_discovery_client=artifact_client),
                 now=generated_at,
                 intake_root=intake_root,
             )
@@ -1224,17 +1254,18 @@ def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
         note = item.intake_bundle_note
         note.path.parent.mkdir(parents=True, exist_ok=True)
         note.identity_path.parent.mkdir(parents=True, exist_ok=True)
-        if note.path.exists():
+        should_refresh_pending = note.identity_path.exists() and _identity_marker_indicates_pending(note.identity_path)
+        if note.path.exists() and not should_refresh_pending:
             skipped_existing_bundle_note_paths.append(note.path)
         else:
             note.path.write_text(note.content + "\n", encoding="utf-8")
             written_bundle_note_paths.append(note.path)
-        if note.metadata_path.exists():
+        if note.metadata_path.exists() and not should_refresh_pending:
             skipped_existing_metadata_paths.append(note.metadata_path)
         else:
             note.metadata_path.write_text(note.metadata_content + "\n", encoding="utf-8")
             written_metadata_paths.append(note.metadata_path)
-        if note.identity_path.exists():
+        if note.identity_path.exists() and _identity_marker_indicates_processed(note.identity_path):
             skipped_existing_identity_paths.append(note.identity_path)
         else:
             note.identity_path.write_text(note.identity_content + "\n", encoding="utf-8")
@@ -1307,6 +1338,21 @@ def _should_replace_artifact(*, existing: MeetingArtifact, candidate: MeetingArt
     return False
 
 
+def _artifact_client_uses_network(client: MeetingArtifactDiscoveryClient) -> bool:
+    return bool(getattr(client, "uses_network", True))
+
+
+def _artifact_client_without_network(client: MeetingArtifactDiscoveryClient) -> MeetingArtifactDiscoveryClient:
+    without_network = getattr(client, "without_network", None)
+    if callable(without_network):
+        local_client = without_network()
+        if not _artifact_client_uses_network(local_client):
+            return local_client
+    if _artifact_client_uses_network(client):
+        return NoopMeetingArtifactDiscoveryClient()
+    return client
+
+
 def _discover_meeting_artifacts(
     meeting: OutlookMeetingCandidate,
     *,
@@ -1341,7 +1387,7 @@ def _should_prefilter_artifact_discovery(
         return True
     if not meeting.is_teams_meeting():
         return True
-    if _meeting_identity_exists(meeting, intake_root=intake_root):
+    if _meeting_has_processed_identity(meeting, intake_root=intake_root):
         return True
     return False
 
@@ -1354,7 +1400,12 @@ def _plan_item(
 ) -> TranscriptSyncPlanItem:
     bundle = _build_source_bundle(meeting)
     reasons: list[str] = []
-    intake_bundle_note = _build_intake_bundle_note(meeting, bundle, intake_root=intake_root)
+    intake_bundle_note = _build_intake_bundle_note(
+        meeting,
+        bundle,
+        intake_root=intake_root,
+        generated_at=now,
+    )
 
     if meeting.end_at > now:
         reasons.append("Meeting has not ended yet.")
@@ -1385,8 +1436,13 @@ def _plan_item(
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
     if intake_bundle_note is not None and intake_bundle_note.identity_path.exists():
-        reasons.append("Skipped meeting because a meeting identity marker already exists.")
-        return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
+        if _identity_marker_indicates_processed(intake_bundle_note.identity_path):
+            reasons.append("Skipped meeting because it was already processed.")
+            return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
+        if _pending_retry_expired(meeting, marker_path=intake_bundle_note.identity_path, now=now):
+            reasons.append("Artifact retry window expired after 24 hours; network artifact discovery was skipped.")
+        else:
+            reasons.append("Retrying pending meeting artifact discovery.")
 
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
@@ -1430,6 +1486,7 @@ def _build_intake_bundle_note(
     bundle: MeetingSourceBundle,
     *,
     intake_root: Path | None,
+    generated_at: datetime,
 ) -> PlannedIntakeBundleNote | None:
     if intake_root is None:
         return None
@@ -1460,6 +1517,7 @@ def _build_intake_bundle_note(
         bundle=bundle,
         bundle_note_path=path,
         metadata_path=metadata_path,
+        generated_at=generated_at,
     )
     return PlannedIntakeBundleNote(
         path=path,
@@ -1608,10 +1666,77 @@ def _meeting_identity_relative_path(meeting: OutlookMeetingCandidate) -> Path:
     return BUNDLE_IDENTITIES_DIR / f"{meeting.start_at.date().isoformat()}-{digest}.json"
 
 
-def _meeting_identity_exists(meeting: OutlookMeetingCandidate, *, intake_root: Path | None) -> bool:
+def _meeting_identity_path(meeting: OutlookMeetingCandidate, *, intake_root: Path | None) -> Path | None:
     if intake_root is None:
+        return None
+    return intake_root / _meeting_identity_relative_path(meeting)
+
+
+def _meeting_has_processed_identity(meeting: OutlookMeetingCandidate, *, intake_root: Path | None) -> bool:
+    identity_path = _meeting_identity_path(meeting, intake_root=intake_root)
+    if identity_path is None or not identity_path.exists():
         return False
-    return (intake_root / _meeting_identity_relative_path(meeting)).exists()
+    return _identity_marker_indicates_processed(identity_path)
+
+
+def _read_identity_marker(identity_path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _identity_marker_source_type(identity_path: Path) -> str | None:
+    source_type = _read_identity_marker(identity_path).get("source_type")
+    if not isinstance(source_type, str):
+        return None
+    return source_type
+
+
+def _identity_marker_indicates_processed(identity_path: Path) -> bool:
+    return _identity_marker_source_type(identity_path) == PROCESSED_MARKER_SOURCE_TYPE
+
+
+def _identity_marker_indicates_pending(identity_path: Path) -> bool:
+    source_type = _identity_marker_source_type(identity_path)
+    if source_type in {None, PENDING_MARKER_SOURCE_TYPE, LEGACY_PENDING_MARKER_SOURCE_TYPE}:
+        return True
+    return source_type != PROCESSED_MARKER_SOURCE_TYPE
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _format_datetime(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
+def _pending_retry_until(meeting: OutlookMeetingCandidate, marker_path: Path) -> datetime:
+    payload = _read_identity_marker(marker_path)
+    explicit_retry_until = _parse_datetime(payload.get("retry_until"))
+    if explicit_retry_until is not None:
+        return explicit_retry_until
+    return meeting.end_at + timedelta(hours=PENDING_ARTIFACT_RETRY_HOURS)
+
+
+def _pending_retry_expired(
+    meeting: OutlookMeetingCandidate,
+    *,
+    marker_path: Path,
+    now: datetime,
+) -> bool:
+    return now > _pending_retry_until(meeting, marker_path)
 
 
 def _meeting_identity_key(meeting: OutlookMeetingCandidate) -> str:
@@ -1768,9 +1893,11 @@ def render_meeting_identity_sidecar(
     bundle: MeetingSourceBundle,
     bundle_note_path: Path,
     metadata_path: Path,
+    generated_at: datetime | None = None,
 ) -> str:
+    checked_at = generated_at or datetime.now(tz=meeting.end_at.tzinfo or UTC)
     payload = {
-        "source_type": "meeting_sync_identity",
+        "source_type": PENDING_MARKER_SOURCE_TYPE,
         "identity_key": _meeting_identity_key(meeting),
         "outlook_event_id": meeting.event_id,
         "teams_meeting_id": bundle.teams_meeting_id,
@@ -1778,6 +1905,18 @@ def render_meeting_identity_sidecar(
         "outlook_metadata_path": str(metadata_path),
         "meeting_date": meeting.start_at.date().isoformat(),
         "subject": meeting.subject,
+        "first_seen_at": _format_datetime(meeting.end_at),
+        "last_checked_at": _format_datetime(checked_at),
+        "retry_until": _format_datetime(meeting.end_at + timedelta(hours=PENDING_ARTIFACT_RETRY_HOURS)),
+        "artifact_statuses": [
+            {
+                "source_name": artifact.source_name,
+                "status": artifact.status,
+                "detail": artifact.detail,
+                "matched_paths": [str(path) for path in artifact.matched_paths],
+            }
+            for artifact in bundle.artifacts
+        ],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 

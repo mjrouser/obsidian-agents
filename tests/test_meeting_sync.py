@@ -2082,18 +2082,119 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             metadata_path=bundle_note.metadata_path,
         )
 
-        self.assertIn('"source_type": "meeting_sync_identity"', rendered)
+        self.assertIn('"source_type": "meeting_sync_pending"', rendered)
         self.assertIn('"outlook_event_id": "evt-9"', rendered)
         self.assertIn('"teams_meeting_id": "19:meeting_delivery@thread.v2"', rendered)
+        self.assertIn('"first_seen_at": "2026-05-04T13:30:00+00:00"', rendered)
+        self.assertIn('"last_checked_at":', rendered)
+        self.assertIn('"retry_until": "2026-05-05T13:30:00+00:00"', rendered)
+        self.assertIn('"artifact_statuses": [', rendered)
         self.assertIn(
             '"bundle_note_path": "/tmp/vault/00_Intake/bundles/2026-05-04 - Teams - Delivery Review (bundle).md"',
             rendered,
         )
 
-    def test_write_planned_bundle_notes_writes_processable_notes_once(self) -> None:
+    def test_write_planned_bundle_notes_refreshes_pending_bundle_sidecars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+            meeting = _meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                response_status="accepted",
+                join_url=(
+                    "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                ),
+                online_meeting_provider="teamsForBusiness",
+            )
+            first_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=now,
+            )
+
+            first_result = write_planned_bundle_notes(first_plan)
+            self.assertEqual(first_result.written_count, 1)
+
+            transcript_path = intake_root / "bundles" / "raw_transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            second_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_RecordingArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            source_name="Teams .vtt transcript",
+                            status="available",
+                            detail=f"Matched local intake artifact(s): {transcript_path}",
+                            matched_paths=(transcript_path,),
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=now,
+            )
+            second_result = write_planned_bundle_notes(second_plan)
+
+            self.assertEqual(second_result.written_count, 1)
+            metadata_path = intake_root / "bundles" / "2026-05-04 - Teams - Platform Sync (outlook).json"
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata_payload["processor_handoff"]["preferred_input_path"], str(transcript_path))
+            identity_path = second_plan.items[0].intake_bundle_note.identity_path
+            self.assertTrue(identity_path.exists())
+
+    def test_pending_identity_marker_retries_artifact_discovery_inside_retry_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+            planning_probe = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            response_status="accepted",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=now,
+            )
+            existing_identity = planning_probe.items[0].intake_bundle_note.identity_path
+            existing_identity.parent.mkdir(parents=True)
+            existing_identity.write_text(
+                json.dumps(
+                    {
+                        "source_type": "meeting_sync_pending",
+                        "first_seen_at": "2026-05-04T13:35:00+00:00",
+                        "last_checked_at": "2026-05-04T13:35:00+00:00",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            transcript_path = intake_root / "bundles" / "raw_transcripts" / "transcript.vtt"
+            discovery_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        source_name="Teams .vtt transcript",
+                        status="available",
+                        detail="Matched local intake artifact(s): transcript.vtt",
+                        matched_paths=(transcript_path,),
+                    ),
+                )
+            )
+
             plan = build_transcript_sync_plan(
                 client=_StubMeetingDiscoveryClient(
                     meetings=(
@@ -2107,31 +2208,20 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                             ),
                             online_meeting_provider="teamsForBusiness",
                         ),
-                        _meeting(event_id="evt-2", subject="Cancelled", is_cancelled=True),
                     )
                 ),
+                artifact_discovery_client=discovery_client,
                 since=date(2026, 5, 1),
                 intake_root=intake_root,
                 now=now,
             )
 
-            first_result = write_planned_bundle_notes(plan)
-            second_result = write_planned_bundle_notes(plan)
+            self.assertEqual(discovery_client.calls, 1)
+            self.assertEqual(plan.process_count, 1)
+            self.assertEqual(plan.items[0].decision, "process")
+            self.assertIn("Retrying pending meeting artifact discovery.", plan.items[0].reasons)
 
-            self.assertEqual(first_result.written_count, 1)
-            self.assertEqual(first_result.skipped_existing_count, 0)
-            self.assertTrue((intake_root / "bundles" / "2026-05-04 - Teams - Platform Sync (bundle).md").exists())
-            self.assertTrue((intake_root / "bundles" / "2026-05-04 - Teams - Platform Sync (outlook).json").exists())
-            identity_path = plan.items[0].intake_bundle_note.identity_path
-            self.assertTrue(identity_path.exists())
-            self.assertEqual(second_result.written_count, 0)
-            self.assertEqual(second_result.skipped_existing_count, 1)
-            self.assertEqual(len(first_result.written_metadata_paths), 1)
-            self.assertEqual(len(second_result.skipped_existing_metadata_paths), 1)
-            self.assertEqual(len(first_result.written_identity_paths), 1)
-            self.assertEqual(len(second_result.skipped_existing_identity_paths), 1)
-
-    def test_planning_skips_meeting_when_identity_marker_already_exists(self) -> None:
+    def test_processed_identity_marker_skips_artifact_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             intake_root.mkdir(parents=True)
@@ -2156,76 +2246,13 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             )
             existing_identity = planning_probe.items[0].intake_bundle_note.identity_path
             existing_identity.parent.mkdir(parents=True)
-            existing_identity.write_text("{}\n", encoding="utf-8")
-
-            plan = build_transcript_sync_plan(
-                client=_StubMeetingDiscoveryClient(
-                    meetings=(
-                        _meeting(
-                            event_id="evt-1",
-                            subject="Platform Sync",
-                            response_status="accepted",
-                            join_url=(
-                                "https://teams.microsoft.com/l/meetup-join/"
-                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
-                            ),
-                            online_meeting_provider="teamsForBusiness",
-                        ),
-                    )
-                ),
-                since=date(2026, 5, 1),
-                intake_root=intake_root,
-                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
-            )
-
-            self.assertEqual(plan.process_count, 0)
-            self.assertEqual(plan.skip_count, 1)
-            self.assertEqual(plan.items[0].decision, "skip")
-            self.assertEqual(plan.items[0].intake_bundle_note.identity_path, existing_identity)
-            self.assertEqual(
-                plan.items[0].reasons,
-                ("Skipped meeting because a meeting identity marker already exists.",),
-            )
-
-            rendered = render_transcript_sync_plan(plan)
-            self.assertIn("meeting_sync_would_process: 0", rendered)
-            self.assertIn("meeting_sync_would_skip: 1", rendered)
-            self.assertIn("reason: Skipped meeting because a meeting identity marker already exists.", rendered)
-
-    def test_existing_identity_marker_does_not_trigger_artifact_discovery(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            intake_root = Path(tmp_dir) / "00_Intake"
-            intake_root.mkdir(parents=True)
-            planning_probe = build_transcript_sync_plan(
-                client=_StubMeetingDiscoveryClient(
-                    meetings=(
-                        _meeting(
-                            event_id="evt-1",
-                            subject="Platform Sync",
-                            response_status="accepted",
-                            join_url=(
-                                "https://teams.microsoft.com/l/meetup-join/"
-                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
-                            ),
-                            online_meeting_provider="teamsForBusiness",
-                        ),
-                    )
-                ),
-                since=date(2026, 5, 1),
-                intake_root=intake_root,
-                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
-            )
-            existing_identity = planning_probe.items[0].intake_bundle_note.identity_path
-            existing_identity.parent.mkdir(parents=True, exist_ok=True)
-            existing_identity.write_text("{}\n", encoding="utf-8")
-
+            existing_identity.write_text('{"source_type": "meeting_bundle_processed"}\n', encoding="utf-8")
             discovery_client = _RecordingArtifactDiscoveryClient(
                 artifacts=(
                     MeetingArtifact(
-                        source_name="Teams transcript text",
+                        source_name="Teams .vtt transcript",
                         status="available",
-                        detail="Should never be discovered when identity marker exists.",
-                        matched_paths=(Path("/tmp/should-not-run.md"),),
+                        detail="Should never be discovered after processing.",
                     ),
                 )
             )
@@ -2253,9 +2280,79 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
             self.assertEqual(discovery_client.calls, 0)
             self.assertEqual(plan.items[0].decision, "skip")
-            self.assertEqual(
+            self.assertEqual(plan.items[0].reasons, ("Skipped meeting because it was already processed.",))
+
+    def test_expired_pending_marker_skips_remote_artifact_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            planning_probe = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            response_status="accepted",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+            existing_identity = planning_probe.items[0].intake_bundle_note.identity_path
+            existing_identity.parent.mkdir(parents=True)
+            existing_identity.write_text(
+                json.dumps(
+                    {
+                        "source_type": "meeting_sync_pending",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            discovery_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        source_name="Teams .vtt transcript",
+                        status="available",
+                        detail="Remote discovery should not run after expiration.",
+                    ),
+                )
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(
+                    meetings=(
+                        _meeting(
+                            event_id="evt-1",
+                            subject="Platform Sync",
+                            response_status="accepted",
+                            join_url=(
+                                "https://teams.microsoft.com/l/meetup-join/"
+                                "19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                            ),
+                            online_meeting_provider="teamsForBusiness",
+                        ),
+                    )
+                ),
+                artifact_discovery_client=discovery_client,
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T14:00:00+00:00"),
+            )
+
+            self.assertEqual(discovery_client.calls, 0)
+            self.assertEqual(plan.items[0].decision, "process")
+            self.assertIn(
+                "Artifact retry window expired after 24 hours; network artifact discovery was skipped.",
                 plan.items[0].reasons,
-                ("Skipped meeting because a meeting identity marker already exists.",),
             )
 
     def test_planning_allows_identity_backfill_when_bundle_and_metadata_exist_without_marker(self) -> None:

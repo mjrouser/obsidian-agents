@@ -163,11 +163,16 @@ Current implementation status in this repo:
   are staged under `00_Intake/bundles/fallbacks` and can become the preferred
   processor handoff, with chat preserved only as supplemental context rather
   than as a standalone processor source.
-- The sync path also writes a hidden meeting identity marker keyed from
+- The sync path also writes a hidden pending meeting identity marker keyed from
   Outlook event ID plus Teams meeting ID under
-  `00_Intake/bundles/_meeting_sync/identities` so future polling runs can
-  recognize already-imported meetings even if meeting titles or bundle
-  filenames change.
+  `00_Intake/bundles/_meeting_sync/identities`.
+- Calendar-only bundles remain pending, not final, for 24 hours after the
+  meeting ends. During that window each polling cycle refreshes artifact
+  discovery and rewrites bundle metadata so a late Teams `.vtt`, transcript
+  text, or recap fallback can become the preferred processor input.
+- After 24 hours, sync stops Graph network retries for that meeting but keeps
+  local exact-match artifact discovery available for manual transcript
+  attachment.
 - Dry-run output now rolls up processable meetings by remaining source gaps so
   the polling summary can show how many meetings are still calendar-only versus
   missing transcript, chat, or recap artifacts, and it now breaks those source
@@ -211,8 +216,8 @@ Current implementation status in this repo:
   canonical meeting notes and Matthew-owned action updates into
   `99_Test Notes/Meetings` and `99_Test Notes/Actions`.
 - Planning currently skips canceled, declined-without-content, all-day-without-content,
-  focus-without-content, non-Teams, meetings whose identity marker already
-  exists, and not-yet-ended events with explicit reasons.
+  focus-without-content, non-Teams, meetings whose processed identity marker
+  already exists, and not-yet-ended events with explicit reasons.
 - The v1 eligibility filter also treats `response_status` values of `declined`,
   `none`, and `notResponded` as ineligible, and skips low-signal office-hours
   subjects before artifact retrieval starts.
