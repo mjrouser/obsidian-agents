@@ -21,6 +21,7 @@ from obsidian_intake_agent.meetings import (
     ChainedMeetingArtifactDiscoveryClient,
     GraphOutlookMeetingDiscoveryClient,
     LocalIntakeTranscriptDiscoveryClient,
+    MeetingSyncGraphTimeoutError,
     TranscriptSyncPlan,
     UnconfiguredOutlookMeetingDiscoveryClient,
 )
@@ -548,6 +549,45 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("meeting_sync_since: 2026-05-01", output)
             self.assertIn("meeting_sync_provider: outlook_calendar", output)
             self.assertIn("meeting_sync_warning: Outlook calendar discovery is not configured yet;", output)
+
+    def test_meetings_sync_transcripts_graph_timeout_prints_concise_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch(
+                    "obsidian_intake_agent.main.build_transcript_sync_plan",
+                    side_effect=MeetingSyncGraphTimeoutError(
+                        operation="listing recently ended meetings",
+                        timeout_seconds=30,
+                    ),
+                ),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            error_output = stderr.getvalue()
+            self.assertIn("meeting_sync_error: graph_timeout", error_output)
+            self.assertIn("meeting_sync_error_detail:", error_output)
+            self.assertIn("30 seconds", error_output)
+            self.assertIn("meeting_sync_next_step:", error_output)
+            self.assertNotIn("Traceback", error_output)
 
     def test_meetings_sync_transcripts_write_bundles_prints_write_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

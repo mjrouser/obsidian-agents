@@ -16,6 +16,7 @@ from .meetings import (
     GraphTranscriptDownloadClient,
     LocalIntakeTranscriptDiscoveryClient,
     MeetingArtifactDiscoveryClient,
+    MeetingSyncGraphTimeoutError,
     UnconfiguredOutlookMeetingDiscoveryClient,
     attach_transcript_to_bundle,
     build_bundle_processing_plan,
@@ -292,15 +293,19 @@ def main(argv: list[str] | None = None) -> int:
                 _print_graph_auth_required(token_result)
                 return 2
             since = date.fromisoformat(args.since)
-            sync_plan = build_transcript_sync_plan(
-                client=_build_meeting_discovery_client(config),
-                artifact_discovery_client=_build_meeting_artifact_discovery_client(
-                    config,
-                    download_transcripts=args.download_transcripts,
-                ),
-                since=since,
-                intake_root=config.vault_path / config.intake_dir,
-            )
+            try:
+                sync_plan = build_transcript_sync_plan(
+                    client=_build_meeting_discovery_client(config),
+                    artifact_discovery_client=_build_meeting_artifact_discovery_client(
+                        config,
+                        download_transcripts=args.download_transcripts,
+                    ),
+                    since=since,
+                    intake_root=config.vault_path / config.intake_dir,
+                )
+            except MeetingSyncGraphTimeoutError as exc:
+                _print_meeting_sync_graph_timeout(exc)
+                return 1
             mode = (
                 "download-transcripts"
                 if args.download_transcripts
@@ -464,6 +469,16 @@ def _print_graph_auth_required(token_result: GraphTokenResult) -> None:
         print("graph_auth_recovery_steps:", file=sys.stderr)
         for step in token_result.recovery_steps:
             print(f"  {step}", file=sys.stderr)
+
+
+def _print_meeting_sync_graph_timeout(exc: MeetingSyncGraphTimeoutError) -> None:
+    print("meeting_sync_error: graph_timeout", file=sys.stderr)
+    print(f"meeting_sync_error_detail: {exc}", file=sys.stderr)
+    print(
+        "meeting_sync_next_step: The next scheduled run will retry automatically. "
+        "If this repeats, run `obsidian-agent graph status` and consider increasing the Graph timeout.",
+        file=sys.stderr,
+    )
 
 
 def _warn_if_not_using_repo_venv() -> None:
