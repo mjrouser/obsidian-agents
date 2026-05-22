@@ -372,17 +372,18 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   recovery steps such as `obsidian-agent graph login`. For meetings that would
   be processed, the plan reports the intake bundle note path and
   source-transparency metadata.
-  `--write-bundles` writes only those planned bundle notes into
-  `00_Intake/bundles` and skips existing bundle files. If the planned bundle
-  note already exists, the planner now reports that meeting as an explicit skip
-  so repeated polling runs stay quieter. Planned bundle notes now include
+  `--write-bundles` writes those planned bundle notes into
+  `00_Intake/bundles`. Planned bundle notes now include
   Outlook organizer, attendee, response-status, and join-link context when
   Graph discovery provides it. `--write-bundles` also writes a sibling Outlook
   metadata sidecar JSON file for each processable meeting and will backfill
-  that sidecar when an older bundle note exists without it. The sync path now
-  also writes a hidden identity marker under `00_Intake/bundles/_meeting_sync`
-  keyed from the Outlook event ID and Teams meeting ID so repeated polling can
-  skip already-imported meetings even if the bundle filename later changes.
+  that sidecar when an older bundle note exists without it. The sync path writes
+  a hidden pending identity marker under `00_Intake/bundles/_meeting_sync` for
+  staged but unprocessed meetings, then refreshes that pending bundle for up to
+  24 hours after meeting end so late Teams transcripts or recap artifacts can be
+  picked up on later polling cycles. After `process-bundles --execute`
+  succeeds, the pending marker is replaced by a durable processed marker that
+  blocks future reprocessing.
   Dry-run output now includes top-level counts for processable meetings that
   are still missing `.vtt`, transcript text, chat, recap, or any non-calendar
   source. The planner also now reports explicit per-source retrieval states for
@@ -403,8 +404,8 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
   sync planner prefilters meetings that are not yet eligible for bundle
   ingestion, including canceled meetings, non-Teams events, not-yet-ended
   events, declined or no-response meetings, low-signal office-hours subjects,
-  all-day or focus blocks without meeting content, and meetings whose bundle
-  identity marker already exists.
+  all-day or focus blocks without meeting content, and meetings whose processed
+  bundle identity marker already exists.
 - `obsidian-agent meetings process-bundles` currently requires `--dry-run` and
   `--execute` as mutually exclusive modes. The dry run reads the written
   Outlook metadata sidecars in `00_Intake/bundles` to report which synced
