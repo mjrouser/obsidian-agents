@@ -51,6 +51,25 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return "timed out" in str(exc).lower()
 
 
+
+class MeetingSyncGraphTimeoutError(RuntimeError):
+    def __init__(self, *, operation: str, timeout_seconds: int) -> None:
+        self.operation = operation
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"Microsoft Graph did not respond within {timeout_seconds} seconds while {operation}.")
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError | socket.timeout):
+        return True
+    if isinstance(exc, URLError):
+        reason = exc.reason
+        if isinstance(reason, TimeoutError | socket.timeout):
+            return True
+        return "timed out" in str(reason).lower()
+    return "timed out" in str(exc).lower()
+
+
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 PlanDecision = Literal["process", "skip"]
 SYNC_SOURCE_SUMMARY_FIELDS = (
