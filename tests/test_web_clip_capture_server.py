@@ -260,6 +260,8 @@ class WebClipCaptureServerTests(unittest.TestCase):
                 server.server_close()
 
             self.assertEqual(status, 204)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), "https://example.com")
+            self.assertEqual(headers.get("Vary"), "Origin")
             self.assertEqual(headers.get("Access-Control-Allow-Private-Network"), "true")
 
     def test_capture_server_processes_written_raw_clip(self) -> None:

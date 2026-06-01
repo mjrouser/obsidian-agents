@@ -160,7 +160,12 @@ def create_capture_server(
             self.wfile.write(encoded)
 
         def _send_common_headers(self) -> None:
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = self.headers.get("Origin")
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            else:
+                self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
             self.send_header("Access-Control-Allow-Private-Network", "true")
