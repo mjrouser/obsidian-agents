@@ -145,6 +145,11 @@ class WebClipCaptureServerTests(unittest.TestCase):
         self.assertIn("X-Obsidian-Web-Clipper-Token", bookmarklet)
         self.assertIn("secret-token", bookmarklet)
 
+    def test_bookmarklet_marks_fetch_as_local_network_access(self) -> None:
+        bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
+
+        self.assertIn('targetAddressSpace: "local"', bookmarklet)
+
     def test_bookmarklet_reports_processed_and_partial_failure_statuses(self) -> None:
         bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
 

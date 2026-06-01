@@ -61,6 +61,7 @@ def render_bookmarklet(host: str, port: int, token: str) -> str:
       const response = await fetch(endpoint, {{
         method: "POST",
         headers,
+        targetAddressSpace: "local",
         body: JSON.stringify(payload),
       }});
       const responseText = await response.text();
