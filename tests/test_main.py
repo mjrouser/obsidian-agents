@@ -312,8 +312,8 @@ class MainCliTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 0)
             self.assertTrue(output.startswith("javascript:"))
-            self.assertIn("http://127.0.0.1:8765/capture", output)
-            self.assertIn("X-Obsidian-Web-Clipper-Token", output)
+            self.assertIn("http://127.0.0.1:8765/clip", output)
+            self.assertIn("window.open", output)
             self.assertIn("test-token", output)
 
     def test_web_clips_bookmarklet_requires_token(self) -> None:
@@ -347,7 +347,7 @@ class MainCliTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 0)
             self.assertTrue(output.startswith("javascript:"))
-            self.assertIn("X-Obsidian-Web-Clipper-Token", output)
+            self.assertIn("http://127.0.0.1:8765/clip", output)
             self.assertIn("env-token", output)
 
     def test_web_clips_process_prints_summary(self) -> None:
