@@ -163,6 +163,7 @@ def create_capture_server(
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
 
     return HTTPServer((host, port), CaptureRequestHandler)
 

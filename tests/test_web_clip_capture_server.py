@@ -239,6 +239,29 @@ class WebClipCaptureServerTests(unittest.TestCase):
                     vault_path=vault,
                 )
 
+    def test_capture_server_allows_private_network_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, headers = _options_capture(server.server_port)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 204)
+            self.assertEqual(headers.get("Access-Control-Allow-Private-Network"), "true")
+
     def test_capture_server_processes_written_raw_clip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -458,5 +481,25 @@ def _post_capture(port: int, payload: dict[str, object], token: str = "secret-to
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
         return response.status, body
+    finally:
+        connection.close()
+
+
+def _options_capture(port: int) -> tuple[int, dict[str, str]]:
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(
+            "OPTIONS",
+            "/capture",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-obsidian-web-clipper-token",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        return response.status, dict(response.getheaders())
     finally:
         connection.close()
