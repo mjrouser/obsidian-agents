@@ -245,6 +245,35 @@ class MainCliTests(unittest.TestCase):
             commit_mock.assert_called_once()
             self.assertIn("git auto-commit vault: skipped (not a git repo:", stdout.getvalue())
 
+    def test_process_warns_and_continues_when_vault_auto_commit_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            intake_file = intake_dir / "weekly-sync.md"
+            intake_file.write_text("Action: Matthew will complete Codex setup by Friday.\n", encoding="utf-8")
+            config_path = _write_config(repo, vault, git_auto_commit_vault=True)
+
+            with (
+                patch(
+                    "obsidian_intake_agent.main.auto_commit_repo",
+                    return_value=GitCommitStatus(
+                        state="failed",
+                        repo_path=vault,
+                        detail="fatal: unable to write new index file",
+                    ),
+                ) as commit_mock,
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                exit_code = main(["--config", str(config_path), "process", str(intake_file)])
+
+            self.assertEqual(exit_code, 0)
+            commit_mock.assert_called_once()
+            output = stdout.getvalue()
+            self.assertIn("git auto-commit vault: warning", output)
+            self.assertIn("fatal: unable to write new index file", output)
+
     def test_processing_failure_does_not_run_auto_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -312,8 +341,8 @@ class MainCliTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 0)
             self.assertTrue(output.startswith("javascript:"))
-            self.assertIn("http://127.0.0.1:8765/capture", output)
-            self.assertIn("X-Obsidian-Web-Clipper-Token", output)
+            self.assertIn("http://127.0.0.1:8765/clip", output)
+            self.assertIn("window.open", output)
             self.assertIn("test-token", output)
 
     def test_web_clips_bookmarklet_requires_token(self) -> None:
@@ -347,7 +376,7 @@ class MainCliTests(unittest.TestCase):
             output = stdout.getvalue()
             self.assertEqual(exit_code, 0)
             self.assertTrue(output.startswith("javascript:"))
-            self.assertIn("X-Obsidian-Web-Clipper-Token", output)
+            self.assertIn("http://127.0.0.1:8765/clip", output)
             self.assertIn("env-token", output)
 
     def test_web_clips_process_prints_summary(self) -> None:

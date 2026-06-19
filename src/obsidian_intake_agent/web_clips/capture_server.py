@@ -22,6 +22,117 @@ TOKEN_HEADER = "X-Obsidian-Web-Clipper-Token"
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 
 
+def render_local_clip_page() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web clip to Obsidian</title>
+  <style>
+    body { color: #111; background: #fff; font: 14px system-ui, sans-serif; margin: 24px; max-width: 760px; }
+    label { display: block; font-weight: 700; margin-top: 14px; }
+    input, textarea { box-sizing: border-box; font: inherit; margin-top: 4px; width: 100%; }
+    input { padding: 6px; }
+    textarea { min-height: 120px; padding: 6px; }
+    button { font: inherit; margin-top: 14px; padding: 6px 10px; }
+    #owc-status { margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Web clip to Obsidian</h1>
+  <label>Source URL
+    <input id="owc-source-url" readonly>
+  </label>
+  <label>Source Title
+    <input id="owc-source-title">
+  </label>
+  <label>Why
+    <textarea id="owc-why"></textarea>
+  </label>
+  <label>Passages
+    <textarea id="owc-passages"></textarea>
+  </label>
+  <button type="button" id="owc-save">Save</button>
+  <div id="owc-status"></div>
+  <script>
+    const status = document.getElementById("owc-status");
+    const sourceUrl = document.getElementById("owc-source-url");
+    const sourceTitle = document.getElementById("owc-source-title");
+    const why = document.getElementById("owc-why");
+    const passages = document.getElementById("owc-passages");
+    const saveButton = document.getElementById("owc-save");
+    let token = "";
+
+    function decodeHandoff() {
+      const encoded = window.location.hash.slice(1);
+      if (!encoded) throw new Error("Missing web clip payload.");
+      return JSON.parse(decodeURIComponent(escape(atob(encoded))));
+    }
+
+    function payloadFromFields() {
+      return {
+        source_url: sourceUrl.value,
+        source_title: sourceTitle.value,
+        captured_at: new Date().toISOString(),
+        why: why.value,
+        passages: passages.value.split(/\\n\\s*\\n/).map((text) => text.trim()).filter(Boolean),
+      };
+    }
+
+    async function saveClip() {
+      status.textContent = "Saving...";
+      saveButton.disabled = true;
+      try {
+        const response = await fetch("/capture", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Obsidian-Web-Clipper-Token": token,
+          },
+          body: JSON.stringify(payloadFromFields()),
+        });
+        const responseText = await response.text();
+        let responseBody = {};
+        try { responseBody = responseText ? JSON.parse(responseText) : {}; } catch (_) {}
+        if (response.ok && responseBody.status === "processed" && responseBody.warning) {
+          status.textContent = `Saved and processed, but follow-up failed: ${responseBody.warning}`;
+        } else if (response.ok && responseBody.status === "processed") {
+          status.textContent = "Saved and processed.";
+        } else if (responseBody.status === "saved_processing_failed") {
+          status.textContent = `Saved, but processing failed: ${responseBody.error || responseText}`;
+        } else if (response.ok) {
+          status.textContent = "Saved.";
+        } else {
+          status.textContent = `Failed: ${responseBody.error || responseText}`;
+          saveButton.disabled = false;
+        }
+      } catch (error) {
+        status.textContent = `Failed: ${error.message || error}`;
+        saveButton.disabled = false;
+      }
+    }
+
+    try {
+      const handoff = decodeHandoff();
+      token = String(handoff.token || "");
+      const payload = handoff.payload || {};
+      sourceUrl.value = payload.source_url || "";
+      sourceTitle.value = payload.source_title || "";
+      why.value = payload.why || "";
+      passages.value = Array.isArray(payload.passages) ? payload.passages.join("\\n\\n") : "";
+      saveButton.addEventListener("click", saveClip);
+      saveClip();
+    } catch (error) {
+      status.textContent = `Failed to load clip payload: ${error.message || error}`;
+      saveButton.disabled = true;
+    }
+  </script>
+</body>
+</html>
+"""
+
+
 def sanitize_clip_filename(title: str, captured_at: datetime) -> str:
     safe_title = title.strip().replace("/", "-")
     safe_title = _UNSAFE_FILENAME_CHARS.sub("", safe_title)
@@ -81,6 +192,12 @@ def create_capture_server(
     class CaptureRequestHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
             self._send_empty(204)
+
+        def do_GET(self) -> None:
+            if self.path.split("?", 1)[0] != "/clip":
+                self._send_json(404, {"error": "not found"})
+                return
+            self._send_html(200, render_local_clip_page())
 
         def do_POST(self) -> None:
             if self.path != "/capture":
@@ -159,10 +276,24 @@ def create_capture_server(
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _send_html(self, status: int, body: str) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def _send_common_headers(self) -> None:
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = self.headers.get("Origin")
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            else:
+                self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
 
     return HTTPServer((host, port), CaptureRequestHandler)
 

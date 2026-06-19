@@ -132,27 +132,51 @@ class WebClipCaptureServerTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(second.name, "2026-05-18 - Article Title 2.md")
 
-    def test_bookmarklet_targets_configured_endpoint(self) -> None:
+    def test_bookmarklet_targets_configured_clip_page(self) -> None:
         bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
 
         self.assertTrue(bookmarklet.startswith("javascript:"))
-        self.assertIn("http://127.0.0.1:8765/capture", bookmarklet)
+        self.assertIn("http://127.0.0.1:8765/clip", bookmarklet)
+        self.assertIn("window.open", bookmarklet)
         self.assertIn("Add passage", bookmarklet)
 
-    def test_bookmarklet_sends_token_header_when_configured(self) -> None:
+    def test_bookmarklet_hands_token_to_local_clip_page(self) -> None:
         bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
 
-        self.assertIn("X-Obsidian-Web-Clipper-Token", bookmarklet)
         self.assertIn("secret-token", bookmarklet)
 
-    def test_bookmarklet_reports_processed_and_partial_failure_statuses(self) -> None:
+    def test_bookmarklet_does_not_fetch_from_source_page(self) -> None:
         bookmarklet = render_bookmarklet(host="127.0.0.1", port=8765, token="secret-token")
 
-        self.assertIn("Saved and processed.", bookmarklet)
-        self.assertIn("Saved and processed, but follow-up failed:", bookmarklet)
-        self.assertIn("Saved, but processing failed:", bookmarklet)
-        self.assertIn("Failed: ${responseBody.error || responseText}", bookmarklet)
-        self.assertIn("catch (error)", bookmarklet)
+        self.assertNotIn("await fetch", bookmarklet)
+        self.assertIn("Opened local save page.", bookmarklet)
+
+    def test_capture_server_serves_local_clip_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, content_type, body = _get_clip_page(server.server_port)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 200)
+            self.assertIn("text/html", content_type)
+            self.assertIn("Web clip to Obsidian", body)
+            self.assertIn('fetch("/capture"', body)
+            self.assertIn("X-Obsidian-Web-Clipper-Token", body)
+            self.assertIn("Saved and processed.", body)
 
     def test_bookmarklet_rejects_blank_token(self) -> None:
         with self.assertRaisesRegex(ValueError, "token is required"):
@@ -238,6 +262,31 @@ class WebClipCaptureServerTests(unittest.TestCase):
                     token="secret-token",
                     vault_path=vault,
                 )
+
+    def test_capture_server_allows_private_network_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake" / "Web Clips"
+            server = create_capture_server(
+                host="127.0.0.1",
+                port=0,
+                intake_dir=intake_dir,
+                token="secret-token",
+                vault_path=vault,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, headers = _options_capture(server.server_port)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(status, 204)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), "https://example.com")
+            self.assertEqual(headers.get("Vary"), "Origin")
+            self.assertEqual(headers.get("Access-Control-Allow-Private-Network"), "true")
 
     def test_capture_server_processes_written_raw_clip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -458,5 +507,36 @@ def _post_capture(port: int, payload: dict[str, object], token: str = "secret-to
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
         return response.status, body
+    finally:
+        connection.close()
+
+
+def _options_capture(port: int) -> tuple[int, dict[str, str]]:
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(
+            "OPTIONS",
+            "/capture",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-obsidian-web-clipper-token",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        return response.status, dict(response.getheaders())
+    finally:
+        connection.close()
+
+
+def _get_clip_page(port: int) -> tuple[int, str, str]:
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request("GET", "/clip")
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        return response.status, response.getheader("Content-Type", ""), body
     finally:
         connection.close()

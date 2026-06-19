@@ -27,6 +27,7 @@ ARTIFACT_SOURCE_PRIORITY = (
     "Manual / semi-manual intake",
 )
 GRAPH_REQUEST_TIMEOUT_SECONDS = 30
+GRAPH_REQUEST_TIMEOUT_ATTEMPTS = 2
 PENDING_MARKER_SOURCE_TYPE = "meeting_sync_pending"
 LEGACY_PENDING_MARKER_SOURCE_TYPE = "meeting_sync_identity"
 PROCESSED_MARKER_SOURCE_TYPE = "meeting_bundle_processed"
@@ -2020,16 +2021,8 @@ def _fetch_graph_json(
         url,
         headers=headers,
     )
-    try:
-        with urlopen(request, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except (TimeoutError, socket.timeout, URLError) as exc:
-        if _is_timeout_error(exc):
-            raise MeetingSyncGraphTimeoutError(
-                operation="Microsoft Graph JSON request",
-                timeout_seconds=GRAPH_REQUEST_TIMEOUT_SECONDS,
-            ) from exc
-        raise
+    response_bytes = _read_graph_response_bytes(request, operation="Microsoft Graph JSON request")
+    return json.loads(response_bytes.decode("utf-8"))
 
 
 def _fetch_graph_bytes(url: str, access_token: str) -> bytes:
@@ -2040,16 +2033,23 @@ def _fetch_graph_bytes(url: str, access_token: str) -> bytes:
             "Accept": "text/vtt",
         },
     )
-    try:
-        with urlopen(request, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS) as response:
-            return response.read()
-    except (TimeoutError, socket.timeout, URLError) as exc:
-        if _is_timeout_error(exc):
-            raise MeetingSyncGraphTimeoutError(
-                operation="Microsoft Graph content request",
-                timeout_seconds=GRAPH_REQUEST_TIMEOUT_SECONDS,
-            ) from exc
-        raise
+    return _read_graph_response_bytes(request, operation="Microsoft Graph content request")
+
+
+def _read_graph_response_bytes(request: Request, *, operation: str) -> bytes:
+    last_timeout: BaseException | None = None
+    for _attempt in range(GRAPH_REQUEST_TIMEOUT_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except (TimeoutError, socket.timeout, URLError) as exc:
+            if not _is_timeout_error(exc):
+                raise
+            last_timeout = exc
+    raise MeetingSyncGraphTimeoutError(
+        operation=operation,
+        timeout_seconds=GRAPH_REQUEST_TIMEOUT_SECONDS,
+    ) from last_timeout
 
 
 def _normalized_vtt_bytes(content: bytes) -> bytes:

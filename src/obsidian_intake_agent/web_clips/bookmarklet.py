@@ -6,12 +6,11 @@ import json
 def render_bookmarklet(host: str, port: int, token: str) -> str:
     if not token:
         raise ValueError("token is required.")
-    endpoint = f"http://{host}:{port}/capture"
-    headers = {"Content-Type": "application/json", "X-Obsidian-Web-Clipper-Token": token}
+    clip_page = f"http://{host}:{port}/clip"
     script = f"""
 (() => {{
-  const endpoint = {json.dumps(endpoint)};
-  const headers = {json.dumps(headers)};
+  const clipPage = {json.dumps(clip_page)};
+  const token = {json.dumps(token)};
   const existing = document.getElementById("obsidian-web-clipper-panel");
   if (existing) existing.remove();
 
@@ -20,7 +19,7 @@ def render_bookmarklet(host: str, port: int, token: str) -> str:
   panel.style.cssText = "position:fixed;z-index:2147483647;right:16px;top:16px;width:340px;background:#fff;color:#111;border:1px solid #bbb;box-shadow:0 8px 30px rgba(0,0,0,.24);font:14px system-ui,sans-serif;padding:12px;";
   panel.innerHTML = `
     <div style="font-weight:700;margin-bottom:8px;">Web clip to Obsidian</div>
-    <div style="font-size:12px;margin-bottom:8px;word-break:break-all;">${{endpoint}}</div>
+    <div style="font-size:12px;margin-bottom:8px;word-break:break-all;">${{clipPage}}</div>
     <label style="display:block;margin-bottom:6px;">Why
       <textarea id="owc-why" style="box-sizing:border-box;width:100%;min-height:72px;"></textarea>
     </label>
@@ -48,7 +47,7 @@ def render_bookmarklet(host: str, port: int, token: str) -> str:
   }});
 
   panel.querySelector("#owc-close").addEventListener("click", () => panel.remove());
-  panel.querySelector("#owc-save").addEventListener("click", async () => {{
+  panel.querySelector("#owc-save").addEventListener("click", () => {{
     const payload = {{
       source_url: location.href,
       source_title: document.title || location.href,
@@ -56,29 +55,16 @@ def render_bookmarklet(host: str, port: int, token: str) -> str:
       why: panel.querySelector("#owc-why").value,
       passages: passages.value.split(/\\n\\s*\\n/).map((text) => text.trim()).filter(Boolean),
     }};
-    status.textContent = "Saving...";
+    status.textContent = "Opening local save page...";
     try {{
-      const response = await fetch(endpoint, {{
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      }});
-      const responseText = await response.text();
-      let responseBody = {{}};
-      try {{ responseBody = responseText ? JSON.parse(responseText) : {{}}; }} catch (_) {{}}
-      if (response.ok && responseBody.status === "processed" && responseBody.warning) {{
-        status.textContent = `Saved and processed, but follow-up failed: ${{responseBody.warning}}`;
-      }} else if (response.ok && responseBody.status === "processed") {{
-        status.textContent = "Saved and processed.";
-      }} else if (responseBody.status === "saved_processing_failed") {{
-        status.textContent = `Saved, but processing failed: ${{responseBody.error || responseText}}`;
-      }} else if (response.ok) {{
-        status.textContent = "Saved.";
-      }} else {{
-        status.textContent = `Failed: ${{responseBody.error || responseText}}`;
+      const encoded = btoa(unescape(encodeURIComponent(JSON.stringify({{token, payload}}))));
+      const opened = window.open(`${{clipPage}}#${{encoded}}`, "_blank");
+      if (opened) {{
+        try {{ opened.opener = null; }} catch (_) {{}}
       }}
+      status.textContent = opened ? "Opened local save page." : "Popup blocked; allow popups for this page and try again.";
     }} catch (error) {{
-      status.textContent = `Failed: ${{error.message || error}}`;
+      status.textContent = `Failed to open local save page: ${{error.message || error}}`;
     }}
   }});
 }})();
