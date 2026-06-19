@@ -129,6 +129,36 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 "token",
             )
 
+    def test_fetch_graph_json_retries_timeout_once_before_succeeding(self) -> None:
+        attempts = 0
+
+        class _FakeResponse:
+            def __enter__(self) -> _FakeResponse:
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            def read(self) -> bytes:
+                return json.dumps({"value": ["ok"]}).encode("utf-8")
+
+        def _fake_urlopen(request, *, timeout=None):
+            del request, timeout
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("The read operation timed out")
+            return _FakeResponse()
+
+        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+            payload = meeting_sync_module._fetch_graph_json(
+                "https://graph.microsoft.com/v1.0/me/calendarView",
+                "token",
+            )
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(payload, {"value": ["ok"]})
+
     def test_fetch_graph_json_preserves_non_timeout_urlerror(self) -> None:
         def _fake_urlopen(request, *, timeout=None):
             del request, timeout

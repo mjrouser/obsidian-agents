@@ -411,6 +411,8 @@ def _maybe_auto_commit(config: Config, *, vault_source_name: str) -> None:
             f"auto: process transcript outputs for {vault_source_name}",
         )
         print(_format_git_status("vault", status.state, status.repo_path))
+        if status.state == "failed" and status.detail:
+            print(f"git auto-commit vault detail: {status.detail}")
     else:
         print("git auto-commit vault: skipped (disabled)")
 
@@ -436,6 +438,8 @@ def _format_git_status(repo_name: str, state: str, repo_path: Path) -> str:
         return f"git auto-commit {repo_name}: skipped (no changes)"
     if state == "not_git_repo":
         return f"git auto-commit {repo_name}: skipped (not a git repo: {repo_path})"
+    if state == "failed":
+        return f"git auto-commit {repo_name}: warning (commit failed in {repo_path})"
     return f"git auto-commit {repo_name}: skipped ({state})"
 
 

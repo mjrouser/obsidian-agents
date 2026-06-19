@@ -105,6 +105,27 @@ class GitAutoCommitTests(unittest.TestCase):
 
     @patch("obsidian_intake_agent.utils.git.shutil.which", return_value="/usr/bin/git")
     @patch("obsidian_intake_agent.utils.git.subprocess.run")
+    def test_commit_failure_returns_failed_status_with_git_stderr(self, run_mock, _which_mock) -> None:
+        run_mock.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="true\n", stderr=""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=" M note.md\n", stderr=""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="M  note.md\n", stderr=""),
+            subprocess.CalledProcessError(
+                128,
+                ["git", "commit", "-m", "msg"],
+                output="",
+                stderr="fatal: unable to write new index file",
+            ),
+        ]
+
+        status = auto_commit_repo(Path("/tmp/repo"), "msg")
+
+        self.assertEqual(status.state, "failed")
+        self.assertEqual(status.detail, "fatal: unable to write new index file")
+
+    @patch("obsidian_intake_agent.utils.git.shutil.which", return_value="/usr/bin/git")
+    @patch("obsidian_intake_agent.utils.git.subprocess.run")
     def test_no_empty_commit_after_staging_if_changes_disappear(self, run_mock, _which_mock) -> None:
         run_mock.side_effect = [
             subprocess.CompletedProcess(args=[], returncode=0, stdout="true\n", stderr=""),
