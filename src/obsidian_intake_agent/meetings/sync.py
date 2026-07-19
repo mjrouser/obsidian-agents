@@ -17,6 +17,12 @@ from urllib.parse import quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from ..utils.text import normalize_whitespace
+from .transcript_provenance import (
+    archive_stale_transcript,
+    atomic_write_bytes,
+    matching_provenance,
+    write_provenance,
+)
 
 ARTIFACT_SOURCE_PRIORITY = (
     "Teams .vtt transcript",
@@ -53,6 +59,13 @@ def _is_timeout_error(exc: BaseException) -> bool:
 
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
+LocalTranscriptAction = Literal[
+    "downloaded",
+    "validated",
+    "provenance_backfilled",
+    "stale_preserved_and_replaced",
+    "none",
+]
 PlanDecision = Literal["process", "skip"]
 SYNC_SOURCE_SUMMARY_FIELDS = (
     ("Teams .vtt transcript", "vtt"),
@@ -83,11 +96,34 @@ class GraphOnlineMeetingNotFoundError(ValueError):
 
 
 @dataclass(slots=True, frozen=True)
+class SelectedTranscriptDiagnostic:
+    transcript_id: str
+    created_at: datetime | None
+
+
+@dataclass(slots=True, frozen=True)
+class TranscriptDiagnostics:
+    candidate_count: int | None
+    selected_transcripts: tuple[SelectedTranscriptDiagnostic, ...]
+    occurrence_start_at: datetime
+    occurrence_end_at: datetime
+    local_action: LocalTranscriptAction
+
+
+@dataclass(slots=True, frozen=True)
 class MeetingArtifact:
     source_name: str
     status: ArtifactStatus
     detail: str | None = None
     matched_paths: tuple[Path, ...] = ()
+    diagnostics: TranscriptDiagnostics | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class GraphTranscriptRecord:
+    transcript_id: str
+    created_at: datetime | None
+    created_at_missing: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -323,8 +359,14 @@ class ChainedMeetingArtifactDiscoveryClient:
             discovered = client.discover_artifacts(meeting=current_meeting)
             for artifact in discovered:
                 existing = artifacts.get(artifact.source_name)
-                if existing is None or _should_replace_artifact(existing=existing, candidate=artifact):
+                if existing is None:
                     artifacts[artifact.source_name] = artifact
+                elif _should_replace_artifact(existing=existing, candidate=artifact):
+                    if artifact.diagnostics is None and existing.diagnostics is not None:
+                        artifact = replace(artifact, diagnostics=existing.diagnostics)
+                    artifacts[artifact.source_name] = artifact
+                elif existing.diagnostics is None and artifact.diagnostics is not None:
+                    artifacts[artifact.source_name] = replace(existing, diagnostics=artifact.diagnostics)
             current_meeting = replace(current_meeting, discovered_artifacts=tuple(artifacts.values()))
         return tuple(artifacts.values())
 
@@ -534,11 +576,11 @@ class GraphTranscriptDiscoveryClient:
                 join_url=join_url,
                 fetch_json=self._fetch_json,
             )
-            payload = self._fetch_json(
+            transcript_records = _fetch_all_graph_transcript_records(
                 f"{self._api_base_url}{self._user_path}/onlineMeetings/{_graph_resource_path_id(online_meeting_id)}/transcripts",
                 self._access_token,
+                self._fetch_json,
             )
-            transcript_ids = _graph_transcript_ids(payload)
         except HTTPError as exc:
             if exc.code in {401, 403}:
                 return (
@@ -586,20 +628,45 @@ class GraphTranscriptDiscoveryClient:
                 ),
             )
 
-        if not transcript_ids:
+        if not transcript_records:
             return (
                 MeetingArtifact(
                     "Teams transcript text",
                     "missing",
                     "Graph transcript discovery returned no transcript records.",
+                    diagnostics=_transcript_diagnostics(
+                        meeting,
+                        transcript_records,
+                        (),
+                        local_action="none",
+                    ),
                 ),
             )
-        rendered_ids = ", ".join(transcript_ids)
+
+        selected_records = _select_transcripts_for_occurrence(transcript_records, meeting)
+        diagnostics = _transcript_diagnostics(
+            meeting,
+            transcript_records,
+            selected_records,
+            local_action="none",
+        )
+        if not selected_records:
+            return (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "missing",
+                    "Graph transcript discovery returned no transcript records for this meeting occurrence.",
+                    diagnostics=diagnostics,
+                ),
+            )
+
+        rendered_ids = ", ".join(record.transcript_id for record in selected_records)
         return (
             MeetingArtifact(
                 "Teams transcript text",
                 "available",
                 f"Graph transcript metadata available for transcript ID(s): {rendered_ids}; content download is deferred.",
+                diagnostics=diagnostics,
             ),
         )
 
@@ -631,16 +698,44 @@ class GraphTranscriptDownloadClient:
     ) -> tuple[MeetingArtifact, ...]:
         vtt_target_path = self._intake_root / _transcript_relative_path(meeting)
         if vtt_target_path.exists():
-            return (
-                MeetingArtifact(
-                    "Teams .vtt transcript",
-                    "available",
-                    f"Transcript file already exists: {vtt_target_path}",
-                    matched_paths=(vtt_target_path,),
-                ),
+            provenance = matching_provenance(
+                vtt_target_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
             )
+            if provenance is not None:
+                transcript_ids = ", ".join(item["id"] for item in provenance["transcripts"])
+                provenance_records = tuple(
+                    GraphTranscriptRecord(
+                        transcript_id=item["id"],
+                        created_at=(
+                            datetime.fromisoformat(item["created_at"]) if item["created_at"] is not None else None
+                        ),
+                        created_at_missing=item["created_at"] is None,
+                    )
+                    for item in provenance["transcripts"]
+                )
+                return (
+                    MeetingArtifact(
+                        "Teams .vtt transcript",
+                        "available",
+                        f"Validated Graph transcript provenance for transcript ID(s): {transcript_ids}.",
+                        matched_paths=(vtt_target_path,),
+                        diagnostics=TranscriptDiagnostics(
+                            candidate_count=None,
+                            selected_transcripts=tuple(
+                                SelectedTranscriptDiagnostic(record.transcript_id, record.created_at)
+                                for record in provenance_records
+                            ),
+                            occurrence_start_at=meeting.start_at,
+                            occurrence_end_at=meeting.end_at,
+                            local_action="validated",
+                        ),
+                    ),
+                )
         transcript_text_target_path = self._intake_root / _transcript_text_relative_path(meeting)
-        if transcript_text_target_path.exists():
+        if not vtt_target_path.exists() and transcript_text_target_path.exists():
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
@@ -672,8 +767,11 @@ class GraphTranscriptDownloadClient:
                 fetch_json=self._fetch_json,
             )
             transcripts_url = f"{self._api_base_url}{self._user_path}/onlineMeetings/{_graph_resource_path_id(online_meeting_id)}/transcripts"
-            payload = self._fetch_json(transcripts_url, self._access_token)
-            transcript_ids = _graph_transcript_ids(payload)
+            transcript_records = _fetch_all_graph_transcript_records(
+                transcripts_url,
+                self._access_token,
+                self._fetch_json,
+            )
         except HTTPError as exc:
             return self._paired_artifacts_from_http_error(exc, action="discovery")
         except GraphOnlineMeetingNotFoundError:
@@ -703,12 +801,14 @@ class GraphTranscriptDownloadClient:
                 ),
             )
 
-        if not transcript_ids:
+        if not transcript_records:
+            diagnostics = _transcript_diagnostics(meeting, transcript_records, (), local_action="none")
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
                     "missing",
                     "Graph transcript discovery returned no transcript records.",
+                    diagnostics=diagnostics,
                 ),
                 MeetingArtifact(
                     "Teams transcript text",
@@ -717,87 +817,160 @@ class GraphTranscriptDownloadClient:
                 ),
             )
 
-        transcript_id = transcript_ids[0]
-        content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/content?" + urlencode(
-            {"$format": "text/vtt"}
-        )
-        try:
-            content = self._fetch_bytes(content_url, self._access_token)
-        except HTTPError as exc:
-            if exc.code != 404:
-                return self._paired_artifacts_from_http_error(exc, action="content download")
-            metadata_content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
+        selected_records = _select_transcripts_for_occurrence(transcript_records, meeting)
+        if not selected_records:
+            diagnostics = _transcript_diagnostics(meeting, transcript_records, selected_records, local_action="none")
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph transcript discovery returned no transcript records for this meeting occurrence.",
+                    diagnostics=diagnostics,
+                ),
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "missing",
+                    "Graph transcript discovery returned no transcript records for this meeting occurrence.",
+                ),
+            )
+
+        diagnostics = _transcript_diagnostics(meeting, transcript_records, selected_records, local_action="none")
+        downloaded_contents: list[bytes] = []
+        for record in selected_records:
+            transcript_id = record.transcript_id
+            content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/content?" + urlencode(
+                {"$format": "text/vtt"}
+            )
             try:
-                metadata_content = self._fetch_bytes(metadata_content_url, self._access_token)
-            except HTTPError as metadata_exc:
-                if metadata_exc.code == 404:
+                downloaded_contents.append(self._fetch_bytes(content_url, self._access_token))
+            except HTTPError as exc:
+                if exc.code != 404 or len(selected_records) != 1:
+                    return self._paired_artifacts_from_http_error(
+                        exc,
+                        action="content download",
+                        diagnostics=diagnostics,
+                    )
+                metadata_content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
+                try:
+                    metadata_content = self._fetch_bytes(metadata_content_url, self._access_token)
+                except HTTPError as metadata_exc:
+                    if metadata_exc.code == 404:
+                        return (
+                            MeetingArtifact(
+                                "Teams .vtt transcript",
+                                "missing",
+                                "Graph did not find transcript content for this Teams meeting.",
+                                diagnostics=diagnostics,
+                            ),
+                            MeetingArtifact(
+                                "Teams transcript text",
+                                "missing",
+                                "Graph did not find transcript metadata content for this Teams meeting.",
+                            ),
+                        )
+                    return self._paired_artifacts_from_http_error(
+                        metadata_exc,
+                        action="metadata content download",
+                        diagnostics=diagnostics,
+                    )
+                except URLError as metadata_exc:
                     return (
                         MeetingArtifact(
                             "Teams .vtt transcript",
                             "missing",
                             "Graph did not find transcript content for this Teams meeting.",
+                            diagnostics=diagnostics,
                         ),
                         MeetingArtifact(
                             "Teams transcript text",
-                            "missing",
-                            "Graph did not find transcript metadata content for this Teams meeting.",
+                            "not_attempted",
+                            f"Graph transcript metadata content download failed: {metadata_exc}",
                         ),
                     )
-                return self._paired_artifacts_from_http_error(metadata_exc, action="metadata content download")
-            except URLError as metadata_exc:
+
+                transcript_text_target_path.parent.mkdir(parents=True, exist_ok=True)
+                transcript_text_target_path.write_text(
+                    _transcript_markdown_from_metadata_content(metadata_content),
+                    encoding="utf-8",
+                )
                 return (
                     MeetingArtifact(
                         "Teams .vtt transcript",
                         "missing",
                         "Graph did not find transcript content for this Teams meeting.",
+                        diagnostics=diagnostics,
+                    ),
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "available",
+                        f"Downloaded Graph transcript metadata content for transcript ID {transcript_id}.",
+                        matched_paths=(transcript_text_target_path,),
+                    ),
+                )
+            except URLError as exc:
+                return (
+                    MeetingArtifact(
+                        "Teams .vtt transcript",
+                        "not_attempted",
+                        f"Graph transcript content download failed: {exc}",
+                        diagnostics=diagnostics,
                     ),
                     MeetingArtifact(
                         "Teams transcript text",
                         "not_attempted",
-                        f"Graph transcript metadata content download failed: {metadata_exc}",
+                        f"Graph transcript content download failed: {exc}",
                     ),
                 )
 
-            transcript_text_target_path.parent.mkdir(parents=True, exist_ok=True)
-            transcript_text_target_path.write_text(
-                _transcript_markdown_from_metadata_content(metadata_content),
-                encoding="utf-8",
-            )
-            return (
-                MeetingArtifact(
-                    "Teams .vtt transcript",
-                    "missing",
-                    "Graph did not find transcript content for this Teams meeting.",
-                ),
-                MeetingArtifact(
-                    "Teams transcript text",
-                    "available",
-                    f"Downloaded Graph transcript metadata content for transcript ID {transcript_id}.",
-                    matched_paths=(transcript_text_target_path,),
-                ),
-            )
-        except URLError as exc:
-            return (
-                MeetingArtifact(
-                    "Teams .vtt transcript",
-                    "not_attempted",
-                    f"Graph transcript content download failed: {exc}",
-                ),
-                MeetingArtifact(
-                    "Teams transcript text",
-                    "not_attempted",
-                    f"Graph transcript content download failed: {exc}",
-                ),
-            )
-
-        vtt_target_path.parent.mkdir(parents=True, exist_ok=True)
-        vtt_target_path.write_bytes(_normalized_vtt_bytes(content))
+        content = downloaded_contents[0] if len(downloaded_contents) == 1 else _merged_vtt_bytes(downloaded_contents)
+        normalized_content = _normalized_vtt_bytes(content)
+        selected_transcripts = [
+            {
+                "id": record.transcript_id,
+                "created_at": record.created_at.isoformat() if record.created_at is not None else None,
+            }
+            for record in selected_records
+        ]
+        transcript_ids = ", ".join(record.transcript_id for record in selected_records)
+        if vtt_target_path.exists():
+            existing_content = vtt_target_path.read_bytes()
+            if existing_content == normalized_content:
+                action = "Backfilled Graph transcript provenance"
+                local_action: LocalTranscriptAction = "provenance_backfilled"
+            else:
+                archive_stale_transcript(
+                    vtt_target_path,
+                    archive_dir=self._intake_root / BUNDLE_FALLBACKS_DIR / "stale_transcripts",
+                    content=existing_content,
+                )
+                atomic_write_bytes(vtt_target_path, normalized_content)
+                action = "Replaced stale Graph transcript after occurrence validation"
+                local_action = "stale_preserved_and_replaced"
+        else:
+            atomic_write_bytes(vtt_target_path, normalized_content)
+            action = "Downloaded Graph transcript content"
+            local_action = "downloaded"
+        write_provenance(
+            vtt_target_path,
+            event_id=meeting.event_id,
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            transcripts=selected_transcripts,
+            content=normalized_content,
+        )
+        detail = f"{action} for transcript ID(s): {transcript_ids}."
         return (
             MeetingArtifact(
                 "Teams .vtt transcript",
                 "available",
-                f"Downloaded Graph transcript content for transcript ID {transcript_id}.",
+                detail,
                 matched_paths=(vtt_target_path,),
+                diagnostics=_transcript_diagnostics(
+                    meeting,
+                    transcript_records,
+                    selected_records,
+                    local_action=local_action,
+                ),
             ),
         )
 
@@ -826,8 +999,16 @@ class GraphTranscriptDownloadClient:
             ),
         )
 
-    def _paired_artifacts_from_http_error(self, error: HTTPError, *, action: str) -> tuple[MeetingArtifact, ...]:
+    def _paired_artifacts_from_http_error(
+        self,
+        error: HTTPError,
+        *,
+        action: str,
+        diagnostics: TranscriptDiagnostics | None = None,
+    ) -> tuple[MeetingArtifact, ...]:
         vtt_artifact = self._http_error_artifact(error, action=action)
+        if diagnostics is not None:
+            vtt_artifact = replace(vtt_artifact, diagnostics=diagnostics)
         return (
             vtt_artifact,
             MeetingArtifact(
@@ -1233,10 +1414,27 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
                 lines.append(f"  source_available: {source_name} ({rendered_paths})")
             else:
                 lines.append(f"  source_available: {source_name}")
+        diagnostics_rendered = False
         for artifact in item.bundle.artifacts:
             if artifact.status != "available":
                 detail_suffix = f" ({artifact.detail})" if artifact.detail else ""
                 lines.append(f"  source_pending: {artifact.source_name}={artifact.status}{detail_suffix}")
+            if artifact.diagnostics is not None and not diagnostics_rendered:
+                diagnostics_rendered = True
+                diagnostics = artifact.diagnostics
+                candidate_count = diagnostics.candidate_count
+                lines.append(
+                    f"  transcript_candidates: {candidate_count if candidate_count is not None else 'unknown'}"
+                )
+                for selected in _chronological_selected_transcripts(diagnostics.selected_transcripts):
+                    lines.append(f"  selected_transcript_id: {selected.transcript_id}")
+                    created_at = selected.created_at.isoformat() if selected.created_at is not None else "unknown"
+                    lines.append(f"  selected_transcript_created_at: {created_at}")
+                lines.append(
+                    "  selected_for_occurrence: "
+                    f"{diagnostics.occurrence_start_at.isoformat()} to {diagnostics.occurrence_end_at.isoformat()}"
+                )
+                lines.append(f"  local_transcript_action: {diagnostics.local_action}")
         for reason in item.reasons:
             lines.append(f"  reason: {reason}")
     return "\n".join(lines)
@@ -1334,6 +1532,8 @@ def _artifact_status_rank(status: ArtifactStatus) -> int:
 
 
 def _should_replace_artifact(*, existing: MeetingArtifact, candidate: MeetingArtifact) -> bool:
+    if existing.source_name == "Teams .vtt transcript":
+        return False
     if candidate.status == "available":
         return existing.status != "available" or bool(candidate.matched_paths)
     return False
@@ -1870,15 +2070,7 @@ def render_outlook_metadata_sidecar(
             }
             for attendee in meeting.attendees
         ],
-        "artifacts": [
-            {
-                "source_name": artifact.source_name,
-                "status": artifact.status,
-                "detail": artifact.detail,
-                "matched_paths": [str(path) for path in artifact.matched_paths],
-            }
-            for artifact in bundle.artifacts
-        ],
+        "artifacts": [_serialize_artifact(artifact) for artifact in bundle.artifacts],
         "processor_handoff": {
             "preferred_input_path": str(processor_input_path) if processor_input_path is not None else None,
             "preferred_input_source_name": processor_input_source_name,
@@ -1909,17 +2101,52 @@ def render_meeting_identity_sidecar(
         "first_seen_at": _format_datetime(meeting.end_at),
         "last_checked_at": _format_datetime(checked_at),
         "retry_until": _format_datetime(meeting.end_at + timedelta(hours=PENDING_ARTIFACT_RETRY_HOURS)),
-        "artifact_statuses": [
-            {
-                "source_name": artifact.source_name,
-                "status": artifact.status,
-                "detail": artifact.detail,
-                "matched_paths": [str(path) for path in artifact.matched_paths],
-            }
-            for artifact in bundle.artifacts
-        ],
+        "artifact_statuses": [_serialize_artifact(artifact) for artifact in bundle.artifacts],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _chronological_selected_transcripts(
+    selected: tuple[SelectedTranscriptDiagnostic, ...],
+) -> tuple[SelectedTranscriptDiagnostic, ...]:
+    return tuple(
+        sorted(
+            selected,
+            key=lambda item: (
+                item.created_at is None,
+                item.created_at or datetime.max.replace(tzinfo=UTC),
+                item.transcript_id,
+            ),
+        )
+    )
+
+
+def _serialize_transcript_diagnostics(diagnostics: TranscriptDiagnostics) -> dict[str, object]:
+    return {
+        "candidate_count": diagnostics.candidate_count,
+        "selected_transcripts": [
+            {
+                "id": selected.transcript_id,
+                "created_at": selected.created_at.isoformat() if selected.created_at is not None else None,
+            }
+            for selected in _chronological_selected_transcripts(diagnostics.selected_transcripts)
+        ],
+        "occurrence_start_at": diagnostics.occurrence_start_at.isoformat(),
+        "occurrence_end_at": diagnostics.occurrence_end_at.isoformat(),
+        "local_action": diagnostics.local_action,
+    }
+
+
+def _serialize_artifact(artifact: MeetingArtifact) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "source_name": artifact.source_name,
+        "status": artifact.status,
+        "detail": artifact.detail,
+        "matched_paths": [str(path) for path in artifact.matched_paths],
+    }
+    if artifact.diagnostics is not None:
+        payload["transcript_diagnostics"] = _serialize_transcript_diagnostics(artifact.diagnostics)
+    return payload
 
 
 def _optional_string(value: str | None) -> str | None:
@@ -2054,6 +2281,25 @@ def _read_graph_response_bytes(request: Request, *, operation: str) -> bytes:
 
 def _normalized_vtt_bytes(content: bytes) -> bytes:
     return content if content.endswith(b"\n") else content + b"\n"
+
+
+def _merged_vtt_bytes(contents: list[bytes]) -> bytes:
+    bodies: list[bytes] = []
+    for content in contents:
+        normalized = content.removeprefix(b"\xef\xbb\xbf")
+        lines = normalized.splitlines()
+        signature_line = lines[0] if lines else b""
+        has_webvtt_signature = signature_line == b"WEBVTT" or signature_line.startswith((b"WEBVTT ", b"WEBVTT\t"))
+        if has_webvtt_signature and b"-->" not in signature_line:
+            lines = lines[1:]
+            while lines and lines[0].strip():
+                lines = lines[1:]
+            while lines and not lines[0].strip():
+                lines = lines[1:]
+        body = b"\n".join(lines).strip()
+        if body:
+            bodies.append(body)
+    return b"WEBVTT\n\n" + b"\n\n".join(bodies) + b"\n"
 
 
 def _transcript_markdown_from_metadata_content(content: bytes) -> str:
@@ -2359,17 +2605,105 @@ def _graph_value_items(payload: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _graph_transcript_ids(payload: dict[str, object]) -> tuple[str, ...]:
+    return tuple(record.transcript_id for record in _graph_transcript_records(payload))
+
+
+def _graph_transcript_records(payload: dict[str, object]) -> tuple[GraphTranscriptRecord, ...]:
     raw_items = payload.get("value")
     if not isinstance(raw_items, list):
         raise ValueError("Graph transcript response did not contain a value list.")
-    transcript_ids: list[str] = []
+    records: list[GraphTranscriptRecord] = []
     for item in raw_items:
         if not isinstance(item, dict):
             continue
         transcript_id = _optional_string(str(item.get("id") or ""))
         if transcript_id is not None:
-            transcript_ids.append(transcript_id)
-    return tuple(transcript_ids)
+            created_at = None
+            raw_created_at = item.get("createdDateTime")
+            created_at_text = _optional_string(raw_created_at) if isinstance(raw_created_at, str) else None
+            created_at_missing = "createdDateTime" not in item or (
+                isinstance(raw_created_at, str) and created_at_text is None
+            )
+            if created_at_text is not None:
+                try:
+                    parsed_created_at = datetime.fromisoformat(created_at_text.replace("Z", "+00:00"))
+                    if parsed_created_at.tzinfo is not None:
+                        created_at = parsed_created_at
+                except ValueError:
+                    pass
+            records.append(
+                GraphTranscriptRecord(
+                    transcript_id=transcript_id,
+                    created_at=created_at,
+                    created_at_missing=created_at_missing,
+                )
+            )
+    return tuple(records)
+
+
+def _fetch_all_graph_transcript_records(
+    url: str,
+    access_token: str,
+    fetch_json: Callable[[str, str], dict[str, object]],
+) -> tuple[GraphTranscriptRecord, ...]:
+    records: list[GraphTranscriptRecord] = []
+    next_url: str | None = url
+    visited_urls: set[str] = set()
+    while next_url is not None:
+        if next_url in visited_urls:
+            raise ValueError("Graph transcript response contained a repeated pagination URL.")
+        visited_urls.add(next_url)
+        payload = fetch_json(next_url, access_token)
+        records.extend(_graph_transcript_records(payload))
+        raw_next_url = payload.get("@odata.nextLink")
+        if raw_next_url is None:
+            next_url = None
+        elif isinstance(raw_next_url, str) and raw_next_url.strip():
+            next_url = raw_next_url.strip()
+        else:
+            raise ValueError("Graph transcript response contained an invalid pagination URL.")
+    return tuple(records)
+
+
+def _transcript_diagnostics(
+    meeting: OutlookMeetingCandidate,
+    candidates: tuple[GraphTranscriptRecord, ...],
+    selected: tuple[GraphTranscriptRecord, ...],
+    *,
+    local_action: LocalTranscriptAction,
+) -> TranscriptDiagnostics:
+    return TranscriptDiagnostics(
+        candidate_count=len(candidates),
+        selected_transcripts=tuple(
+            SelectedTranscriptDiagnostic(record.transcript_id, record.created_at) for record in selected
+        ),
+        occurrence_start_at=meeting.start_at,
+        occurrence_end_at=meeting.end_at,
+        local_action=local_action,
+    )
+
+
+def _select_transcripts_for_occurrence(
+    records: tuple[GraphTranscriptRecord, ...],
+    meeting: OutlookMeetingCandidate,
+) -> tuple[GraphTranscriptRecord, ...]:
+    window_start = meeting.start_at - timedelta(minutes=15)
+    window_end = meeting.end_at + timedelta(minutes=30)
+    matching_records = tuple(
+        sorted(
+            (
+                record
+                for record in records
+                if record.created_at is not None and window_start <= record.created_at <= window_end
+            ),
+            key=lambda record: record.created_at or window_start,
+        )
+    )
+    if matching_records:
+        return matching_records
+    if len(records) == 1 and records[0].created_at_missing:
+        return records
+    return ()
 
 
 def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:

@@ -245,6 +245,25 @@ Download available Teams `.vtt` transcripts into
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
 ```
 
+For recurring Teams meetings, transcript sync selects only Graph transcript
+records created from 15 minutes before the Outlook occurrence through 30
+minutes after it ends. A dry run reports the candidate count, selected
+transcript IDs and timestamps, and the occurrence window without downloading
+content:
+
+```bash
+obsidian-agent meetings sync-transcripts --since 2026-07-17 --dry-run
+```
+
+Verify that `selected_transcript_created_at` belongs to the intended occurrence
+before rerunning with `--download-transcripts`. Downloads write a sibling
+`.vtt.provenance.json` sidecar containing the Outlook event/occurrence,
+selected Graph transcript metadata, and content hash. If a legacy managed VTT
+does not match the selected occurrence, the old bytes are preserved once under
+`00_Intake/bundles/fallbacks/stale_transcripts` before the managed VTT and its
+provenance are replaced. A later run with matching provenance performs no Graph
+content download.
+
 Dry-run which written meeting bundles are ready to feed into the existing processor:
 
 ```bash
@@ -356,7 +375,9 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - `obsidian-agent meetings sync-transcripts` currently requires exactly one of
   `--dry-run`, `--write-bundles`, or `--download-transcripts`. `--dry-run` and
   `--write-bundles` plan candidate meetings from Outlook metadata without
-  downloading transcripts. `--download-transcripts` downloads available Teams
+  downloading transcripts; dry-run Graph metadata discovery still performs
+  occurrence-aware transcript selection and prints safe selection diagnostics.
+  `--download-transcripts` downloads available Teams
   `.vtt` transcript content into `00_Intake/bundles/raw_transcripts`. When Graph
   transcript content is unavailable but transcript `metadataContent` is
   available, the same command falls back to writing a local Markdown transcript

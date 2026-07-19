@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from base64 import urlsafe_b64encode
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ from obsidian_intake_agent.meetings import (
     MeetingAttendee,
     MeetingDiscoverySnapshot,
     OutlookMeetingCandidate,
+    SelectedTranscriptDiagnostic,
+    TranscriptDiagnostics,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
@@ -32,6 +35,7 @@ from obsidian_intake_agent.meetings import (
     render_meeting_identity_sidecar,
     render_outlook_metadata_sidecar,
     render_transcript_sync_plan,
+    transcript_provenance,
     write_planned_bundle_notes,
 )
 from obsidian_intake_agent.meetings import process_bundles as process_bundles_module
@@ -40,6 +44,47 @@ from obsidian_intake_agent.processors.meeting_processor import ProcessResult
 
 
 class TranscriptSyncPlannerTests(unittest.TestCase):
+    def test_dry_run_renders_safe_structured_transcript_diagnostics(self) -> None:
+        meeting = _recurring_meeting()
+        diagnostics = TranscriptDiagnostics(
+            candidate_count=3,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic("segment-2", datetime.fromisoformat("2026-07-17T17:20:00+00:00")),
+                SelectedTranscriptDiagnostic("segment-1", datetime.fromisoformat("2026-07-17T17:05:00+00:00")),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="downloaded",
+        )
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        "Teams .vtt transcript",
+                        "available",
+                        "Downloaded transcript.",
+                        diagnostics=diagnostics,
+                    ),
+                )
+            ),
+            since=date(2026, 7, 17),
+            now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+        )
+
+        rendered = render_transcript_sync_plan(plan)
+
+        self.assertIn("  transcript_candidates: 3", rendered)
+        self.assertLess(
+            rendered.index("selected_transcript_id: segment-1"), rendered.index("selected_transcript_id: segment-2")
+        )
+        self.assertIn("  selected_transcript_created_at: 2026-07-17T17:05:00+00:00", rendered)
+        self.assertIn(
+            "  selected_for_occurrence: 2026-07-17T17:00:00+00:00 to 2026-07-17T17:25:00+00:00",
+            rendered,
+        )
+        self.assertIn("  local_transcript_action: downloaded", rendered)
+
     def test_fetch_graph_json_omits_outlook_timezone_preference_by_default(self) -> None:
         captured: dict[str, object] = {}
 
@@ -1044,6 +1089,97 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].status, "missing")
         self.assertEqual(artifacts[0].detail, "Graph transcript discovery returned no transcript records.")
 
+    def test_chained_artifact_discovery_does_not_readmit_unverifiable_vtt(self) -> None:
+        meeting = _recurring_meeting()
+        stale_path = Path("/vault/2026-07-17 - Teams - Recurring Platform Sync.vtt")
+        diagnostics = TranscriptDiagnostics(
+            candidate_count=2,
+            selected_transcripts=(),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="none",
+        )
+        downloader = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="missing",
+                    detail="No transcript record matched this occurrence.",
+                    diagnostics=diagnostics,
+                ),
+            )
+        )
+        local_client = _StubArtifactDiscoveryClient(
+            artifacts=(
+                MeetingArtifact(
+                    source_name="Teams .vtt transcript",
+                    status="available",
+                    detail="Matched local intake artifact.",
+                    matched_paths=(stale_path,),
+                ),
+            )
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(downloader, local_client).discover_artifacts(meeting=meeting)
+
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(artifacts[0].matched_paths, ())
+        self.assertEqual(artifacts[0].diagnostics, diagnostics)
+
+    def test_chained_artifact_discovery_does_not_readmit_vtt_after_downloader_discovery_failure(self) -> None:
+        stale_path = Path("/vault/2026-07-17 - Teams - Recurring Platform Sync.vtt")
+        downloader_artifact = MeetingArtifact(
+            source_name="Teams .vtt transcript",
+            status="not_attempted",
+            detail="Graph transcript discovery failed: timeout.",
+        )
+        local_artifact = MeetingArtifact(
+            source_name="Teams .vtt transcript",
+            status="available",
+            detail="Matched local intake artifact.",
+            matched_paths=(stale_path,),
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(
+            _StubArtifactDiscoveryClient(artifacts=(downloader_artifact,)),
+            _StubArtifactDiscoveryClient(artifacts=(local_artifact,)),
+        ).discover_artifacts(meeting=_recurring_meeting())
+
+        self.assertEqual(artifacts, (downloader_artifact,))
+
+    def test_chained_artifact_discovery_preserves_verified_vtt_diagnostics(self) -> None:
+        meeting = _recurring_meeting()
+        transcript_path = Path("/vault/2026-07-17 - Teams - Recurring Platform Sync.vtt")
+        diagnostics = TranscriptDiagnostics(
+            candidate_count=2,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="stale_preserved_and_replaced",
+        )
+        downloader_artifact = MeetingArtifact(
+            source_name="Teams .vtt transcript",
+            status="available",
+            detail="Replaced stale Graph transcript after occurrence validation.",
+            matched_paths=(transcript_path,),
+            diagnostics=diagnostics,
+        )
+        local_artifact = MeetingArtifact(
+            source_name="Teams .vtt transcript",
+            status="available",
+            detail="Matched local intake artifact.",
+            matched_paths=(transcript_path,),
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(
+            _StubArtifactDiscoveryClient(artifacts=(downloader_artifact,)),
+            _StubArtifactDiscoveryClient(artifacts=(local_artifact,)),
+        ).discover_artifacts(meeting=meeting)
+
+        self.assertEqual(artifacts, (downloader_artifact,))
+
     def test_chained_artifact_discovery_preserves_graph_not_attempted_detail_over_later_local_missing(self) -> None:
         graph_client = _StubArtifactDiscoveryClient(
             artifacts=(
@@ -1337,7 +1473,12 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(token, "token")
             if len(requested_urls) == 1:
                 return {"value": [{"id": "opaque-meeting-id"}]}
-            return {"value": [{"id": "transcript-1"}, {"id": "transcript-2"}]}
+            return {
+                "value": [
+                    {"id": "transcript-1", "createdDateTime": "2026-05-04T13:05:00Z"},
+                    {"id": "transcript-2", "createdDateTime": "2026-05-04T13:25:00Z"},
+                ]
+            }
 
         client = GraphTranscriptDiscoveryClient(
             access_token="token", api_base_url="https://graph.example/v1.0", fetch_json=fetch_json
@@ -1365,6 +1506,178 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].status, "available")
         self.assertIn("transcript-1, transcript-2", artifacts[0].detail or "")
         self.assertEqual(artifacts[0].matched_paths, ())
+        self.assertEqual(
+            artifacts[0].diagnostics,
+            TranscriptDiagnostics(
+                candidate_count=2,
+                selected_transcripts=(
+                    SelectedTranscriptDiagnostic("transcript-1", datetime.fromisoformat("2026-05-04T13:05:00+00:00")),
+                    SelectedTranscriptDiagnostic("transcript-2", datetime.fromisoformat("2026-05-04T13:25:00+00:00")),
+                ),
+                occurrence_start_at=datetime.fromisoformat("2026-05-04T13:00:00+00:00"),
+                occurrence_end_at=datetime.fromisoformat("2026-05-04T13:30:00+00:00"),
+                local_action="none",
+            ),
+        )
+
+    def test_graph_transcript_discovery_selects_only_current_recurring_occurrence(self) -> None:
+        json_call_count = 0
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            nonlocal json_call_count
+            json_call_count += 1
+            if json_call_count == 1:
+                return {"value": [{"id": "opaque-meeting-id"}]}
+            return {
+                "value": [
+                    {"id": "july-8", "createdDateTime": "2026-07-08T17:25:00Z"},
+                    {"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"},
+                ]
+            }
+
+        artifacts = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            api_base_url="https://graph.example/v1.0",
+            fetch_json=fetch_json,
+        ).discover_artifacts(meeting=_recurring_meeting())
+
+        self.assertEqual(artifacts[0].status, "available")
+        self.assertIn("july-17", artifacts[0].detail or "")
+        self.assertNotIn("july-8", artifacts[0].detail or "")
+        assert artifacts[0].diagnostics is not None
+        self.assertEqual(artifacts[0].diagnostics.candidate_count, 2)
+        self.assertEqual(
+            artifacts[0].diagnostics.selected_transcripts,
+            (SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),),
+        )
+
+    def test_graph_transcript_discovery_marks_missing_when_no_record_matches_occurrence(self) -> None:
+        json_call_count = 0
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            nonlocal json_call_count
+            json_call_count += 1
+            if json_call_count == 1:
+                return {"value": [{"id": "opaque-meeting-id"}]}
+            return {"value": [{"id": "july-8", "createdDateTime": "2026-07-08T17:25:00Z"}]}
+
+        artifacts = GraphTranscriptDiscoveryClient(
+            access_token="token",
+            api_base_url="https://graph.example/v1.0",
+            fetch_json=fetch_json,
+        ).discover_artifacts(meeting=_recurring_meeting())
+
+        self.assertEqual(artifacts[0].status, "missing")
+        self.assertEqual(
+            artifacts[0].detail,
+            "Graph transcript discovery returned no transcript records for this meeting occurrence.",
+        )
+        assert artifacts[0].diagnostics is not None
+        self.assertEqual(artifacts[0].diagnostics.candidate_count, 1)
+        self.assertEqual(artifacts[0].diagnostics.selected_transcripts, ())
+
+    def test_chained_discovery_preserves_graph_diagnostics_on_existing_local_transcript(self) -> None:
+        meeting = _recurring_meeting()
+        local_path = Path("/vault/2026-07-17 - Teams - Recurring Platform Sync.md")
+        local_artifact = MeetingArtifact(
+            "Teams transcript text",
+            "available",
+            "Matched local transcript.",
+            matched_paths=(local_path,),
+        )
+        graph_diagnostics = TranscriptDiagnostics(
+            candidate_count=2,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="none",
+        )
+        chain = ChainedMeetingArtifactDiscoveryClient(
+            _StubArtifactDiscoveryClient(artifacts=(local_artifact,)),
+            _StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "available",
+                        "Graph metadata available.",
+                        diagnostics=graph_diagnostics,
+                    ),
+                )
+            ),
+        )
+
+        artifacts = chain.discover_artifacts(meeting=meeting)
+
+        self.assertEqual(artifacts[0].matched_paths, (local_path,))
+        self.assertEqual(artifacts[0].diagnostics, graph_diagnostics)
+
+    def test_chained_discovery_carries_graph_diagnostics_to_later_local_transcript(self) -> None:
+        meeting = _recurring_meeting()
+        local_path = Path("/vault/2026-07-17 - Teams - Recurring Platform Sync.md")
+        graph_diagnostics = TranscriptDiagnostics(
+            candidate_count=2,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="none",
+        )
+        graph_artifact = MeetingArtifact(
+            "Teams transcript text",
+            "available",
+            "Graph metadata available.",
+            diagnostics=graph_diagnostics,
+        )
+        local_artifact = MeetingArtifact(
+            "Teams transcript text",
+            "available",
+            "Matched local transcript.",
+            matched_paths=(local_path,),
+        )
+
+        artifacts = ChainedMeetingArtifactDiscoveryClient(
+            _StubArtifactDiscoveryClient(artifacts=(graph_artifact,)),
+            _StubArtifactDiscoveryClient(artifacts=(local_artifact,)),
+        ).discover_artifacts(meeting=meeting)
+
+        self.assertEqual(artifacts[0].matched_paths, (local_path,))
+        self.assertEqual(artifacts[0].diagnostics, graph_diagnostics)
+
+    def test_dry_run_renders_diagnostics_from_transcript_metadata_artifact(self) -> None:
+        meeting = _recurring_meeting()
+        diagnostics = TranscriptDiagnostics(
+            candidate_count=2,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="none",
+        )
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "available",
+                        "Graph metadata available.",
+                        diagnostics=diagnostics,
+                    ),
+                )
+            ),
+            since=date(2026, 7, 17),
+            now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+        )
+
+        rendered = render_transcript_sync_plan(plan)
+
+        self.assertIn("  transcript_candidates: 2", rendered)
+        self.assertIn("  selected_transcript_id: july-17", rendered)
+        self.assertIn("  selected_transcript_created_at: 2026-07-17T17:25:00+00:00", rendered)
 
     def test_graph_transcript_discovery_marks_empty_transcript_list_missing(self) -> None:
         requested_urls: list[str] = []
@@ -1576,7 +1889,732 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(bundle_note.processor_input_path, transcript_path)
             self.assertEqual(bundle_note.processor_input_source_name, "Teams .vtt transcript")
 
+    def test_graph_transcript_download_selects_record_for_current_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            requested_json_urls: list[str] = []
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                requested_json_urls.append(url)
+                self.assertEqual(token, "token")
+                if len(requested_json_urls) == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {
+                    "value": [
+                        {"id": "july-8", "createdDateTime": "2026-07-08T17:25:00Z"},
+                        {"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"},
+                    ]
+                }
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                if "/july-17/" in url:
+                    return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCurrent occurrence"
+                return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nOlder occurrence"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+            meeting = OutlookMeetingCandidate(
+                event_id="evt-recurring",
+                subject="Recurring Platform Sync",
+                start_at=datetime.fromisoformat("2026-07-17T17:00:00+00:00"),
+                end_at=datetime.fromisoformat("2026-07-17T17:25:00+00:00"),
+                response_status="accepted",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+            transcript_path = (
+                intake_root / "bundles" / "raw_transcripts" / "2026-07-17 - Teams - Recurring Platform Sync.vtt"
+            )
+
+            self.assertEqual(
+                requested_content_urls,
+                [
+                    "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/"
+                    "transcripts/july-17/content?%24format=text%2Fvtt"
+                ],
+            )
+            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(
+                transcript_path.read_text(encoding="utf-8"),
+                "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCurrent occurrence\n",
+            )
+
+    def test_graph_transcript_download_selects_current_occurrence_from_later_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            requested_json_urls: list[str] = []
+            requested_content_urls: list[str] = []
+            page_two_url = "https://graph.example/v1.0/transcripts?page=2"
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                requested_json_urls.append(url)
+                self.assertEqual(token, "token")
+                if len(requested_json_urls) == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                if url == page_two_url:
+                    return {"value": [{"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"}]}
+                return {
+                    "value": [{"id": "july-8", "createdDateTime": "2026-07-08T17:25:00Z"}],
+                    "@odata.nextLink": page_two_url,
+                }
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCurrent occurrence"
+
+            artifacts = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=Path(tmp_dir) / "00_Intake",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            ).discover_artifacts(meeting=_recurring_meeting())
+
+            self.assertIn(page_two_url, requested_json_urls)
+            self.assertEqual(len(requested_content_urls), 1)
+            self.assertIn("/transcripts/july-17/content?", requested_content_urls[0])
+            self.assertEqual(artifacts[0].status, "available")
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.candidate_count, 2)
+
+    def test_graph_transcript_download_replaces_unproven_stale_managed_vtt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            transcript_path = (
+                intake_root / "bundles" / "raw_transcripts" / "2026-07-17 - Teams - Recurring Platform Sync.vtt"
+            )
+            old_content = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nOLD\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(old_content)
+            json_call_count = 0
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {
+                    "value": [
+                        {"id": "july-8", "createdDateTime": "2026-07-08T17:25:00Z"},
+                        {"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"},
+                        {"id": "july-24", "createdDateTime": "2026-07-24T17:25:00Z"},
+                    ]
+                }
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=lambda url, token: b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nNEW",
+            )
+            meeting = OutlookMeetingCandidate(
+                event_id="evt-recurring",
+                subject="Recurring Platform Sync",
+                start_at=datetime.fromisoformat("2026-07-17T17:00:00+00:00"),
+                end_at=datetime.fromisoformat("2026-07-17T17:25:00+00:00"),
+                response_status="accepted",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+
+            old_hash = meeting_sync_module.hashlib.sha256(old_content).hexdigest()
+            archive_path = (
+                intake_root
+                / "bundles"
+                / "fallbacks"
+                / "stale_transcripts"
+                / f"{transcript_path.stem}-{old_hash[:8]}.vtt"
+            )
+            provenance_path = transcript_path.with_suffix(".vtt.provenance.json")
+            self.assertEqual(
+                transcript_path.read_bytes(),
+                b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nNEW\n",
+            )
+            self.assertEqual(archive_path.read_bytes(), old_content)
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(provenance),
+                {
+                    "schema_version",
+                    "event_id",
+                    "occurrence_start_at",
+                    "occurrence_end_at",
+                    "transcripts",
+                    "content_sha256",
+                    "downloaded_at",
+                },
+            )
+            self.assertEqual(provenance["schema_version"], 1)
+            self.assertEqual(provenance["event_id"], "evt-recurring")
+            self.assertEqual(provenance["occurrence_start_at"], "2026-07-17T17:00:00+00:00")
+            self.assertEqual(provenance["occurrence_end_at"], "2026-07-17T17:25:00+00:00")
+            self.assertEqual(provenance["transcripts"], [{"id": "july-17", "created_at": "2026-07-17T17:25:00+00:00"}])
+            self.assertEqual(
+                provenance["content_sha256"],
+                meeting_sync_module.hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
+            )
+            self.assertIsInstance(provenance["downloaded_at"], str)
+            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.candidate_count, 3)
+            self.assertEqual(
+                [item.transcript_id for item in artifacts[0].diagnostics.selected_transcripts],
+                ["july-17"],
+            )
+
+            rerun_artifacts = client.discover_artifacts(meeting=meeting)
+
+            self.assertEqual(json_call_count, 2)
+            self.assertEqual(list(archive_path.parent.glob("*.vtt")), [archive_path])
+            self.assertIn("Validated", rerun_artifacts[0].detail or "")
+            assert rerun_artifacts[0].diagnostics is not None
+            self.assertIsNone(rerun_artifacts[0].diagnostics.candidate_count)
+
+            rerun_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(artifacts=rerun_artifacts),
+                since=date(2026, 7, 17),
+                now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+            )
+            self.assertIn("  transcript_candidates: unknown", render_transcript_sync_plan(rerun_plan))
+            metadata = json.loads(render_outlook_metadata_sidecar(meeting=meeting, bundle=rerun_plan.items[0].bundle))
+            self.assertIsNone(metadata["artifacts"][0]["transcript_diagnostics"]["candidate_count"])
+
+    def test_graph_transcript_download_short_circuits_with_matching_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _recurring_meeting()
+            transcript_path = intake_root / meeting_sync_module._transcript_relative_path(meeting)
+            content = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCURRENT\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(content)
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                transcripts=[{"id": "july-17", "created_at": "2026-07-17T17:25:00+00:00"}],
+                content=content,
+            )
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                fetch_json=lambda url, token: self.fail("valid provenance must short-circuit Graph discovery"),
+                fetch_bytes=lambda url, token: self.fail("valid provenance must short-circuit content download"),
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+
+            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
+            self.assertIn("july-17", artifacts[0].detail or "")
+            self.assertEqual(
+                artifacts[0].diagnostics,
+                TranscriptDiagnostics(
+                    candidate_count=None,
+                    selected_transcripts=(
+                        SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),
+                    ),
+                    occurrence_start_at=meeting.start_at,
+                    occurrence_end_at=meeting.end_at,
+                    local_action="validated",
+                ),
+            )
+
+    def test_graph_transcript_repair_orders_archive_before_target_before_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _recurring_meeting()
+            transcript_path = intake_root / meeting_sync_module._transcript_relative_path(meeting)
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(b"WEBVTT\n\nOLD\n")
+            json_call_count = 0
+            events: list[str] = []
+            real_archive = transcript_provenance.archive_stale_transcript
+            real_atomic_write = transcript_provenance.atomic_write_bytes
+            real_write_provenance = transcript_provenance.write_provenance
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"}]}
+
+            def archive(path: Path, *, archive_dir: Path, content: bytes) -> Path:
+                events.append("archive")
+                return real_archive(path, archive_dir=archive_dir, content=content)
+
+            def atomic_write(path: Path, content: bytes) -> None:
+                events.append("target")
+                real_atomic_write(path, content)
+
+            def write_provenance(
+                path: Path,
+                *,
+                event_id: str,
+                occurrence_start_at: datetime,
+                occurrence_end_at: datetime,
+                transcripts: Sequence[Mapping[str, object]],
+                content: bytes,
+            ) -> None:
+                events.append("provenance")
+                real_write_provenance(
+                    path,
+                    event_id=event_id,
+                    occurrence_start_at=occurrence_start_at,
+                    occurrence_end_at=occurrence_end_at,
+                    transcripts=transcripts,
+                    content=content,
+                )
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=lambda url, token: b"WEBVTT\n\nNEW\n",
+            )
+
+            with (
+                patch.object(meeting_sync_module, "archive_stale_transcript", side_effect=archive),
+                patch.object(meeting_sync_module, "atomic_write_bytes", side_effect=atomic_write),
+                patch.object(meeting_sync_module, "write_provenance", side_effect=write_provenance),
+            ):
+                client.discover_artifacts(meeting=meeting)
+
+            self.assertEqual(events, ["archive", "target", "provenance"])
+
+    def test_graph_transcript_download_backfills_provenance_for_matching_legacy_vtt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _recurring_meeting()
+            transcript_path = intake_root / meeting_sync_module._transcript_relative_path(meeting)
+            content = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCURRENT\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(content)
+            json_call_count = 0
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"}]}
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=lambda url, token: content.rstrip(b"\n"),
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+
+            self.assertEqual(transcript_path.read_bytes(), content)
+            self.assertTrue(transcript_provenance.provenance_path(transcript_path).is_file())
+            self.assertFalse((intake_root / "bundles" / "fallbacks" / "stale_transcripts").exists())
+            self.assertIn("Backfilled", artifacts[0].detail or "")
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.local_action, "provenance_backfilled")
+
+    def test_graph_transcript_download_preserves_unvalidated_vtt_when_occurrence_has_no_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _recurring_meeting()
+            transcript_path = intake_root / meeting_sync_module._transcript_relative_path(meeting)
+            old_content = b"WEBVTT\n\nOLD\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(old_content)
+            json_call_count = 0
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "july-8", "createdDateTime": "2026-07-08T17:25:00Z"}]}
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=lambda url, token: self.fail("nonmatching transcript must not download"),
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+
+            self.assertEqual(transcript_path.read_bytes(), old_content)
+            self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
+            self.assertTrue(all(not artifact.matched_paths for artifact in artifacts))
+            self.assertFalse(transcript_provenance.provenance_path(transcript_path).exists())
+
+    def test_graph_transcript_download_repairs_tampered_vtt_after_provenance_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _recurring_meeting()
+            transcript_path = intake_root / meeting_sync_module._transcript_relative_path(meeting)
+            expected_content = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCURRENT\n"
+            tampered_content = b"WEBVTT\n\nTAMPERED\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(expected_content)
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                transcripts=[{"id": "july-17", "created_at": "2026-07-17T17:25:00+00:00"}],
+                content=expected_content,
+            )
+            transcript_path.write_bytes(tampered_content)
+            json_call_count = 0
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "july-17", "createdDateTime": "2026-07-17T17:25:00Z"}]}
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=lambda url, token: expected_content,
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+
+            tampered_hash = meeting_sync_module.hashlib.sha256(tampered_content).hexdigest()[:8]
+            archive_path = (
+                intake_root
+                / "bundles"
+                / "fallbacks"
+                / "stale_transcripts"
+                / f"{transcript_path.stem}-{tampered_hash}.vtt"
+            )
+            self.assertEqual(transcript_path.read_bytes(), expected_content)
+            self.assertEqual(archive_path.read_bytes(), tampered_content)
+            self.assertIn("Replaced stale", artifacts[0].detail or "")
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.local_action, "stale_preserved_and_replaced")
+
+    def test_graph_transcript_download_merges_current_occurrence_segments_chronologically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            requested_content_urls: list[str] = []
+            json_call_count = 0
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {
+                    "value": [
+                        {"id": "segment-2", "createdDateTime": "2026-07-17T17:20:00Z"},
+                        {"id": "segment-1", "createdDateTime": "2026-07-17T17:05:00Z"},
+                    ]
+                }
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                if "/segment-1/" in url:
+                    return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nFirst segment\n"
+                return b"WEBVTT\n\n00:00:03.000 --> 00:00:04.000\nSecond segment\n"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+            meeting = OutlookMeetingCandidate(
+                event_id="evt-recurring",
+                subject="Recurring Platform Sync",
+                start_at=datetime.fromisoformat("2026-07-17T17:00:00+00:00"),
+                end_at=datetime.fromisoformat("2026-07-17T17:25:00+00:00"),
+                response_status="accepted",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+
+            artifacts = client.discover_artifacts(meeting=meeting)
+            transcript_path = (
+                intake_root / "bundles" / "raw_transcripts" / "2026-07-17 - Teams - Recurring Platform Sync.vtt"
+            )
+            transcript_content = transcript_path.read_text(encoding="utf-8")
+
+            self.assertEqual(
+                requested_content_urls,
+                [
+                    "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/"
+                    "transcripts/segment-1/content?%24format=text%2Fvtt",
+                    "https://graph.example/v1.0/me/onlineMeetings/opaque-meeting-id/"
+                    "transcripts/segment-2/content?%24format=text%2Fvtt",
+                ],
+            )
+            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(transcript_content.count("WEBVTT"), 1)
+            self.assertLess(transcript_content.index("First segment"), transcript_content.index("Second segment"))
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.candidate_count, 2)
+            self.assertEqual(
+                [item.transcript_id for item in artifacts[0].diagnostics.selected_transcripts],
+                ["segment-1", "segment-2"],
+            )
+            self.assertEqual(artifacts[0].diagnostics.local_action, "downloaded")
+
+    def test_merged_vtt_bytes_strips_signature_header_text_and_metadata(self) -> None:
+        content = meeting_sync_module._merged_vtt_bytes(
+            [
+                b"\xef\xbb\xbfWEBVTT - Segment 1\nKind: captions\nLanguage: en\n\n"
+                b"00:00:01.000 --> 00:00:02.000\nFirst segment\n",
+                b"WEBVTT\t- Segment 2\nKind: captions\nLanguage: en\n\n00:00:03.000 --> 00:00:04.000\nSecond segment\n",
+            ]
+        )
+
+        self.assertEqual(
+            content,
+            b"WEBVTT\n\n"
+            b"00:00:01.000 --> 00:00:02.000\nFirst segment\n\n"
+            b"00:00:03.000 --> 00:00:04.000\nSecond segment\n",
+        )
+
+    def test_graph_transcript_download_returns_missing_when_no_timestamp_matches_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_call_count = 0
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "older-record", "createdDateTime": "2026-04-27T13:30:00Z"}]}
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                return b"WEBVTT\n"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=Path(tmp_dir) / "00_Intake",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+
+            artifacts = client.discover_artifacts(
+                meeting=_meeting(
+                    event_id="evt-1",
+                    subject="Platform Sync",
+                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                    online_meeting_provider="teamsForBusiness",
+                )
+            )
+
+            self.assertEqual(requested_content_urls, [])
+            self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
+            self.assertEqual(
+                artifacts[0].diagnostics,
+                TranscriptDiagnostics(
+                    candidate_count=1,
+                    selected_transcripts=(),
+                    occurrence_start_at=datetime.fromisoformat("2026-05-04T13:00:00+00:00"),
+                    occurrence_end_at=datetime.fromisoformat("2026-05-04T13:30:00+00:00"),
+                    local_action="none",
+                ),
+            )
+
+    def test_graph_transcript_download_returns_missing_for_multiple_timestamp_free_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_call_count = 0
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "ambiguous-1"}, {"id": "ambiguous-2"}]}
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                return b"WEBVTT\n"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=Path(tmp_dir) / "00_Intake",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+
+            artifacts = client.discover_artifacts(
+                meeting=_meeting(
+                    event_id="evt-1",
+                    subject="Platform Sync",
+                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                    online_meeting_provider="teamsForBusiness",
+                )
+            )
+
+            self.assertEqual(requested_content_urls, [])
+            self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
+
+    def test_graph_transcript_download_rejects_timestamp_free_record_among_nonmatching_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_call_count = 0
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {
+                    "value": [
+                        {"id": "older-record", "createdDateTime": "2026-04-27T13:30:00Z"},
+                        {"id": "timestamp-free"},
+                    ]
+                }
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCompatible record"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=Path(tmp_dir) / "00_Intake",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+
+            artifacts = client.discover_artifacts(
+                meeting=_meeting(
+                    event_id="evt-1",
+                    subject="Platform Sync",
+                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                    online_meeting_provider="teamsForBusiness",
+                )
+            )
+
+            self.assertEqual(requested_content_urls, [])
+            self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
+
+    def test_graph_transcript_download_excludes_malformed_timestamp_from_legacy_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_call_count = 0
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {
+                    "value": [
+                        {"id": "older-record", "createdDateTime": "2026-04-27T13:30:00Z"},
+                        {"id": "malformed-record", "createdDateTime": "not-a-date"},
+                    ]
+                }
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                return b"WEBVTT\n"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=Path(tmp_dir) / "00_Intake",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+
+            artifacts = client.discover_artifacts(
+                meeting=_meeting(
+                    event_id="evt-1",
+                    subject="Platform Sync",
+                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                    online_meeting_provider="teamsForBusiness",
+                )
+            )
+
+            self.assertEqual(requested_content_urls, [])
+            self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
+
+    def test_graph_transcript_download_supports_single_timestamp_free_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_call_count = 0
+            requested_content_urls: list[str] = []
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                nonlocal json_call_count
+                json_call_count += 1
+                self.assertEqual(token, "token")
+                if json_call_count == 1:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                return {"value": [{"id": "timestamp-free"}]}
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                requested_content_urls.append(url)
+                self.assertEqual(token, "token")
+                return b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCompatible record"
+
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=Path(tmp_dir) / "00_Intake",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+                fetch_bytes=fetch_bytes,
+            )
+
+            artifacts = client.discover_artifacts(
+                meeting=_meeting(
+                    event_id="evt-1",
+                    subject="Platform Sync",
+                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                    online_meeting_provider="teamsForBusiness",
+                )
+            )
+
+            self.assertEqual(len(requested_content_urls), 1)
+            self.assertIn("/transcripts/timestamp-free/content?", requested_content_urls[0])
+            self.assertEqual(artifacts[0].status, "available")
+
     def test_graph_transcript_download_preserves_opaque_online_meeting_id_path_characters(self) -> None:
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
         requested_json_urls: list[str] = []
 
         def fetch_json(url: str, token: str) -> dict[str, object]:
@@ -1592,7 +2630,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
         client = GraphTranscriptDownloadClient(
             access_token="token",
-            intake_root=Path("/tmp/00_Intake"),
+            intake_root=Path(tmp_dir.name) / "00_Intake",
             api_base_url="https://graph.example/v1.0",
             fetch_json=fetch_json,
             fetch_bytes=lambda url, token: self.fail("fetch_bytes should not be called when no transcripts exist"),
@@ -1619,13 +2657,31 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         )
         self.assertEqual(artifacts[0].status, "missing")
         self.assertEqual(artifacts[0].detail, "Graph transcript discovery returned no transcript records.")
+        assert artifacts[0].diagnostics is not None
+        self.assertEqual(artifacts[0].diagnostics.candidate_count, 0)
+        self.assertEqual(artifacts[0].diagnostics.selected_transcripts, ())
+        self.assertEqual(artifacts[0].diagnostics.local_action, "none")
 
-    def test_graph_transcript_download_reuses_existing_vtt_without_fetching(self) -> None:
+    def test_graph_transcript_download_reuses_proven_existing_vtt_without_fetching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             transcript_path = intake_root / "bundles" / "raw_transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
             transcript_path.parent.mkdir(parents=True)
             transcript_path.write_text("WEBVTT\n", encoding="utf-8")
+            meeting = _meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                transcripts=[{"id": "transcript-1", "created_at": None}],
+                content=transcript_path.read_bytes(),
+            )
             client = GraphTranscriptDownloadClient(
                 access_token="token",
                 intake_root=intake_root,
@@ -1633,23 +2689,18 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 fetch_bytes=lambda url, token: self.fail("fetch_bytes should not be called for existing VTT"),
             )
 
-            artifacts = client.discover_artifacts(
-                meeting=_meeting(
-                    event_id="evt-1",
-                    subject="Platform Sync",
-                    join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
-                    online_meeting_provider="teamsForBusiness",
-                )
-            )
+            artifacts = client.discover_artifacts(meeting=meeting)
 
             self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
             self.assertEqual(artifacts[0].status, "available")
             self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
 
     def test_graph_transcript_download_marks_content_permission_blocked(self) -> None:
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
         client = GraphTranscriptDownloadClient(
             access_token="token",
-            intake_root=Path("/tmp/00_Intake"),
+            intake_root=Path(tmp_dir.name) / "00_Intake",
             fetch_json=lambda url, token: {"value": [{"id": "transcript-1"}]},
             fetch_bytes=lambda url, token: (_ for _ in ()).throw(_SyntheticHTTPError(url, 403, "Forbidden")),
         )
@@ -1666,11 +2717,17 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
         self.assertEqual(artifacts[0].status, "permission_blocked")
         self.assertEqual(artifacts[0].detail, "Graph transcript content download failed with HTTP 403.")
+        assert artifacts[0].diagnostics is not None
+        self.assertEqual(artifacts[0].diagnostics.candidate_count, 1)
+        self.assertEqual(artifacts[0].diagnostics.selected_transcripts[0].transcript_id, "transcript-1")
+        self.assertEqual(artifacts[0].diagnostics.local_action, "none")
 
     def test_graph_transcript_download_includes_graph_400_message(self) -> None:
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
         client = GraphTranscriptDownloadClient(
             access_token="token",
-            intake_root=Path("/tmp/00_Intake"),
+            intake_root=Path(tmp_dir.name) / "00_Intake",
             fetch_json=lambda url, token: (_ for _ in ()).throw(
                 _SyntheticHTTPError(
                     url,
@@ -2088,6 +3145,73 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertIn('"preferred_input_source_name": "Teams .vtt transcript"', rendered)
             self.assertIn('"source_name": "Teams .vtt transcript"', rendered)
             self.assertIn(f'"matched_paths": [\n        "{transcript_path}"', rendered)
+
+    def test_sidecars_serialize_exact_safe_transcript_diagnostic_keys(self) -> None:
+        meeting = _recurring_meeting()
+        diagnostics = TranscriptDiagnostics(
+            candidate_count=3,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic("segment-2", datetime.fromisoformat("2026-07-17T17:20:00+00:00")),
+                SelectedTranscriptDiagnostic("segment-1", datetime.fromisoformat("2026-07-17T17:05:00+00:00")),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="stale_preserved_and_replaced",
+        )
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Teams .vtt transcript", "available", diagnostics=diagnostics),)
+            ),
+            since=date(2026, 7, 17),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+        )
+        bundle = plan.items[0].bundle
+        bundle_note = plan.items[0].intake_bundle_note
+        assert bundle_note is not None
+
+        metadata = json.loads(render_outlook_metadata_sidecar(meeting=meeting, bundle=bundle))
+        identity = json.loads(
+            render_meeting_identity_sidecar(
+                meeting=meeting,
+                bundle=bundle,
+                bundle_note_path=bundle_note.path,
+                metadata_path=bundle_note.metadata_path,
+            )
+        )
+
+        expected = {
+            "candidate_count": 3,
+            "selected_transcripts": [
+                {"id": "segment-1", "created_at": "2026-07-17T17:05:00+00:00"},
+                {"id": "segment-2", "created_at": "2026-07-17T17:20:00+00:00"},
+            ],
+            "occurrence_start_at": "2026-07-17T17:00:00+00:00",
+            "occurrence_end_at": "2026-07-17T17:25:00+00:00",
+            "local_action": "stale_preserved_and_replaced",
+        }
+        self.assertEqual(metadata["artifacts"][0]["transcript_diagnostics"], expected)
+        self.assertEqual(identity["artifact_statuses"][0]["transcript_diagnostics"], expected)
+        self.assertEqual(
+            set(expected),
+            {"candidate_count", "selected_transcripts", "occurrence_start_at", "occurrence_end_at", "local_action"},
+        )
+
+    def test_sidecars_omit_transcript_diagnostics_when_absent(self) -> None:
+        meeting = _recurring_meeting()
+        artifact = MeetingArtifact("Teams .vtt transcript", "missing", "No transcript.")
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(artifacts=(artifact,)),
+            since=date(2026, 7, 17),
+            now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+        )
+
+        metadata = json.loads(render_outlook_metadata_sidecar(meeting=meeting, bundle=plan.items[0].bundle))
+
+        self.assertNotIn("transcript_diagnostics", metadata["artifacts"][0])
+        self.assertNotIn("transcript_candidates:", render_transcript_sync_plan(plan))
 
     def test_render_meeting_identity_sidecar_renders_expected_json(self) -> None:
         meeting = _meeting(
@@ -2698,6 +3822,18 @@ def _meeting(
         join_url=join_url,
         online_meeting_provider=online_meeting_provider,
         discovered_artifacts=discovered_artifacts,
+    )
+
+
+def _recurring_meeting() -> OutlookMeetingCandidate:
+    return OutlookMeetingCandidate(
+        event_id="evt-recurring",
+        subject="Recurring Platform Sync",
+        start_at=datetime.fromisoformat("2026-07-17T17:00:00+00:00"),
+        end_at=datetime.fromisoformat("2026-07-17T17:25:00+00:00"),
+        response_status="accepted",
+        join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+        online_meeting_provider="teamsForBusiness",
     )
 
 
