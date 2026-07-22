@@ -13,6 +13,18 @@ from .utils.fs import safe_write_text
 from .web_clips.retrieval import render_relevant_web_clips_source
 
 LEADING_DATE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\b")
+WEEKLY_MEETING_LOOKBACK_DAYS = 7
+MEETING_SECTION_BULLET_LIMITS = {
+    "Context": 1,
+    "Summary": 3,
+    "Decisions": 3,
+    "Action Items": 4,
+    "Risks": 2,
+    "Open Questions": 2,
+    "Signals And Tensions": 2,
+    "Decision Signals": 2,
+    "Assumptions": 1,
+}
 
 
 @dataclass(slots=True)
@@ -74,13 +86,16 @@ def build_weekly_source_bundle(config: Config, *, monday: date, run_date: date, 
 
     meetings_path = config.vault_path / config.meetings_dir
     if meetings_path.exists():
-        lookback_start = run_date - timedelta(days=14)
+        lookback_start = run_date - timedelta(days=WEEKLY_MEETING_LOOKBACK_DAYS)
+        recent_meetings: list[tuple[date, Path]] = []
         for path in sorted(meetings_path.glob("*.md")):
             meeting_date = _date_from_filename(path)
             if meeting_date is None:
                 continue
             if lookback_start <= meeting_date <= run_date:
-                parts.append(_render_source(path))
+                recent_meetings.append((meeting_date, path))
+        for _, path in sorted(recent_meetings, reverse=True):
+            parts.append(_render_source(path, compact_meeting_note=True))
 
     if not parts:
         return "No source files were found for this week."
@@ -115,9 +130,60 @@ def _prompt_path_for_mode(mode: str) -> Path:
     return repo_root / "prompts" / "friday_weekly_wrap_prompt.md"
 
 
-def _render_source(path: Path) -> str:
+def _render_source(path: Path, *, compact_meeting_note: bool = False) -> str:
     text = path.read_text(encoding="utf-8").strip()
+    if compact_meeting_note:
+        text = _compact_meeting_note_for_weekly(text)
     return f"## Source: {path.name}\n\n{text}"
+
+
+def _compact_meeting_note_for_weekly(text: str) -> str:
+    if text.startswith("---\n"):
+        _, _, remainder = text.partition("\n---\n")
+        if remainder:
+            text = remainder.lstrip()
+    lines = text.splitlines()
+    compacted_lines: list[str] = []
+    current_section: str | None = None
+    section_counts: dict[str, int] = {}
+
+    for line in lines:
+        if line.startswith("# "):
+            compacted_lines.append(line)
+            continue
+
+        if line.startswith("- Date:") or line.startswith("- Source:") or line.startswith("- Title:"):
+            compacted_lines.append(line)
+            continue
+
+        if line.startswith("## "):
+            section_title = line[3:].strip()
+            if section_title in MEETING_SECTION_BULLET_LIMITS:
+                current_section = section_title
+                section_counts.setdefault(section_title, 0)
+                compacted_lines.append("")
+                compacted_lines.append(line)
+            else:
+                current_section = None
+            continue
+
+        if current_section is None:
+            continue
+
+        if not line.strip():
+            continue
+
+        if line.startswith("- ") or line.startswith("> "):
+            if section_counts[current_section] < MEETING_SECTION_BULLET_LIMITS[current_section]:
+                compacted_lines.append(line)
+                section_counts[current_section] += 1
+            continue
+
+        if section_counts[current_section] == 0:
+            compacted_lines.append(f"- {line.strip()}")
+            section_counts[current_section] += 1
+
+    return "\n".join(compacted_lines).strip()
 
 
 def _review_filename(*, monday: date, mode: str) -> str:
