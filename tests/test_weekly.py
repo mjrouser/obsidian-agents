@@ -72,6 +72,57 @@ class WeeklySnapshotTests(unittest.TestCase):
             self.assertIn("- Source: https://example.com", bundle)
             self.assertIn("- Summary: Relevant saved clip.", bundle)
 
+    def test_build_source_bundle_compacts_meeting_notes_for_weekly_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            (vault / "01_Meetings").mkdir(parents=True)
+            (vault / "01_Meetings" / "2026-04-02 - Teams - Sync.md").write_text(
+                "---\nattendees:\n  - Person One\n  - Person Two\n---\n\n"
+                "# 2026-04-02 - Teams - Sync\n\n"
+                "## Summary\n\n- Important summary\n\n"
+                "## Action Items\n\n- [ ] Do the thing\n\n"
+                "## Participants\n\n- Person One\n\n"
+                "## Source\n\n- Source Used: Teams transcript\n\n"
+                "## Verbatim Excerpt\n\n> very long quote\n",
+                encoding="utf-8",
+            )
+
+            bundle = build_weekly_source_bundle(
+                _config(vault),
+                monday=date(2026, 3, 30),
+                run_date=date(2026, 4, 3),
+                mode="briefing",
+            )
+
+            self.assertIn("# 2026-04-02 - Teams - Sync", bundle)
+            self.assertIn("## Summary", bundle)
+            self.assertIn("## Action Items", bundle)
+            self.assertNotIn("attendees:", bundle)
+            self.assertNotIn("## Participants", bundle)
+            self.assertNotIn("## Source\n", bundle)
+            self.assertNotIn("## Verbatim Excerpt", bundle)
+
+    def test_build_source_bundle_keeps_all_meetings_in_lookback_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            meetings = vault / "01_Meetings"
+            meetings.mkdir(parents=True)
+            for day in range(1, 8):
+                (meetings / f"2026-04-0{day} - Teams - Sync {day}.md").write_text(
+                    f"# 2026-04-0{day} - Teams - Sync {day}\n\n## Summary\n\n- Meeting {day}\n",
+                    encoding="utf-8",
+                )
+
+            bundle = build_weekly_source_bundle(
+                _config(vault),
+                monday=date(2026, 3, 30),
+                run_date=date(2026, 4, 7),
+                mode="briefing",
+            )
+
+            for day in range(1, 8):
+                self.assertIn(f"2026-04-0{day} - Teams - Sync {day}.md", bundle)
+
     def test_generate_weekly_snapshot_writes_mode_specific_note(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
