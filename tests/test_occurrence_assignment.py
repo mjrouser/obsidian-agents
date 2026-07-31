@@ -1,6 +1,5 @@
+import unittest
 from datetime import UTC, datetime, timedelta
-
-import pytest
 
 from obsidian_intake_agent.meetings.occurrence_assignment import (
     AssignmentConflict,
@@ -148,7 +147,7 @@ def test_conflicting_duplicate_occurrence_ids_are_rejected_without_echoing_id() 
     start = datetime(2026, 7, 6, 13, 0, tzinfo=UTC)
     occurrence_id = "sensitive-occurrence-id"
 
-    with pytest.raises(ValueError, match="conflicting definitions") as exc_info:
+    with unittest.TestCase().assertRaisesRegex(ValueError, "conflicting definitions") as exc_info:
         assign_transcripts(
             occurrences=(
                 _occurrence(occurrence_id, "series", start),
@@ -157,7 +156,7 @@ def test_conflicting_duplicate_occurrence_ids_are_rejected_without_echoing_id() 
             candidates=(),
         )
 
-    assert occurrence_id not in str(exc_info.value)
+    assert occurrence_id not in str(exc_info.exception)
 
 
 def test_identical_duplicate_candidates_do_not_duplicate_assignment() -> None:
@@ -222,3 +221,16 @@ def test_timestamp_free_candidate_remains_unassigned() -> None:
     assert result.transcript_ids_for("occurrence") == ()
     assert result.conflicts == ()
     assert result.unassigned_transcript_ids == ("missing-time",)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    standard_tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, standard_tests, pattern
+    suite = unittest.TestSuite()
+    for name, value in sorted(globals().items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value, description=name))
+    return suite

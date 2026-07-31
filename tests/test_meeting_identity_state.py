@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import tempfile
+import unittest
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Event
 from unittest.mock import patch
-
-import pytest
 
 import obsidian_intake_agent.meetings.identity_state as identity_state_module
 from obsidian_intake_agent.meetings.identity_state import (
@@ -20,6 +22,31 @@ from obsidian_intake_agent.meetings.identity_state import (
 )
 
 SCHEDULED_END = datetime(2026, 7, 30, 14, 0, tzinfo=UTC)
+
+ParameterGroup = tuple[tuple[dict[str, object], str], ...]
+
+
+def _parametrize(
+    argument_names: str,
+    values: list[object],
+    *,
+    ids: list[str] | None = None,
+) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    names = tuple(name.strip() for name in argument_names.split(","))
+
+    def decorate(test: Callable[..., None]) -> Callable[..., None]:
+        cases: list[tuple[dict[str, object], str]] = []
+        for index, value in enumerate(values):
+            arguments = (value,) if len(names) == 1 else tuple(value)  # type: ignore[arg-type]
+            if len(arguments) != len(names):
+                raise ValueError("parameter case does not match declared argument names")
+            case_id = ids[index] if ids is not None else str(index)
+            cases.append((dict(zip(names, arguments, strict=True)), case_id))
+        groups: tuple[ParameterGroup, ...] = getattr(test, "_parameter_groups", ())
+        setattr(test, "_parameter_groups", (*groups, tuple(cases)))
+        return test
+
+    return decorate
 
 
 def test_v2_fallback_is_upgradeable_through_retry_deadline() -> None:
@@ -59,7 +86,7 @@ def test_v2_fallback_is_terminal_strictly_after_retry_deadline() -> None:
     assert state.is_terminal(now=retry_until + timedelta(microseconds=1)) is True
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "upgrade_fields",
     [{}, {"upgrade_state": "invalid"}],
     ids=["missing-upgrade-state", "invalid-upgrade-state"],
@@ -82,7 +109,7 @@ def test_v2_fallback_without_valid_awaiting_upgrade_state_is_terminal(
     assert state.is_terminal(now=SCHEDULED_END) is True
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "retry_fields",
     [{}, {"retry_until": "not-a-datetime"}],
     ids=["missing-retry-until", "invalid-retry-until"],
@@ -105,7 +132,7 @@ def test_v2_fallback_without_valid_retry_deadline_requires_manual_review(
     assert state.is_terminal(now=SCHEDULED_END) is True
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "retry_until",
     [
         "2026-07-31T14:00:00",
@@ -130,7 +157,7 @@ def test_v2_fallback_retry_deadline_requires_explicit_safe_timezone(retry_until:
     assert state.is_terminal(now=SCHEDULED_END) is True
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "processing_source_fields",
     [{}, {"processing_source_kind": "invalid"}],
     ids=["missing-processing-source-kind", "invalid-processing-source-kind"],
@@ -154,7 +181,7 @@ def test_v2_marker_without_valid_processing_source_kind_never_uses_legacy_source
     assert state.is_terminal(now=SCHEDULED_END) is True
 
 
-@pytest.mark.parametrize("processing_source_kind", ["transcript", "manual"])
+@_parametrize("processing_source_kind", ["transcript", "manual"])
 def test_v2_nonfallback_processed_marker_is_immediately_terminal(processing_source_kind: str) -> None:
     state = load_identity_state(
         {
@@ -186,7 +213,7 @@ def test_legacy_processed_fallback_infers_upgrade_window() -> None:
     assert state.is_terminal(now=SCHEDULED_END + timedelta(hours=23)) is False
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "schema_version",
     [3, "2", None, True],
     ids=["unsupported-version", "string-version", "null-version", "boolean-version"],
@@ -255,7 +282,7 @@ def test_missing_source_type_is_unknown_and_terminal() -> None:
     assert state.is_terminal(now=SCHEDULED_END) is True
 
 
-@pytest.mark.parametrize("raw_content", ["{not-json", "[]", '"string"'])
+@_parametrize("raw_content", ["{not-json", "[]", '"string"'])
 def test_read_identity_state_treats_malformed_json_and_non_objects_as_terminal(
     tmp_path: Path,
     raw_content: str,
@@ -296,18 +323,18 @@ def test_write_identity_marker_writes_stable_json_atomically(tmp_path: Path) -> 
 def test_write_identity_marker_removes_temp_file_when_serialization_fails(tmp_path: Path) -> None:
     marker_path = tmp_path / "identity.json"
 
-    with pytest.raises(TypeError):
+    with unittest.TestCase().assertRaises(TypeError):
         write_identity_marker(marker_path, {"not_serializable": object()})
 
     assert marker_path.exists() is False
     assert list(marker_path.parent.glob(f".{marker_path.name}.*.tmp")) == []
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "replacement_source_type",
     ["meeting_sync_pending", "unexpected_marker_kind"],
 )
-@pytest.mark.parametrize(
+@_parametrize(
     "existing_source_type",
     ["meeting_bundle_processed", "meeting_sync_identity"],
 )
@@ -326,7 +353,7 @@ def test_write_identity_marker_refuses_to_downgrade_processed_marker(
     write_identity_marker(marker_path, processed)
     original = marker_path.read_bytes()
 
-    with pytest.raises(ValueError, match="processed identity marker"):
+    with unittest.TestCase().assertRaisesRegex(ValueError, "processed identity marker"):
         write_identity_marker(marker_path, {"source_type": replacement_source_type})
 
     assert marker_path.read_bytes() == original
@@ -373,7 +400,7 @@ def test_compare_and_write_identity_marker_allows_only_one_executor_for_same_sna
     assert json.loads(marker_path.read_text(encoding="utf-8")) in candidates
 
 
-@pytest.mark.parametrize("existing_content", [b"{not-json", b'{"source_type": "unknown"}\n'])
+@_parametrize("existing_content", [b"{not-json", b'{"source_type": "unknown"}\n'])
 def test_pending_identity_write_refuses_malformed_or_unknown_existing_marker(
     tmp_path: Path,
     existing_content: bytes,
@@ -381,7 +408,7 @@ def test_pending_identity_write_refuses_malformed_or_unknown_existing_marker(
     marker_path = tmp_path / "identity.json"
     marker_path.write_bytes(existing_content)
 
-    with pytest.raises(ValueError, match="recognized pending identity marker"):
+    with unittest.TestCase().assertRaisesRegex(ValueError, "recognized pending identity marker"):
         write_identity_marker(marker_path, {"source_type": "meeting_sync_pending"})
 
     assert marker_path.read_bytes() == existing_content
@@ -391,9 +418,9 @@ def test_identity_marker_transaction_is_non_reentrant_for_same_thread(tmp_path: 
     marker_path = tmp_path / "identity.json"
 
     with identity_marker_transaction(marker_path):
-        with pytest.raises(RuntimeError, match="not reentrant"):
+        with unittest.TestCase().assertRaisesRegex(RuntimeError, "not reentrant"):
             with identity_marker_transaction(marker_path):
-                pytest.fail("nested transaction unexpectedly acquired")
+                raise AssertionError("nested transaction unexpectedly acquired")
 
 
 def test_generic_pending_writer_blocks_behind_active_marker_transaction(tmp_path: Path) -> None:
@@ -428,7 +455,7 @@ def test_identity_marker_lock_rejects_symlink_without_touching_target(tmp_path: 
     target.write_bytes(b"private lock target")
     lock_path.symlink_to(target)
 
-    with pytest.raises(ValueError, match="lock file"):
+    with unittest.TestCase().assertRaisesRegex(ValueError, "lock file"):
         write_identity_marker(marker_path, {"source_type": "meeting_sync_pending"})
 
     assert target.read_bytes() == b"private lock target"
@@ -442,7 +469,7 @@ def test_identity_marker_lock_rejects_hard_link_alias(tmp_path: Path) -> None:
     lock_path.touch()
     os.link(lock_path, alias_path)
 
-    with pytest.raises(ValueError, match="lock file"):
+    with unittest.TestCase().assertRaisesRegex(ValueError, "lock file"):
         write_identity_marker(marker_path, {"source_type": "meeting_sync_pending"})
 
     assert marker_path.exists() is False
@@ -469,3 +496,56 @@ def test_identity_marker_write_fsyncs_parent_directory_after_replace(tmp_path: P
         write_identity_marker(marker_path, {"source_type": "meeting_sync_pending"})
 
     assert events == ["replace", f"directory_fsync:{marker_path.parent}"]
+
+
+def _expanded_parameter_cases(test: Callable[..., None]) -> tuple[tuple[dict[str, object], str], ...]:
+    combinations: list[tuple[dict[str, object], list[str]]] = [({}, [])]
+    groups: tuple[ParameterGroup, ...] = getattr(test, "_parameter_groups", ())
+    for group in groups:
+        expanded: list[tuple[dict[str, object], list[str]]] = []
+        for existing_arguments, existing_ids in combinations:
+            for case_arguments, case_id in group:
+                if existing_arguments.keys() & case_arguments.keys():
+                    raise ValueError("parameter groups define the same argument more than once")
+                expanded.append(
+                    (
+                        {**existing_arguments, **case_arguments},
+                        [*existing_ids, case_id],
+                    )
+                )
+        combinations = expanded
+    return tuple((arguments, "-".join(case_ids)) for arguments, case_ids in combinations)
+
+
+def _function_test(
+    test: Callable[..., None],
+    arguments: dict[str, object],
+    case_name: str,
+) -> unittest.FunctionTestCase:
+    def run() -> None:
+        call_arguments = dict(arguments)
+        if "tmp_path" not in inspect.signature(test).parameters:
+            test(**call_arguments)
+            return
+        with tempfile.TemporaryDirectory() as temp_dir:
+            call_arguments["tmp_path"] = Path(temp_dir)
+            test(**call_arguments)
+
+    run.__name__ = case_name
+    return unittest.FunctionTestCase(run, description=case_name)
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    standard_tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, standard_tests, pattern
+    suite = unittest.TestSuite()
+    for name, value in sorted(globals().items()):
+        if not name.startswith("test_") or not callable(value):
+            continue
+        for arguments, case_id in _expanded_parameter_cases(value):
+            case_name = name if not case_id else f"{name}[{case_id}]"
+            suite.addTest(_function_test(value, arguments, case_name))
+    return suite
