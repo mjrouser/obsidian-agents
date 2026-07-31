@@ -125,6 +125,25 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def atomic_create_bytes(path: Path, content: bytes) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "wb") as temporary_file:
+            temporary_file.write(content)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            return False
+        _fsync_directory(path.parent)
+        return True
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def _is_valid_payload(payload: object) -> bool:
     if not isinstance(payload, dict):
         return False

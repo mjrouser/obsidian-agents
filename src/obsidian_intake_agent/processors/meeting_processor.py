@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from os.path import relpath
 from pathlib import Path
@@ -10,7 +10,13 @@ from typing import Any, Literal
 
 from ..config import Config
 from ..output_retention import apply_output_retention
-from ..rendering.action_renderer import ActionRecord, parse_incomplete_actions, render_actions_note
+from ..rendering.action_renderer import (
+    ActionRecord,
+    normalize_action_for_key,
+    parse_existing_actions,
+    parse_incomplete_actions,
+    render_actions_note,
+)
 from ..rendering.meeting_renderer import (
     render_extracted_meeting_note,
     render_meeting_note,
@@ -137,6 +143,9 @@ class MeetingProcessor:
         force: bool = False,
         dry_run: bool | None = None,
         apply_retention: bool = True,
+        meeting_metadata: MeetingMetadata | None = None,
+        meeting_context: dict[str, object] | None = None,
+        source_note_aliases: dict[str, str] | None = None,
     ) -> ProcessResult:
         source_path = path if path.is_absolute() else self.vault_path / path
         if not source_path.exists() or source_path.is_dir():
@@ -158,9 +167,12 @@ class MeetingProcessor:
                 dry_run=effective_dry_run,
                 source_in_intake=source_in_intake,
                 apply_retention=apply_retention,
+                meeting_metadata=meeting_metadata,
+                meeting_context=meeting_context,
+                source_note_aliases=source_note_aliases,
             )
         action_items = self._extract_action_items(source_path, body)
-        metadata = normalize_meeting_metadata(source_path)
+        metadata = meeting_metadata or normalize_meeting_metadata(source_path)
         self._print_metadata_warnings(source_path, metadata)
         meeting_note_path = self.meetings_path / metadata.canonical_basename
         meeting_link = f"{self._meetings_dir()}/{metadata.canonical_basename}".replace("\\", "/")
@@ -175,6 +187,7 @@ class MeetingProcessor:
                 meeting_date=metadata.date,
                 meeting_source=metadata.source,
                 meeting_title=metadata.title,
+                context=meeting_context,
             )
         )
 
@@ -182,6 +195,7 @@ class MeetingProcessor:
             action_items=action_items,
             meeting_date=metadata.date,
             canonical_basename=metadata.canonical_basename,
+            source_note_aliases=source_note_aliases,
         )
         status_text = f"PROCESSED — see [[{meeting_link}]]"
 
@@ -224,25 +238,40 @@ class MeetingProcessor:
         dry_run: bool,
         source_in_intake: bool,
         apply_retention: bool,
+        meeting_metadata: MeetingMetadata | None,
+        meeting_context: dict[str, object] | None,
+        source_note_aliases: dict[str, str] | None,
     ) -> ProcessResult:
-        metadata = normalize_meeting_metadata(source_path)
+        metadata = meeting_metadata or normalize_meeting_metadata(source_path)
         self._print_metadata_warnings(source_path, metadata)
         transcript_hash = self._transcript_hash(transcript_text)
         extracted = extract_vtt_meeting_data(transcript_text=transcript_text, metadata=metadata, config=self.config)
         extracted = normalize_extracted_meeting_data(extracted, metadata)
-        enrichment = self._manual_vtt_meeting_enrichment(metadata)
-        if enrichment.sources_used:
-            extracted["sources_used"] = self._merged_string_list(
-                extracted.get("sources_used", []), enrichment.sources_used
+        enrichment = (
+            ManualVttMeetingEnrichment(metadata=metadata)
+            if meeting_metadata is not None
+            else self._manual_vtt_meeting_enrichment(metadata)
+        )
+        context = dict(enrichment.context)
+        context.update(meeting_context or {})
+        for key, enrichment_values in (
+            ("sources_used", enrichment.sources_used),
+            ("source_limitations", enrichment.source_limitations),
+        ):
+            if meeting_context is not None and key in meeting_context:
+                authoritative_values = self._string_list_from_context(meeting_context, key)
+                context[key] = authoritative_values
+                extracted[key] = authoritative_values
+                continue
+            context_values = self._string_list_from_context(context, key)
+            context[key] = context_values
+            extracted[key] = self._merged_string_list(
+                self._merged_string_list(extracted.get(key, []), enrichment_values),
+                context_values,
             )
-        if enrichment.source_limitations:
-            extracted["source_limitations"] = self._merged_string_list(
-                extracted.get("source_limitations", []),
-                enrichment.source_limitations,
-            )
-        if enrichment.context.get("attendance_confidence") and extracted.get("attendance_confidence") == "unknown":
-            extracted["attendance_confidence"] = enrichment.context["attendance_confidence"]
-        metadata = enrichment.metadata
+        if context.get("attendance_confidence") and extracted.get("attendance_confidence") == "unknown":
+            extracted["attendance_confidence"] = context["attendance_confidence"]
+        metadata = meeting_metadata or enrichment.metadata
         extracted["date"] = metadata.date
         extracted["source"] = metadata.source
         extracted["title"] = metadata.title
@@ -256,7 +285,7 @@ class MeetingProcessor:
                 heading=f"{metadata.date} - {metadata.source} - {metadata.title}",
                 intake_file=self._vault_relative_path(archived_source_path),
                 extracted=extracted,
-                context=enrichment.context,
+                context=context,
             )
         )
 
@@ -264,6 +293,7 @@ class MeetingProcessor:
             action_items=action_items_from_extracted(extracted),
             meeting_date=metadata.date,
             canonical_basename=canonical_note_name,
+            source_note_aliases=source_note_aliases,
         )
 
         sidecar_path = self.intake_state.vtt_sidecar_path(source_path)
@@ -347,6 +377,7 @@ class MeetingProcessor:
         action_items: list[ActionItem],
         meeting_date: str,
         canonical_basename: str,
+        source_note_aliases: dict[str, str] | None = None,
     ) -> ActionNoteUpdate:
         meeting_week = monday_of_week(date.fromisoformat(meeting_date))
         actions_note_path = self.actions_path / f"{meeting_week.isoformat()}.md"
@@ -356,6 +387,29 @@ class MeetingProcessor:
             meeting_date=meeting_date,
             canonical_basename=canonical_basename,
         )
+        if source_note_aliases:
+            existing_keys = {
+                normalize_action_for_key(
+                    replace(
+                        record,
+                        source_note=self._canonical_source_note(record.source_note, source_note_aliases),
+                    ),
+                    self.action_owner_aliases,
+                )
+                for record in parse_existing_actions(existing_actions, self.action_owner_aliases)
+            }
+            action_records = [
+                record
+                for record in action_records
+                if normalize_action_for_key(
+                    replace(
+                        record,
+                        source_note=self._canonical_source_note(record.source_note, source_note_aliases),
+                    ),
+                    self.action_owner_aliases,
+                )
+                not in existing_keys
+            ]
         carry_over_records = (
             self._load_carry_over_records(meeting_week) if action_records and not existing_actions.strip() else []
         )
@@ -580,3 +634,47 @@ class MeetingProcessor:
             if text and text not in merged:
                 merged.append(text)
         return merged
+
+    def _string_list_from_context(self, context: dict[str, object] | None, key: str) -> list[str]:
+        if context is None:
+            return []
+        value = context.get(key)
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def _canonical_source_note(self, source_note: str, aliases: dict[str, str]) -> str:
+        normalized_source = self._normalized_source_note_path(source_note)
+        source_full, source_basename, source_is_qualified = self._source_note_identity(normalized_source)
+        canonical_source = normalized_source
+        for alias, target in aliases.items():
+            normalized_alias = self._normalized_source_note_path(alias)
+            alias_full, alias_basename, alias_is_qualified = self._source_note_identity(normalized_alias)
+            if source_is_qualified and alias_is_qualified:
+                matches = source_full == alias_full
+            else:
+                matches = source_basename == alias_basename
+            if not matches:
+                continue
+            canonical_source = self._normalized_source_note_path(target)
+            break
+        return self._source_note_identity(canonical_source)[1]
+
+    def _normalized_source_note_path(self, value: str) -> str:
+        normalized = value.strip()
+        if normalized.startswith("[[") and normalized.endswith("]]"):
+            normalized = normalized[2:-2]
+        normalized = normalized.split("|", 1)[0].strip().replace("\\", "/")
+        normalized = normalized.split("#", 1)[0].strip()
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        return normalized.removeprefix("./").strip("/")
+
+    def _source_note_identity(self, normalized_path: str) -> tuple[str, str, bool]:
+        without_extension = normalized_path[:-3] if normalized_path.casefold().endswith(".md") else normalized_path
+        full_identity = without_extension.casefold()
+        return (
+            full_identity,
+            full_identity.rsplit("/", 1)[-1],
+            "/" in full_identity,
+        )

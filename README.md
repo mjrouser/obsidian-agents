@@ -146,6 +146,8 @@ and public-client app IDs are not secrets, but the project keeps real
 organization/app values out of committed config so app registrations can be
 rotated or replaced without repo churn. `outlook_graph_access_token_env` remains
 available as a temporary override for debugging; do not commit access tokens.
+Set `meeting_transcript_grace_minutes` to control how long sync waits for a
+transcript before allowing a recap fallback. The default is `60`.
 
 ## Run
 
@@ -245,11 +247,14 @@ Download available Teams `.vtt` transcripts into
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
 ```
 
-For recurring Teams meetings, transcript sync selects only Graph transcript
-records created from 15 minutes before the Outlook occurrence through 30
-minutes after it ends. A dry run reports the candidate count, selected
-transcript IDs and timestamps, and the occurrence window without downloading
-content:
+Transcript sync treats every Outlook occurrence independently, including
+occurrences in daily, weekly, irregular, or long-running recurring series. The
+series cadence is not hardcoded. For each occurrence, it selects only Graph
+transcript records created from 15 minutes before the scheduled start through
+30 minutes after the scheduled end, allowing meetings to start or finish
+slightly outside their Outlook time box. A dry run reports candidate and
+selected transcript IDs and timestamps plus the selected occurrence without
+downloading content:
 
 ```bash
 obsidian-agent meetings sync-transcripts --since 2026-07-17 --dry-run
@@ -263,6 +268,13 @@ does not match the selected occurrence, the old bytes are preserved once under
 `00_Intake/bundles/fallbacks/stale_transcripts` before the managed VTT and its
 provenance are replaced. A later run with matching provenance performs no Graph
 content download.
+
+If an overlap makes one transcript eligible for more than one occurrence, sync
+refuses automatic selection. The dry-run output reports
+`meeting_sync_occurrence_error: ambiguous_transcript_assignment` with the
+candidate ID and timestamp, each conflicting occurrence, and its scheduled and
+selection windows. Top-level counters also report deferred fallbacks, fallbacks
+still awaiting a transcript, and late transcript upgrades.
 
 Dry-run which written meeting bundles are ready to feed into the existing processor:
 
@@ -287,6 +299,23 @@ Process ready meeting bundles through the existing intake processor:
 ```bash
 obsidian-agent meetings process-bundles --execute
 ```
+
+Recap fallbacks wait for the configured grace period, then remain eligible for a
+late transcript upgrade until the 24-hour retry deadline after meeting end.
+Before initial processing, each occurrence uses a `meeting_sync_pending` marker
+to record its retry deadline and recap-pending state. After processing,
+schema-v2 identity markers use `awaiting_transcript`, `terminal`, or
+`manual_review_required` upgrade states. A transcript replaces a fallback only
+when the canonical note still matches the hash recorded at fallback creation.
+If the note was edited or cannot be verified, the executor preserves it,
+refuses the automatic replacement, and reports
+`meeting_bundle_process_manual_review_required: 1`.
+
+Successful upgrades archive the exact fallback note under
+`archive_intake_dir/Meeting Upgrades` and report the archive path as
+`meeting_bundle_process_upgrade_archived_note`. This workflow does not bulk
+rename historical fallback notes; it upgrades only the occurrence currently
+being processed.
 
 Validate recent meetings without touching production note lanes:
 

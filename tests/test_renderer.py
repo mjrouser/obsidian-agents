@@ -83,6 +83,38 @@ class MeetingRendererTests(unittest.TestCase):
         self.assertIn('title: "Planning: \\"Q2\\""', rendered)
         self.assertIn('participants: ["Matthew: Rouser"]', rendered)
 
+    def test_front_matter_round_trips_artifact_state_and_supersedes_note(self) -> None:
+        rendered = render_meeting_front_matter(
+            date="2026-03-12",
+            source="Teams",
+            title="Platform Sync",
+            intake_file=Path("00_Intake/Platform Sync.md"),
+            artifact_state="fallback",
+            supersedes_note="2026-03-12 - Teams - Earlier Platform Sync.md",
+        )
+
+        self.assertEqual(rendered.count('artifact_state: "fallback"'), 1)
+        self.assertEqual(
+            rendered.count('supersedes_note: "2026-03-12 - Teams - Earlier Platform Sync.md"'),
+            1,
+        )
+        self.assertLess(rendered.index("artifact_state:"), rendered.index("supersedes_note:"))
+
+    def test_meeting_renderers_include_artifact_state_context(self) -> None:
+        rendered = render_meeting_note(
+            heading="2026-03-11 - Teams - Weekly Sync",
+            intake_file=Path("00_Intake/Weekly Sync.md"),
+            owner_filter="Matthew",
+            normalized_body="Agenda",
+            meeting_date="2026-03-11",
+            meeting_source="Teams",
+            meeting_title="Weekly Sync",
+            context={"artifact_state": "transcript", "supersedes_note": None},
+        )
+
+        self.assertIn('artifact_state: "transcript"', rendered)
+        self.assertIn("supersedes_note: null", rendered)
+
     def test_format_obsidian_link_is_idempotent_and_uses_forward_slashes(self) -> None:
         self.assertEqual(
             format_obsidian_link(Path("00_Intake/Raw Transcripts/file.vtt")),

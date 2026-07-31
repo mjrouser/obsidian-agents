@@ -114,6 +114,29 @@ class ConfigCompatibilityTests(unittest.TestCase):
         self.assertEqual(loaded.outlook_graph_access_token_env, "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
         self.assertEqual(loaded.outlook_graph_api_base_url, "https://graph.microsoft.com/v1.0")
 
+    def test_meeting_transcript_grace_defaults_to_60_minutes(self) -> None:
+        config_path = _write_config(self)
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.meeting_transcript_grace_minutes, 60)
+
+    def test_meeting_transcript_grace_can_be_overridden(self) -> None:
+        config_path = _write_config(self, "meeting_transcript_grace_minutes: 90")
+
+        loaded = Config.load(config_path)
+
+        self.assertEqual(loaded.meeting_transcript_grace_minutes, 90)
+
+    def test_meeting_transcript_grace_must_be_positive(self) -> None:
+        config_path = _write_config(self, "meeting_transcript_grace_minutes: 0")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "meeting_transcript_grace_minutes must be a positive integer",
+        ):
+            Config.load(config_path)
+
     def test_outlook_graph_auth_defaults_preserve_unconfigured_auth(self) -> None:
         config_path = _write_config(self)
 

@@ -4,6 +4,7 @@ import binascii
 import hashlib
 import html
 import json
+import os
 import re
 import socket
 from base64 import urlsafe_b64decode
@@ -17,8 +18,18 @@ from urllib.parse import quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from ..utils.text import normalize_whitespace
+from .identity_state import identity_marker_entry_exists, read_identity_state, write_identity_marker
+from .occurrence_assignment import (
+    AssignmentConflict,
+    OccurrenceWindow,
+    TranscriptCandidate,
+    assign_transcripts,
+    selection_bounds,
+)
 from .transcript_provenance import (
+    TranscriptProvenancePayload,
     archive_stale_transcript,
+    atomic_create_bytes,
     atomic_write_bytes,
     matching_provenance,
     write_provenance,
@@ -35,8 +46,6 @@ ARTIFACT_SOURCE_PRIORITY = (
 GRAPH_REQUEST_TIMEOUT_SECONDS = 30
 GRAPH_REQUEST_TIMEOUT_ATTEMPTS = 2
 PENDING_MARKER_SOURCE_TYPE = "meeting_sync_pending"
-LEGACY_PENDING_MARKER_SOURCE_TYPE = "meeting_sync_identity"
-PROCESSED_MARKER_SOURCE_TYPE = "meeting_bundle_processed"
 PENDING_ARTIFACT_RETRY_HOURS = 24
 
 
@@ -108,6 +117,7 @@ class TranscriptDiagnostics:
     occurrence_start_at: datetime
     occurrence_end_at: datetime
     local_action: LocalTranscriptAction
+    assignment_conflicts: tuple[AssignmentConflict, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -117,6 +127,8 @@ class MeetingArtifact:
     detail: str | None = None
     matched_paths: tuple[Path, ...] = ()
     diagnostics: TranscriptDiagnostics | None = None
+    planned_content: str | None = None
+    occurrence_validated_paths: tuple[Path, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -161,6 +173,8 @@ class OutlookMeetingCandidate:
     categories: tuple[str, ...] = ()
     show_as: str | None = None
     discovered_artifacts: tuple[MeetingArtifact, ...] = ()
+    series_master_id: str | None = None
+    occurrence_context: tuple[OccurrenceWindow, ...] = ()
 
     def detected_join_url(self) -> str | None:
         explicit = _optional_string(self.join_url)
@@ -256,6 +270,9 @@ class TranscriptSyncPlanItem:
     bundle: MeetingSourceBundle
     reasons: tuple[str, ...]
     intake_bundle_note: PlannedIntakeBundleNote | None
+    fallback_deferred: bool = False
+    fallback_awaiting_transcript: bool = False
+    late_transcript_upgrade: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -287,6 +304,30 @@ class TranscriptSyncPlan:
 
     def process_items(self) -> tuple[TranscriptSyncPlanItem, ...]:
         return tuple(item for item in self.items if item.decision == "process")
+
+    @property
+    def occurrence_errors(self) -> tuple[AssignmentConflict, ...]:
+        return _unique_occurrence_assignment_conflicts(self.items)
+
+    @property
+    def occurrence_error_count(self) -> int:
+        return len(self.occurrence_errors)
+
+    @property
+    def has_ambiguous_transcript_assignments(self) -> bool:
+        return bool(self.occurrence_errors)
+
+    @property
+    def fallback_deferred_count(self) -> int:
+        return sum(1 for item in self.items if item.fallback_deferred)
+
+    @property
+    def fallback_awaiting_transcript_count(self) -> int:
+        return sum(1 for item in self.items if item.fallback_awaiting_transcript)
+
+    @property
+    def late_transcript_upgrade_count(self) -> int:
+        return sum(1 for item in self.items if item.late_transcript_upgrade)
 
 
 @dataclass(slots=True, frozen=True)
@@ -348,6 +389,22 @@ class ChainedMeetingArtifactDiscoveryClient:
             return local_clients[0]
         return ChainedMeetingArtifactDiscoveryClient(*local_clients)
 
+    def without_summary_fallback(self) -> MeetingArtifactDiscoveryClient:
+        transcript_clients: list[MeetingArtifactDiscoveryClient] = []
+        for client in self._clients:
+            if getattr(client, "provides_summary_fallback", False):
+                continue
+            if isinstance(client, ChainedMeetingArtifactDiscoveryClient):
+                client = client.without_summary_fallback()
+                if isinstance(client, NoopMeetingArtifactDiscoveryClient):
+                    continue
+            transcript_clients.append(client)
+        if not transcript_clients:
+            return NoopMeetingArtifactDiscoveryClient()
+        if len(transcript_clients) == 1:
+            return transcript_clients[0]
+        return ChainedMeetingArtifactDiscoveryClient(*transcript_clients)
+
     def discover_artifacts(
         self,
         *,
@@ -397,11 +454,13 @@ class LocalIntakeTranscriptDiscoveryClient:
         missing_detail = _local_missing_detail(expected_stem=expected_stem, candidates=same_date_candidates)
         return (
             self._artifact_for_matches(
+                meeting=meeting,
                 source_name="Teams .vtt transcript",
                 matches=tuple(path for path in matching_paths if path.suffix.lower() == ".vtt"),
                 missing_detail=missing_detail,
             ),
             self._artifact_for_matches(
+                meeting=meeting,
                 source_name="Teams transcript text",
                 matches=tuple(path for path in matching_paths if path.suffix.lower() in {".md", ".docx"}),
                 missing_detail=missing_detail,
@@ -411,6 +470,7 @@ class LocalIntakeTranscriptDiscoveryClient:
     def _artifact_for_matches(
         self,
         *,
+        meeting: OutlookMeetingCandidate,
         source_name: str,
         matches: tuple[Path, ...],
         missing_detail: str,
@@ -418,11 +478,32 @@ class LocalIntakeTranscriptDiscoveryClient:
         if not matches:
             return MeetingArtifact(source_name, "missing", missing_detail)
         rendered_matches = ", ".join(str(path) for path in matches)
+        preferred_path = _preferred_artifact_path(matches)
+        provenance_validation_by_path = {
+            path: _validate_provenance_assignment(meeting, provenance)
+            for path in matches
+            if (
+                provenance := matching_provenance(
+                    path,
+                    event_id=meeting.event_id,
+                    occurrence_start_at=meeting.start_at,
+                    occurrence_end_at=meeting.end_at,
+                )
+            )
+            is not None
+        }
+        preferred_validation = provenance_validation_by_path.get(preferred_path)
         return MeetingArtifact(
             source_name,
             "available",
             f"Matched local intake artifact(s): {rendered_matches}",
             matched_paths=matches,
+            diagnostics=(preferred_validation[0] if preferred_validation is not None else None),
+            occurrence_validated_paths=tuple(
+                path
+                for path in matches
+                if path in provenance_validation_by_path and provenance_validation_by_path[path][1]
+            ),
         )
 
     def _expected_stem(self, meeting: OutlookMeetingCandidate) -> str:
@@ -457,6 +538,32 @@ class LocalIntakeTranscriptDiscoveryClient:
                 continue
             candidates.append(path)
         return tuple(sorted(candidates, key=_matching_intake_path_sort_key))
+
+
+def _validate_provenance_assignment(
+    meeting: OutlookMeetingCandidate,
+    provenance: TranscriptProvenancePayload,
+) -> tuple[TranscriptDiagnostics, bool]:
+    provenance_records = tuple(
+        GraphTranscriptRecord(
+            transcript_id=record["id"],
+            created_at=(datetime.fromisoformat(record["created_at"]) if record["created_at"] is not None else None),
+            created_at_missing=record["created_at"] is None,
+        )
+        for record in provenance["transcripts"]
+    )
+    selected_records, conflicts = _select_transcripts_for_occurrence(
+        provenance_records,
+        meeting,
+    )
+    diagnostics = _transcript_diagnostics(
+        meeting,
+        provenance_records,
+        selected_records,
+        local_action="validated",
+        assignment_conflicts=conflicts,
+    )
+    return diagnostics, not conflicts and selected_records == provenance_records
 
 
 class UnconfiguredOutlookMeetingDiscoveryClient:
@@ -511,7 +618,8 @@ class GraphOutlookMeetingDiscoveryClient:
                 "$top": "200",
                 "$select": (
                     "id,subject,start,end,isCancelled,isAllDay,showAs,responseStatus,"
-                    "onlineMeetingProvider,onlineMeeting,body,bodyPreview,categories,organizer,type,attendees"
+                    "onlineMeetingProvider,onlineMeeting,body,bodyPreview,categories,organizer,type,attendees,"
+                    "seriesMasterId"
                 ),
             }
         )
@@ -643,12 +751,13 @@ class GraphTranscriptDiscoveryClient:
                 ),
             )
 
-        selected_records = _select_transcripts_for_occurrence(transcript_records, meeting)
+        selected_records, conflicts = _select_transcripts_for_occurrence(transcript_records, meeting)
         diagnostics = _transcript_diagnostics(
             meeting,
             transcript_records,
             selected_records,
             local_action="none",
+            assignment_conflicts=conflicts,
         )
         if not selected_records:
             return (
@@ -706,48 +815,71 @@ class GraphTranscriptDownloadClient:
             )
             if provenance is not None:
                 transcript_ids = ", ".join(item["id"] for item in provenance["transcripts"])
-                provenance_records = tuple(
-                    GraphTranscriptRecord(
-                        transcript_id=item["id"],
-                        created_at=(
-                            datetime.fromisoformat(item["created_at"]) if item["created_at"] is not None else None
+                diagnostics, exact_unique_match = _validate_provenance_assignment(meeting, provenance)
+                if not exact_unique_match:
+                    return (
+                        MeetingArtifact(
+                            "Teams .vtt transcript",
+                            "missing",
+                            "Stored Graph transcript provenance no longer uniquely matches this meeting occurrence.",
+                            diagnostics=diagnostics,
                         ),
-                        created_at_missing=item["created_at"] is None,
                     )
-                    for item in provenance["transcripts"]
-                )
                 return (
                     MeetingArtifact(
                         "Teams .vtt transcript",
                         "available",
                         f"Validated Graph transcript provenance for transcript ID(s): {transcript_ids}.",
                         matched_paths=(vtt_target_path,),
-                        diagnostics=TranscriptDiagnostics(
-                            candidate_count=None,
-                            selected_transcripts=tuple(
-                                SelectedTranscriptDiagnostic(record.transcript_id, record.created_at)
-                                for record in provenance_records
-                            ),
-                            occurrence_start_at=meeting.start_at,
-                            occurrence_end_at=meeting.end_at,
-                            local_action="validated",
-                        ),
+                        diagnostics=diagnostics,
+                        occurrence_validated_paths=(vtt_target_path,),
                     ),
                 )
         transcript_text_target_path = self._intake_root / _transcript_text_relative_path(meeting)
         if not vtt_target_path.exists() and transcript_text_target_path.exists():
+            text_provenance = matching_provenance(
+                transcript_text_target_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+            )
+            if text_provenance is not None:
+                text_diagnostics, exact_unique_match = _validate_provenance_assignment(
+                    meeting,
+                    text_provenance,
+                )
+            else:
+                text_diagnostics = None
+                exact_unique_match = False
+            transcript_text_artifact = (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "available",
+                    f"Validated Graph transcript provenance: {transcript_text_target_path}",
+                    matched_paths=(transcript_text_target_path,),
+                    diagnostics=text_diagnostics,
+                    occurrence_validated_paths=(transcript_text_target_path,),
+                )
+                if exact_unique_match
+                else MeetingArtifact(
+                    "Teams transcript text",
+                    "missing" if text_provenance is not None else "available",
+                    (
+                        "Stored Graph transcript provenance no longer uniquely matches this meeting occurrence."
+                        if text_provenance is not None
+                        else f"Transcript text file already exists: {transcript_text_target_path}"
+                    ),
+                    matched_paths=(() if text_provenance is not None else (transcript_text_target_path,)),
+                    diagnostics=text_diagnostics,
+                )
+            )
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
                     "missing",
                     "Graph .vtt transcript has not been downloaded for this meeting.",
                 ),
-                MeetingArtifact(
-                    "Teams transcript text",
-                    "available",
-                    f"Transcript text file already exists: {transcript_text_target_path}",
-                    matched_paths=(transcript_text_target_path,),
-                ),
+                transcript_text_artifact,
             )
 
         join_url = meeting.detected_join_url()
@@ -817,9 +949,15 @@ class GraphTranscriptDownloadClient:
                 ),
             )
 
-        selected_records = _select_transcripts_for_occurrence(transcript_records, meeting)
+        selected_records, conflicts = _select_transcripts_for_occurrence(transcript_records, meeting)
         if not selected_records:
-            diagnostics = _transcript_diagnostics(meeting, transcript_records, selected_records, local_action="none")
+            diagnostics = _transcript_diagnostics(
+                meeting,
+                transcript_records,
+                selected_records,
+                local_action="none",
+                assignment_conflicts=conflicts,
+            )
             return (
                 MeetingArtifact(
                     "Teams .vtt transcript",
@@ -834,7 +972,20 @@ class GraphTranscriptDownloadClient:
                 ),
             )
 
-        diagnostics = _transcript_diagnostics(meeting, transcript_records, selected_records, local_action="none")
+        diagnostics = _transcript_diagnostics(
+            meeting,
+            transcript_records,
+            selected_records,
+            local_action="none",
+            assignment_conflicts=conflicts,
+        )
+        selected_transcripts = [
+            {
+                "id": record.transcript_id,
+                "created_at": record.created_at.isoformat() if record.created_at is not None else None,
+            }
+            for record in selected_records
+        ]
         downloaded_contents: list[bytes] = []
         for record in selected_records:
             transcript_id = record.transcript_id
@@ -888,10 +1039,18 @@ class GraphTranscriptDownloadClient:
                         ),
                     )
 
-                transcript_text_target_path.parent.mkdir(parents=True, exist_ok=True)
-                transcript_text_target_path.write_text(
-                    _transcript_markdown_from_metadata_content(metadata_content),
-                    encoding="utf-8",
+                rendered_metadata_content = _transcript_markdown_from_metadata_content(metadata_content).encode("utf-8")
+                atomic_write_bytes(
+                    transcript_text_target_path,
+                    rendered_metadata_content,
+                )
+                write_provenance(
+                    transcript_text_target_path,
+                    event_id=meeting.event_id,
+                    occurrence_start_at=meeting.start_at,
+                    occurrence_end_at=meeting.end_at,
+                    transcripts=selected_transcripts,
+                    content=rendered_metadata_content,
                 )
                 return (
                     MeetingArtifact(
@@ -905,6 +1064,8 @@ class GraphTranscriptDownloadClient:
                         "available",
                         f"Downloaded Graph transcript metadata content for transcript ID {transcript_id}.",
                         matched_paths=(transcript_text_target_path,),
+                        diagnostics=diagnostics,
+                        occurrence_validated_paths=(transcript_text_target_path,),
                     ),
                 )
             except URLError as exc:
@@ -924,13 +1085,6 @@ class GraphTranscriptDownloadClient:
 
         content = downloaded_contents[0] if len(downloaded_contents) == 1 else _merged_vtt_bytes(downloaded_contents)
         normalized_content = _normalized_vtt_bytes(content)
-        selected_transcripts = [
-            {
-                "id": record.transcript_id,
-                "created_at": record.created_at.isoformat() if record.created_at is not None else None,
-            }
-            for record in selected_records
-        ]
         transcript_ids = ", ".join(record.transcript_id for record in selected_records)
         if vtt_target_path.exists():
             existing_content = vtt_target_path.read_bytes()
@@ -970,7 +1124,9 @@ class GraphTranscriptDownloadClient:
                     transcript_records,
                     selected_records,
                     local_action=local_action,
+                    assignment_conflicts=conflicts,
                 ),
+                occurrence_validated_paths=(vtt_target_path,),
             ),
         )
 
@@ -1021,6 +1177,7 @@ class GraphTranscriptDownloadClient:
 
 class GraphMeetingFallbackSummaryClient:
     uses_network = True
+    provides_summary_fallback = True
 
     def __init__(
         self,
@@ -1171,22 +1328,19 @@ class GraphMeetingFallbackSummaryClient:
         chat_artifact, chat_messages = self._meeting_chat_artifact(
             online_meeting_id=online_meeting_id,
         )
-        fallback_path.parent.mkdir(parents=True, exist_ok=True)
-        fallback_path.write_text(
-            _render_fallback_summary_markdown(
-                meeting=meeting,
-                ai_insight=ai_insight,
-                chat_messages=chat_messages,
-                chat_artifact=chat_artifact,
-            ),
-            encoding="utf-8",
+        planned_content = _render_fallback_summary_markdown(
+            meeting=meeting,
+            ai_insight=ai_insight,
+            chat_messages=chat_messages,
+            chat_artifact=chat_artifact,
         )
         return (
             MeetingArtifact(
                 "Copilot recap / AI summary",
                 "available",
-                "Downloaded Copilot recap fallback summary and wrote a local processor input.",
+                "Discovered Copilot recap fallback summary; local persistence is planned for explicit bundle write.",
                 matched_paths=(fallback_path,),
+                planned_content=planned_content,
             ),
             chat_artifact,
         )
@@ -1316,6 +1470,65 @@ class GraphMeetingFallbackSummaryClient:
         )
 
 
+def _meetings_with_occurrence_context(
+    meetings: tuple[OutlookMeetingCandidate, ...],
+) -> tuple[OutlookMeetingCandidate, ...]:
+    unique_meetings: list[OutlookMeetingCandidate] = []
+    meetings_by_event_id: dict[str, OutlookMeetingCandidate] = {}
+    for meeting in meetings:
+        existing = meetings_by_event_id.get(meeting.event_id)
+        if existing is None:
+            meetings_by_event_id[meeting.event_id] = meeting
+            unique_meetings.append(meeting)
+        elif existing != meeting:
+            raise ValueError("Meeting snapshot contains conflicting definitions for the same Outlook event ID.")
+
+    grouped_meetings: dict[tuple[str, str], list[OutlookMeetingCandidate]] = {}
+    series_labels: dict[tuple[str, str], str] = {}
+    meeting_group_keys: dict[str, tuple[str, str]] = {}
+    for meeting in unique_meetings:
+        teams_meeting_id = meeting.teams_meeting_id()
+        if teams_meeting_id is not None:
+            group_key = ("teams_meeting", teams_meeting_id)
+            series_label = teams_meeting_id
+        elif meeting.series_master_id is not None:
+            group_key = ("series_master", meeting.series_master_id)
+            series_label = meeting.series_master_id
+        else:
+            group_key = ("isolated_event", meeting.event_id)
+            series_label = meeting.event_id
+        grouped_meetings.setdefault(group_key, []).append(meeting)
+        series_labels[group_key] = series_label
+        meeting_group_keys[meeting.event_id] = group_key
+
+    occurrence_contexts = {
+        group_key: tuple(
+            OccurrenceWindow(
+                occurrence_id=meeting.event_id,
+                series_id=series_labels[group_key],
+                scheduled_start=meeting.start_at,
+                scheduled_end=meeting.end_at,
+            )
+            for meeting in sorted(
+                group,
+                key=lambda candidate: (
+                    candidate.start_at,
+                    candidate.end_at,
+                    candidate.event_id,
+                ),
+            )
+        )
+        for group_key, group in grouped_meetings.items()
+    }
+    return tuple(
+        replace(
+            meeting,
+            occurrence_context=occurrence_contexts[meeting_group_keys[meeting.event_id]],
+        )
+        for meeting in unique_meetings
+    )
+
+
 def build_transcript_sync_plan(
     *,
     client: MeetingDiscoveryClient,
@@ -1323,20 +1536,35 @@ def build_transcript_sync_plan(
     since: date,
     intake_root: Path | None = None,
     now: datetime | None = None,
+    transcript_grace_minutes: int = 60,
 ) -> TranscriptSyncPlan:
     generated_at = now or datetime.now().astimezone()
     snapshot = client.list_recently_ended_meetings(since=since, now=generated_at)
     effective_artifact_discovery_client = artifact_discovery_client or NoopMeetingArtifactDiscoveryClient()
     items: list[TranscriptSyncPlanItem] = []
-    for meeting in snapshot.meetings:
+    for meeting in _meetings_with_occurrence_context(snapshot.meetings):
         if _should_prefilter_artifact_discovery(meeting, now=generated_at, intake_root=intake_root):
-            items.append(_plan_item(meeting, now=generated_at, intake_root=intake_root))
+            items.append(
+                _plan_item(
+                    meeting,
+                    now=generated_at,
+                    intake_root=intake_root,
+                    transcript_grace_minutes=transcript_grace_minutes,
+                )
+            )
             continue
         artifact_client = effective_artifact_discovery_client
         marker_path = _meeting_identity_path(meeting, intake_root=intake_root)
+        fallback_processed_poll = _is_fallback_processed_poll(
+            meeting,
+            marker_path=marker_path,
+            now=generated_at,
+        )
+        if fallback_processed_poll:
+            artifact_client = _artifact_client_without_summary_fallback(artifact_client)
         if (
             marker_path is not None
-            and marker_path.exists()
+            and identity_marker_entry_exists(marker_path)
             and _pending_retry_expired(meeting, marker_path=marker_path, now=generated_at)
         ):
             artifact_client = _artifact_client_without_network(effective_artifact_discovery_client)
@@ -1345,6 +1573,8 @@ def build_transcript_sync_plan(
                 _discover_meeting_artifacts(meeting, artifact_discovery_client=artifact_client),
                 now=generated_at,
                 intake_root=intake_root,
+                transcript_grace_minutes=transcript_grace_minutes,
+                fallback_processed_poll=fallback_processed_poll,
             )
         )
     return TranscriptSyncPlan(
@@ -1371,6 +1601,10 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
             f"meeting_sync_candidates: {plan.candidate_count}",
             f"meeting_sync_would_process: {plan.process_count}",
             f"meeting_sync_would_skip: {plan.skip_count}",
+            f"meeting_sync_occurrence_errors: {plan.occurrence_error_count}",
+            f"meeting_sync_fallback_deferred: {plan.fallback_deferred_count}",
+            f"meeting_sync_fallback_awaiting_transcript: {plan.fallback_awaiting_transcript_count}",
+            f"meeting_sync_late_transcript_upgrades: {plan.late_transcript_upgrade_count}",
             f"meeting_sync_processable_missing_vtt: {_count_process_items_missing_source(process_items, 'Teams .vtt transcript')}",
             (
                 "meeting_sync_processable_missing_transcript_text: "
@@ -1387,6 +1621,7 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
                 f"meeting_sync_processable_{summary_key}_{status}: "
                 f"{_count_process_items_with_source_status(process_items, source_name, status)}"
             )
+    rendered_conflicts: set[tuple[str, str, tuple[str, ...]]] = set()
     for item in plan.items:
         meeting = item.meeting
         lines.append(f'meeting_sync_item: {item.decision} event_id="{meeting.event_id}" subject="{meeting.subject}"')
@@ -1414,30 +1649,79 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
                 lines.append(f"  source_available: {source_name} ({rendered_paths})")
             else:
                 lines.append(f"  source_available: {source_name}")
-        diagnostics_rendered = False
         for artifact in item.bundle.artifacts:
             if artifact.status != "available":
                 detail_suffix = f" ({artifact.detail})" if artifact.detail else ""
                 lines.append(f"  source_pending: {artifact.source_name}={artifact.status}{detail_suffix}")
-            if artifact.diagnostics is not None and not diagnostics_rendered:
-                diagnostics_rendered = True
-                diagnostics = artifact.diagnostics
-                candidate_count = diagnostics.candidate_count
-                lines.append(
-                    f"  transcript_candidates: {candidate_count if candidate_count is not None else 'unknown'}"
-                )
-                for selected in _chronological_selected_transcripts(diagnostics.selected_transcripts):
-                    lines.append(f"  selected_transcript_id: {selected.transcript_id}")
-                    created_at = selected.created_at.isoformat() if selected.created_at is not None else "unknown"
-                    lines.append(f"  selected_transcript_created_at: {created_at}")
-                lines.append(
-                    "  selected_for_occurrence: "
-                    f"{diagnostics.occurrence_start_at.isoformat()} to {diagnostics.occurrence_end_at.isoformat()}"
-                )
-                lines.append(f"  local_transcript_action: {diagnostics.local_action}")
+        item_diagnostics = tuple(
+            artifact.diagnostics for artifact in item.bundle.artifacts if artifact.diagnostics is not None
+        )
+        selected_diagnostics = next(
+            (diagnostics for diagnostics in item_diagnostics if diagnostics.selected_transcripts),
+            item_diagnostics[0] if item_diagnostics else None,
+        )
+        if selected_diagnostics is not None:
+            candidate_count = selected_diagnostics.candidate_count
+            lines.append(f"  transcript_candidates: {candidate_count if candidate_count is not None else 'unknown'}")
+            for selected in _chronological_selected_transcripts(selected_diagnostics.selected_transcripts):
+                lines.append(f"  selected_transcript_id: {selected.transcript_id}")
+                created_at = selected.created_at.isoformat() if selected.created_at is not None else "unknown"
+                lines.append(f"  selected_transcript_created_at: {created_at}")
+            lines.append(
+                "  selected_for_occurrence: "
+                f"{selected_diagnostics.occurrence_start_at.isoformat()} to "
+                f"{selected_diagnostics.occurrence_end_at.isoformat()}"
+            )
+            lines.append(f"  local_transcript_action: {selected_diagnostics.local_action}")
+        occurrence_windows = {occurrence.occurrence_id: occurrence for occurrence in meeting.occurrence_context}
+        for diagnostics in item_diagnostics:
+            for conflict in diagnostics.assignment_conflicts:
+                if meeting.event_id not in conflict.occurrence_ids:
+                    continue
+                conflict_key = _occurrence_conflict_key(conflict)
+                if conflict_key in rendered_conflicts:
+                    continue
+                rendered_conflicts.add(conflict_key)
+                lines.append("  meeting_sync_occurrence_error: ambiguous_transcript_assignment")
+                lines.append(f"  candidate_transcript_id: {conflict.transcript_id}")
+                lines.append(f"  candidate_transcript_created_at: {conflict.created_at.isoformat()}")
+                for occurrence_id in conflict.occurrence_ids:
+                    lines.append(f"  occurrence_id: {occurrence_id}")
+                    occurrence = occurrence_windows.get(occurrence_id)
+                    if occurrence is not None:
+                        selection_start, selection_end = selection_bounds(occurrence)
+                        lines.append(
+                            "  scheduled_window: "
+                            f"{occurrence.scheduled_start.isoformat()} to "
+                            f"{occurrence.scheduled_end.isoformat()}"
+                        )
+                        lines.append(
+                            f"  selection_window: {selection_start.isoformat()} to {selection_end.isoformat()}"
+                        )
         for reason in item.reasons:
             lines.append(f"  reason: {reason}")
     return "\n".join(lines)
+
+
+def _occurrence_conflict_key(conflict: AssignmentConflict) -> tuple[str, str, tuple[str, ...]]:
+    return (
+        conflict.transcript_id,
+        conflict.created_at.isoformat(),
+        conflict.occurrence_ids,
+    )
+
+
+def _unique_occurrence_assignment_conflicts(
+    items: tuple[TranscriptSyncPlanItem, ...],
+) -> tuple[AssignmentConflict, ...]:
+    conflicts: dict[tuple[str, str, tuple[str, ...]], AssignmentConflict] = {}
+    for item in items:
+        for artifact in item.bundle.artifacts:
+            if artifact.diagnostics is None:
+                continue
+            for conflict in artifact.diagnostics.assignment_conflicts:
+                conflicts.setdefault(_occurrence_conflict_key(conflict), conflict)
+    return tuple(conflicts.values())
 
 
 def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
@@ -1451,23 +1735,49 @@ def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
         if item.decision != "process" or item.intake_bundle_note is None:
             continue
         note = item.intake_bundle_note
-        note.path.parent.mkdir(parents=True, exist_ok=True)
+        bundle_note_content = (note.content + "\n").encode("utf-8")
+        metadata_content = (note.metadata_content + "\n").encode("utf-8")
+        metadata_payload = json.loads(metadata_content)
+        if not isinstance(metadata_payload, dict):
+            raise ValueError("Rendered Outlook metadata sidecar must be a JSON object.")
+        identity_payload = json.loads(note.identity_content)
+        if not isinstance(identity_payload, dict):
+            raise ValueError("Rendered meeting identity marker must be a JSON object.")
+        owned_bundles_root = _prepare_owned_bundles_root(note.path.parent)
         note.identity_path.parent.mkdir(parents=True, exist_ok=True)
-        should_refresh_pending = note.identity_path.exists() and _identity_marker_indicates_pending(note.identity_path)
-        if note.path.exists() and not should_refresh_pending:
+        _persist_planned_artifact_content(
+            item.bundle,
+            owned_bundles_root=owned_bundles_root,
+        )
+        identity_state = (
+            read_identity_state(note.identity_path, item.meeting.end_at)
+            if identity_marker_entry_exists(note.identity_path)
+            else None
+        )
+        should_refresh_pending = identity_state is not None and identity_state.marker_kind == "pending"
+        should_refresh_upgrade = (
+            identity_state is not None
+            and identity_state.marker_kind == "processed"
+            and identity_state.processing_source_kind == "fallback"
+            and note.processor_input_source_name in {"Teams .vtt transcript", "Teams transcript text"}
+        )
+        should_refresh_bundle = should_refresh_pending or should_refresh_upgrade
+        if note.path.exists() and not should_refresh_bundle:
             skipped_existing_bundle_note_paths.append(note.path)
         else:
-            note.path.write_text(note.content + "\n", encoding="utf-8")
+            atomic_write_bytes(note.path, bundle_note_content)
             written_bundle_note_paths.append(note.path)
-        if note.metadata_path.exists() and not should_refresh_pending:
+        if note.metadata_path.exists() and not should_refresh_bundle:
             skipped_existing_metadata_paths.append(note.metadata_path)
         else:
-            note.metadata_path.write_text(note.metadata_content + "\n", encoding="utf-8")
+            atomic_write_bytes(note.metadata_path, metadata_content)
             written_metadata_paths.append(note.metadata_path)
-        if note.identity_path.exists() and _identity_marker_indicates_processed(note.identity_path):
+        if identity_state is not None and (
+            identity_state.marker_kind == "processed" or identity_state.is_terminal(now=plan.generated_at)
+        ):
             skipped_existing_identity_paths.append(note.identity_path)
         else:
-            note.identity_path.write_text(note.identity_content + "\n", encoding="utf-8")
+            write_identity_marker(note.identity_path, identity_payload)
             written_identity_paths.append(note.identity_path)
     return BundleWriteResult(
         written_bundle_note_paths=tuple(written_bundle_note_paths),
@@ -1477,6 +1787,61 @@ def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
         skipped_existing_metadata_paths=tuple(skipped_existing_metadata_paths),
         skipped_existing_identity_paths=tuple(skipped_existing_identity_paths),
     )
+
+
+def _persist_planned_artifact_content(
+    bundle: MeetingSourceBundle,
+    *,
+    owned_bundles_root: Path,
+) -> None:
+    for artifact in bundle.artifacts:
+        if artifact.planned_content is None:
+            continue
+        if artifact.status != "available" or len(artifact.matched_paths) != 1:
+            raise ValueError("Planned meeting artifact content requires one available local path.")
+        target_path = _validate_owned_artifact_target(
+            artifact.matched_paths[0],
+            owned_bundles_root=owned_bundles_root,
+        )
+        atomic_create_bytes(target_path, artifact.planned_content.encode("utf-8"))
+
+
+def _prepare_owned_bundles_root(owned_bundles_root: Path) -> Path:
+    lexical_root = Path(os.path.abspath(owned_bundles_root))
+    if lexical_root.is_symlink():
+        raise ValueError(f"Meeting sync owned bundles root is symlinked: {lexical_root}")
+    lexical_root.mkdir(parents=True, exist_ok=True)
+    if lexical_root.is_symlink():
+        raise ValueError(f"Meeting sync owned bundles root is symlinked: {lexical_root}")
+    return lexical_root
+
+
+def _validate_owned_artifact_target(
+    target_path: Path,
+    *,
+    owned_bundles_root: Path,
+) -> Path:
+    lexical_root = Path(os.path.abspath(owned_bundles_root))
+    lexical_target = Path(os.path.abspath(target_path))
+    try:
+        relative_target = lexical_target.relative_to(lexical_root)
+    except ValueError:
+        raise ValueError(f"Planned meeting artifact target is outside the owned bundles root: {target_path}") from None
+    if relative_target == Path("."):
+        raise ValueError(f"Planned meeting artifact target must be a file below {lexical_root}")
+
+    current = lexical_root
+    for part in relative_target.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"Planned meeting artifact target contains a symlinked path component: {current}")
+        current.mkdir(exist_ok=True)
+        if current.is_symlink():
+            raise ValueError(f"Planned meeting artifact target contains a symlinked path component: {current}")
+
+    if lexical_target.is_symlink():
+        raise ValueError(f"Planned meeting artifact target contains a symlinked path component: {lexical_target}")
+    return lexical_target
 
 
 def render_bundle_write_result(result: BundleWriteResult) -> str:
@@ -1554,6 +1919,17 @@ def _artifact_client_without_network(client: MeetingArtifactDiscoveryClient) -> 
     return client
 
 
+def _artifact_client_without_summary_fallback(
+    client: MeetingArtifactDiscoveryClient,
+) -> MeetingArtifactDiscoveryClient:
+    without_summary_fallback = getattr(client, "without_summary_fallback", None)
+    if callable(without_summary_fallback):
+        return without_summary_fallback()
+    if getattr(client, "provides_summary_fallback", False):
+        return NoopMeetingArtifactDiscoveryClient()
+    return client
+
+
 def _discover_meeting_artifacts(
     meeting: OutlookMeetingCandidate,
     *,
@@ -1588,7 +1964,7 @@ def _should_prefilter_artifact_discovery(
         return True
     if not meeting.is_teams_meeting():
         return True
-    if _meeting_has_processed_identity(meeting, intake_root=intake_root):
+    if _meeting_has_terminal_identity(meeting, intake_root=intake_root, now=now):
         return True
     return False
 
@@ -1598,14 +1974,21 @@ def _plan_item(
     *,
     now: datetime,
     intake_root: Path | None,
+    transcript_grace_minutes: int = 60,
+    fallback_processed_poll: bool = False,
 ) -> TranscriptSyncPlanItem:
     bundle = _build_source_bundle(meeting)
     reasons: list[str] = []
+    fallback_deferred = False
+    fallback_not_before = meeting.end_at + timedelta(minutes=transcript_grace_minutes)
+    allow_summary_fallback = _datetime_at_or_after(now, fallback_not_before)
     intake_bundle_note = _build_intake_bundle_note(
         meeting,
         bundle,
         intake_root=intake_root,
         generated_at=now,
+        transcript_grace_minutes=transcript_grace_minutes,
+        allow_summary_fallback=allow_summary_fallback,
     )
 
     if meeting.end_at > now:
@@ -1636,8 +2019,48 @@ def _plan_item(
         reasons.append("Skipped event because Outlook metadata did not identify a Teams meeting.")
         return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
 
-    if intake_bundle_note is not None and intake_bundle_note.identity_path.exists():
-        if _identity_marker_indicates_processed(intake_bundle_note.identity_path):
+    if fallback_processed_poll:
+        processor_input_path, processor_input_source_name = _preferred_processor_input(
+            bundle,
+            allow_summary_fallback=False,
+        )
+        if (
+            processor_input_path is None
+            or processor_input_source_name
+            not in {
+                "Teams .vtt transcript",
+                "Teams transcript text",
+            }
+            or not _has_occurrence_valid_transcript_provenance(
+                meeting,
+                bundle,
+                processor_input_source_name=processor_input_source_name,
+            )
+        ):
+            reasons.append(
+                "No occurrence-valid transcript provenance was found while polling a fallback-processed meeting."
+            )
+            return TranscriptSyncPlanItem(
+                "skip",
+                meeting,
+                bundle,
+                tuple(reasons),
+                None,
+                fallback_awaiting_transcript=True,
+            )
+        reasons.append("Would upgrade fallback-processed meeting with a transcript.")
+        return TranscriptSyncPlanItem(
+            "process",
+            meeting,
+            bundle,
+            tuple(reasons),
+            intake_bundle_note,
+            late_transcript_upgrade=True,
+        )
+
+    if intake_bundle_note is not None and identity_marker_entry_exists(intake_bundle_note.identity_path):
+        identity_state = read_identity_state(intake_bundle_note.identity_path, meeting.end_at)
+        if identity_state.is_terminal(now=now):
             reasons.append("Skipped meeting because it was already processed.")
             return TranscriptSyncPlanItem("skip", meeting, bundle, tuple(reasons), intake_bundle_note)
         if _pending_retry_expired(meeting, marker_path=intake_bundle_note.identity_path, now=now):
@@ -1645,10 +2068,29 @@ def _plan_item(
         else:
             reasons.append("Retrying pending meeting artifact discovery.")
 
+    recap = bundle.artifact("Copilot recap / AI summary")
+    transcript_input_path, _ = _preferred_processor_input(bundle, allow_summary_fallback=False)
+    if (
+        not allow_summary_fallback
+        and transcript_input_path is None
+        and recap is not None
+        and recap.status == "available"
+        and recap.matched_paths
+    ):
+        reasons.append(f"Recap fallback deferred until {_format_datetime(fallback_not_before)}.")
+        fallback_deferred = True
+
     reasons.append("Would collect all available meeting artifacts with transcript sources prioritized first.")
     reasons.append("Discovery found a Teams meeting candidate from Outlook metadata.")
     reasons.append("Bundle output preserves artifact retrieval status for transcript, chat, and recap sources.")
-    return TranscriptSyncPlanItem("process", meeting, bundle, tuple(reasons), intake_bundle_note)
+    return TranscriptSyncPlanItem(
+        "process",
+        meeting,
+        bundle,
+        tuple(reasons),
+        intake_bundle_note,
+        fallback_deferred=fallback_deferred,
+    )
 
 
 def _build_source_bundle(meeting: OutlookMeetingCandidate) -> MeetingSourceBundle:
@@ -1688,6 +2130,8 @@ def _build_intake_bundle_note(
     *,
     intake_root: Path | None,
     generated_at: datetime,
+    transcript_grace_minutes: int,
+    allow_summary_fallback: bool,
 ) -> PlannedIntakeBundleNote | None:
     if intake_root is None:
         return None
@@ -1698,7 +2142,10 @@ def _build_intake_bundle_note(
     identity_path = intake_root / _meeting_identity_relative_path(meeting)
     attendance_confidence, source_limitations = _bundle_transparency(bundle)
     sources_used = tuple(bundle.available_sources())
-    processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
+    processor_input_path, processor_input_source_name = _preferred_processor_input(
+        bundle,
+        allow_summary_fallback=allow_summary_fallback,
+    )
     content = render_intake_bundle_note(
         meeting=meeting,
         bundle=bundle,
@@ -1712,6 +2159,8 @@ def _build_intake_bundle_note(
         meeting=meeting,
         bundle=bundle,
         processed_marker_path=identity_path,
+        transcript_grace_minutes=transcript_grace_minutes,
+        allow_summary_fallback=allow_summary_fallback,
     )
     identity_content = render_meeting_identity_sidecar(
         meeting=meeting,
@@ -1719,6 +2168,7 @@ def _build_intake_bundle_note(
         bundle_note_path=path,
         metadata_path=metadata_path,
         generated_at=generated_at,
+        transcript_grace_minutes=transcript_grace_minutes,
     )
     return PlannedIntakeBundleNote(
         path=path,
@@ -1873,48 +2323,33 @@ def _meeting_identity_path(meeting: OutlookMeetingCandidate, *, intake_root: Pat
     return intake_root / _meeting_identity_relative_path(meeting)
 
 
-def _meeting_has_processed_identity(meeting: OutlookMeetingCandidate, *, intake_root: Path | None) -> bool:
+def _meeting_has_terminal_identity(
+    meeting: OutlookMeetingCandidate,
+    *,
+    intake_root: Path | None,
+    now: datetime,
+) -> bool:
     identity_path = _meeting_identity_path(meeting, intake_root=intake_root)
-    if identity_path is None or not identity_path.exists():
+    if identity_path is None or not identity_marker_entry_exists(identity_path):
         return False
-    return _identity_marker_indicates_processed(identity_path)
+    return read_identity_state(identity_path, meeting.end_at).is_terminal(now=now)
 
 
-def _read_identity_marker(identity_path: Path) -> dict[str, object]:
-    try:
-        payload = json.loads(identity_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return payload
-
-
-def _identity_marker_source_type(identity_path: Path) -> str | None:
-    source_type = _read_identity_marker(identity_path).get("source_type")
-    if not isinstance(source_type, str):
-        return None
-    return source_type
-
-
-def _identity_marker_indicates_processed(identity_path: Path) -> bool:
-    return _identity_marker_source_type(identity_path) == PROCESSED_MARKER_SOURCE_TYPE
-
-
-def _identity_marker_indicates_pending(identity_path: Path) -> bool:
-    source_type = _identity_marker_source_type(identity_path)
-    if source_type in {None, PENDING_MARKER_SOURCE_TYPE, LEGACY_PENDING_MARKER_SOURCE_TYPE}:
-        return True
-    return source_type != PROCESSED_MARKER_SOURCE_TYPE
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
+def _is_fallback_processed_poll(
+    meeting: OutlookMeetingCandidate,
+    *,
+    marker_path: Path | None,
+    now: datetime,
+) -> bool:
+    if marker_path is None or not identity_marker_entry_exists(marker_path):
+        return False
+    identity_state = read_identity_state(marker_path, meeting.end_at)
+    return (
+        identity_state.marker_kind == "processed"
+        and identity_state.processing_source_kind == "fallback"
+        and identity_state.upgrade_state == "awaiting_transcript"
+        and not identity_state.is_terminal(now=now)
+    )
 
 
 def _format_datetime(value: datetime) -> str:
@@ -1923,12 +2358,91 @@ def _format_datetime(value: datetime) -> str:
     return value.isoformat()
 
 
+def _datetime_at_or_after(value: datetime, deadline: datetime) -> bool:
+    comparable_value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    comparable_deadline = deadline.replace(tzinfo=UTC) if deadline.tzinfo is None else deadline.astimezone(UTC)
+    return comparable_value >= comparable_deadline
+
+
+def _datetime_as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _has_occurrence_valid_transcript_provenance(
+    meeting: OutlookMeetingCandidate,
+    bundle: MeetingSourceBundle,
+    *,
+    processor_input_source_name: str,
+) -> bool:
+    transcript_artifacts = tuple(
+        artifact
+        for source_name in ("Teams .vtt transcript", "Teams transcript text")
+        if (artifact := bundle.artifact(source_name)) is not None
+    )
+    for artifact in transcript_artifacts:
+        diagnostics = artifact.diagnostics
+        if diagnostics is not None and any(
+            meeting.event_id in conflict.occurrence_ids for conflict in diagnostics.assignment_conflicts
+        ):
+            return False
+
+    selected_artifact = bundle.artifact(processor_input_source_name)
+    if selected_artifact is None or selected_artifact.diagnostics is None:
+        return False
+    selected_path = _preferred_artifact_path(selected_artifact.matched_paths)
+    if selected_path not in selected_artifact.occurrence_validated_paths:
+        return False
+    diagnostics = selected_artifact.diagnostics
+    if _datetime_as_utc(diagnostics.occurrence_start_at) != _datetime_as_utc(meeting.start_at) or _datetime_as_utc(
+        diagnostics.occurrence_end_at
+    ) != _datetime_as_utc(meeting.end_at):
+        return False
+
+    occurrence = OccurrenceWindow(
+        occurrence_id=meeting.event_id,
+        series_id=meeting.series_master_id or meeting.event_id,
+        scheduled_start=meeting.start_at,
+        scheduled_end=meeting.end_at,
+    )
+    selection_start, selection_end = selection_bounds(occurrence)
+    transcript_id_counts: dict[str, int] = {}
+    for selected in diagnostics.selected_transcripts:
+        transcript_id_counts[selected.transcript_id] = transcript_id_counts.get(selected.transcript_id, 0) + 1
+    return any(
+        selected.created_at is not None
+        and transcript_id_counts[selected.transcript_id] == 1
+        and _datetime_as_utc(selection_start)
+        <= _datetime_as_utc(selected.created_at)
+        <= _datetime_as_utc(selection_end)
+        for selected in diagnostics.selected_transcripts
+    )
+
+
+def _meeting_polling_identity_fields(
+    meeting: OutlookMeetingCandidate,
+    *,
+    transcript_grace_minutes: int,
+) -> dict[str, str]:
+    occurrence = OccurrenceWindow(
+        occurrence_id=meeting.event_id,
+        series_id=meeting.series_master_id or meeting.event_id,
+        scheduled_start=meeting.start_at,
+        scheduled_end=meeting.end_at,
+    )
+    selection_window_start, selection_window_end = selection_bounds(occurrence)
+    return {
+        "fallback_not_before": _format_datetime(meeting.end_at + timedelta(minutes=transcript_grace_minutes)),
+        "retry_until": _format_datetime(meeting.end_at + timedelta(hours=PENDING_ARTIFACT_RETRY_HOURS)),
+        "primary_occurrence_event_id": meeting.event_id,
+        "scheduled_start_at": _format_datetime(meeting.start_at),
+        "scheduled_end_at": _format_datetime(meeting.end_at),
+        "selection_window_start_at": _format_datetime(selection_window_start),
+        "selection_window_end_at": _format_datetime(selection_window_end),
+    }
+
+
 def _pending_retry_until(meeting: OutlookMeetingCandidate, marker_path: Path) -> datetime:
-    payload = _read_identity_marker(marker_path)
-    explicit_retry_until = _parse_datetime(payload.get("retry_until"))
-    if explicit_retry_until is not None:
-        return explicit_retry_until
-    return meeting.end_at + timedelta(hours=PENDING_ARTIFACT_RETRY_HOURS)
+    return read_identity_state(marker_path, meeting.end_at).retry_until
 
 
 def _pending_retry_expired(
@@ -1937,7 +2451,8 @@ def _pending_retry_expired(
     marker_path: Path,
     now: datetime,
 ) -> bool:
-    return now > _pending_retry_until(meeting, marker_path)
+    comparable_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    return comparable_now > _pending_retry_until(meeting, marker_path)
 
 
 def _meeting_identity_key(meeting: OutlookMeetingCandidate) -> str:
@@ -1981,13 +2496,19 @@ def _artifact_limitation(artifact: MeetingArtifact) -> str:
     return f"{artifact.source_name} was not retrieved yet{detail}"
 
 
-def _preferred_processor_input(bundle: MeetingSourceBundle) -> tuple[Path | None, str | None]:
+def _preferred_processor_input(
+    bundle: MeetingSourceBundle,
+    *,
+    allow_summary_fallback: bool,
+) -> tuple[Path | None, str | None]:
     for source_name in (
         "Teams .vtt transcript",
         "Teams transcript text",
         "Copilot recap / AI summary",
         "Manual / semi-manual intake",
     ):
+        if source_name == "Copilot recap / AI summary" and not allow_summary_fallback:
+            continue
         artifact = bundle.artifact(source_name)
         if artifact is None or artifact.status != "available" or not artifact.matched_paths:
             continue
@@ -2042,8 +2563,13 @@ def render_outlook_metadata_sidecar(
     meeting: OutlookMeetingCandidate,
     bundle: MeetingSourceBundle,
     processed_marker_path: Path | None = None,
+    transcript_grace_minutes: int = 60,
+    allow_summary_fallback: bool = True,
 ) -> str:
-    processor_input_path, processor_input_source_name = _preferred_processor_input(bundle)
+    processor_input_path, processor_input_source_name = _preferred_processor_input(
+        bundle,
+        allow_summary_fallback=allow_summary_fallback,
+    )
     payload = {
         "source_type": _bundle_source_type(processor_input_source_name),
         "identity_key": _meeting_identity_key(meeting),
@@ -2051,6 +2577,10 @@ def render_outlook_metadata_sidecar(
         "subject": meeting.subject,
         "start_at": meeting.start_at.isoformat(),
         "end_at": meeting.end_at.isoformat(),
+        **_meeting_polling_identity_fields(
+            meeting,
+            transcript_grace_minutes=transcript_grace_minutes,
+        ),
         "organizer": meeting.organizer,
         "response_status": meeting.response_status,
         "is_cancelled": meeting.is_cancelled,
@@ -2087,9 +2617,11 @@ def render_meeting_identity_sidecar(
     bundle_note_path: Path,
     metadata_path: Path,
     generated_at: datetime | None = None,
+    transcript_grace_minutes: int = 60,
 ) -> str:
     checked_at = generated_at or datetime.now(tz=meeting.end_at.tzinfo or UTC)
     payload = {
+        "schema_version": 2,
         "source_type": PENDING_MARKER_SOURCE_TYPE,
         "identity_key": _meeting_identity_key(meeting),
         "outlook_event_id": meeting.event_id,
@@ -2100,7 +2632,10 @@ def render_meeting_identity_sidecar(
         "subject": meeting.subject,
         "first_seen_at": _format_datetime(meeting.end_at),
         "last_checked_at": _format_datetime(checked_at),
-        "retry_until": _format_datetime(meeting.end_at + timedelta(hours=PENDING_ARTIFACT_RETRY_HOURS)),
+        **_meeting_polling_identity_fields(
+            meeting,
+            transcript_grace_minutes=transcript_grace_minutes,
+        ),
         "artifact_statuses": [_serialize_artifact(artifact) for artifact in bundle.artifacts],
     }
     return json.dumps(payload, indent=2, sort_keys=True)
@@ -2122,7 +2657,7 @@ def _chronological_selected_transcripts(
 
 
 def _serialize_transcript_diagnostics(diagnostics: TranscriptDiagnostics) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "candidate_count": diagnostics.candidate_count,
         "selected_transcripts": [
             {
@@ -2135,6 +2670,16 @@ def _serialize_transcript_diagnostics(diagnostics: TranscriptDiagnostics) -> dic
         "occurrence_end_at": diagnostics.occurrence_end_at.isoformat(),
         "local_action": diagnostics.local_action,
     }
+    if diagnostics.assignment_conflicts:
+        payload["assignment_conflicts"] = [
+            {
+                "transcript_id": conflict.transcript_id,
+                "created_at": conflict.created_at.isoformat(),
+                "occurrence_ids": list(conflict.occurrence_ids),
+            }
+            for conflict in diagnostics.assignment_conflicts
+        ]
+    return payload
 
 
 def _serialize_artifact(artifact: MeetingArtifact) -> dict[str, object]:
@@ -2146,6 +2691,8 @@ def _serialize_artifact(artifact: MeetingArtifact) -> dict[str, object]:
     }
     if artifact.diagnostics is not None:
         payload["transcript_diagnostics"] = _serialize_transcript_diagnostics(artifact.diagnostics)
+    if artifact.occurrence_validated_paths:
+        payload["occurrence_validated_paths"] = [str(path) for path in artifact.occurrence_validated_paths]
     return payload
 
 
@@ -2671,6 +3218,7 @@ def _transcript_diagnostics(
     selected: tuple[GraphTranscriptRecord, ...],
     *,
     local_action: LocalTranscriptAction,
+    assignment_conflicts: tuple[AssignmentConflict, ...] = (),
 ) -> TranscriptDiagnostics:
     return TranscriptDiagnostics(
         candidate_count=len(candidates),
@@ -2680,30 +3228,67 @@ def _transcript_diagnostics(
         occurrence_start_at=meeting.start_at,
         occurrence_end_at=meeting.end_at,
         local_action=local_action,
+        assignment_conflicts=assignment_conflicts,
+    )
+
+
+def _canonical_graph_transcript_records(
+    records: tuple[GraphTranscriptRecord, ...],
+) -> tuple[GraphTranscriptRecord, ...]:
+    records_by_id: dict[str, GraphTranscriptRecord] = {}
+    ordered_transcript_ids: list[str] = []
+    conflicting_transcript_ids: set[str] = set()
+    for record in records:
+        existing = records_by_id.get(record.transcript_id)
+        if existing is None:
+            records_by_id[record.transcript_id] = record
+            ordered_transcript_ids.append(record.transcript_id)
+        elif existing != record:
+            conflicting_transcript_ids.add(record.transcript_id)
+    return tuple(
+        records_by_id[transcript_id]
+        for transcript_id in ordered_transcript_ids
+        if transcript_id not in conflicting_transcript_ids
     )
 
 
 def _select_transcripts_for_occurrence(
     records: tuple[GraphTranscriptRecord, ...],
     meeting: OutlookMeetingCandidate,
-) -> tuple[GraphTranscriptRecord, ...]:
-    window_start = meeting.start_at - timedelta(minutes=15)
-    window_end = meeting.end_at + timedelta(minutes=30)
-    matching_records = tuple(
-        sorted(
-            (
-                record
-                for record in records
-                if record.created_at is not None and window_start <= record.created_at <= window_end
-            ),
-            key=lambda record: record.created_at or window_start,
-        )
+) -> tuple[tuple[GraphTranscriptRecord, ...], tuple[AssignmentConflict, ...]]:
+    canonical_records = _canonical_graph_transcript_records(records)
+    occurrence_context = meeting.occurrence_context
+    current_occurrence = next(
+        (occurrence for occurrence in occurrence_context if occurrence.occurrence_id == meeting.event_id),
+        None,
     )
-    if matching_records:
-        return matching_records
-    if len(records) == 1 and records[0].created_at_missing:
-        return records
-    return ()
+    if current_occurrence is None:
+        current_occurrence = OccurrenceWindow(
+            occurrence_id=meeting.event_id,
+            series_id=meeting.teams_meeting_id() or meeting.series_master_id or meeting.event_id,
+            scheduled_start=meeting.start_at,
+            scheduled_end=meeting.end_at,
+        )
+        occurrence_context = occurrence_context + (current_occurrence,)
+    assignment = assign_transcripts(
+        occurrences=occurrence_context,
+        candidates=tuple(
+            TranscriptCandidate(
+                transcript_id=record.transcript_id,
+                series_id=current_occurrence.series_id,
+                created_at=record.created_at,
+            )
+            for record in canonical_records
+        ),
+    )
+    if any(meeting.event_id in conflict.occurrence_ids for conflict in assignment.conflicts):
+        return (), assignment.conflicts
+    assigned_ids = assignment.transcript_ids_for(meeting.event_id)
+    records_by_id = {record.transcript_id: record for record in canonical_records}
+    selected_records = tuple(
+        records_by_id[transcript_id] for transcript_id in dict.fromkeys(assigned_ids) if transcript_id in records_by_id
+    )
+    return selected_records, assignment.conflicts
 
 
 def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
@@ -2744,6 +3329,7 @@ def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
         body_text=body_text,
         categories=category_values,
         show_as=_optional_string(str(payload.get("showAs") or "")),
+        series_master_id=_optional_string(str(payload.get("seriesMasterId") or "")),
     )
 
 

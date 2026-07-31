@@ -50,6 +50,7 @@ class Config:
     watcher_stable_seconds: int = 2
     automation_log_dir: str = "logs"
     automation_error_dir: str = "_System/Agent Errors"
+    meeting_transcript_grace_minutes: int = 60
     outlook_graph_access_token_env: str = "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN"
     outlook_graph_tenant_id: str | None = None
     outlook_graph_client_id: str | None = None
@@ -101,6 +102,10 @@ class Config:
             watcher_stable_seconds=_positive_int(data.get("watcher_stable_seconds", 2), "watcher_stable_seconds"),
             automation_log_dir=str(data.get("automation_log_dir", "logs")),
             automation_error_dir=str(data.get("automation_error_dir", "_System/Agent Errors")),
+            meeting_transcript_grace_minutes=_positive_int(
+                data.get("meeting_transcript_grace_minutes", 60),
+                "meeting_transcript_grace_minutes",
+            ),
             outlook_graph_access_token_env=str(
                 data.get("outlook_graph_access_token_env", "OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN")
             ),

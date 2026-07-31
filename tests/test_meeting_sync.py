@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from base64 import urlsafe_b64encode
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -23,9 +23,13 @@ from obsidian_intake_agent.meetings import (
     MeetingArtifact,
     MeetingAttendee,
     MeetingDiscoverySnapshot,
+    MeetingSourceBundle,
+    OccurrenceWindow,
     OutlookMeetingCandidate,
     SelectedTranscriptDiagnostic,
     TranscriptDiagnostics,
+    TranscriptSyncPlan,
+    TranscriptSyncPlanItem,
     UnconfiguredOutlookMeetingDiscoveryClient,
     build_bundle_processing_plan,
     build_transcript_sync_plan,
@@ -44,6 +48,181 @@ from obsidian_intake_agent.processors.meeting_processor import ProcessResult
 
 
 class TranscriptSyncPlannerTests(unittest.TestCase):
+    def test_exact_duplicate_transcript_records_select_only_once(self) -> None:
+        meeting = meeting_sync_module._meetings_with_occurrence_context((_recurring_meeting(),))[0]
+        record = meeting_sync_module.GraphTranscriptRecord(
+            transcript_id="duplicate-segment",
+            created_at=datetime.fromisoformat("2026-07-17T17:05:00+00:00"),
+            created_at_missing=False,
+        )
+
+        selected, conflicts = meeting_sync_module._select_transcripts_for_occurrence(
+            (record, record),
+            meeting,
+        )
+
+        self.assertEqual(tuple(item.transcript_id for item in selected), ("duplicate-segment",))
+        self.assertEqual(conflicts, ())
+
+    def test_conflicting_timestamp_duplicates_are_not_selected_for_any_occurrence(self) -> None:
+        first = _recurring_meeting()
+        second = replace(
+            first,
+            event_id="evt-recurring-next",
+            start_at=datetime.fromisoformat("2026-07-18T17:00:00+00:00"),
+            end_at=datetime.fromisoformat("2026-07-18T17:25:00+00:00"),
+        )
+        meetings = meeting_sync_module._meetings_with_occurrence_context((first, second))
+        conflicting_records = (
+            meeting_sync_module.GraphTranscriptRecord(
+                transcript_id="conflicting-segment",
+                created_at=datetime.fromisoformat("2026-07-17T17:05:00+00:00"),
+                created_at_missing=False,
+            ),
+            meeting_sync_module.GraphTranscriptRecord(
+                transcript_id="conflicting-segment",
+                created_at=datetime.fromisoformat("2026-07-18T17:05:00+00:00"),
+                created_at_missing=False,
+            ),
+        )
+
+        for meeting in meetings:
+            with self.subTest(event_id=meeting.event_id):
+                selected, conflicts = meeting_sync_module._select_transcripts_for_occurrence(
+                    conflicting_records,
+                    meeting,
+                )
+                self.assertEqual(selected, ())
+                self.assertEqual(conflicts, ())
+
+    def test_exact_duplicate_snapshot_meetings_are_collapsed_before_planning(self) -> None:
+        meeting = _meeting(
+            event_id="duplicate-event",
+            subject="Platform Sync",
+            response_status="accepted",
+        )
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting, meeting)),
+            since=date(2026, 5, 4),
+            now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+        )
+
+        self.assertEqual(plan.candidate_count, 1)
+
+    def test_conflicting_duplicate_snapshot_event_ids_are_rejected_without_echoing_id(self) -> None:
+        event_id = "sensitive-event-id"
+        meeting = _meeting(
+            event_id=event_id,
+            subject="Platform Sync",
+            response_status="accepted",
+        )
+        conflicting = replace(
+            meeting,
+            end_at=datetime.fromisoformat("2026-05-04T13:45:00+00:00"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "conflicting definitions") as exc_info:
+            build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting, conflicting)),
+                since=date(2026, 5, 4),
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+        self.assertNotIn(event_id, str(exc_info.exception))
+
+    def test_occurrence_with_unique_and_ambiguous_transcripts_renders_conflict_without_any_selection(self) -> None:
+        join_url = "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D"
+        first = OutlookMeetingCandidate(
+            event_id="occurrence-first",
+            subject="Recurring Platform Sync",
+            start_at=datetime.fromisoformat("2026-07-17T17:00:00+00:00"),
+            end_at=datetime.fromisoformat("2026-07-17T17:25:00+00:00"),
+            response_status="accepted",
+            join_url=join_url,
+            online_meeting_provider="teamsForBusiness",
+            series_master_id="series-master",
+        )
+        second = OutlookMeetingCandidate(
+            event_id="occurrence-second",
+            subject="Recurring Platform Sync",
+            start_at=datetime.fromisoformat("2026-07-17T17:30:00+00:00"),
+            end_at=datetime.fromisoformat("2026-07-17T17:55:00+00:00"),
+            response_status="accepted",
+            join_url=join_url,
+            online_meeting_provider="teamsForBusiness",
+            series_master_id="series-master",
+        )
+
+        def fetch_json(url: str, token: str) -> dict[str, object]:
+            del token
+            if url.endswith("/transcripts"):
+                return {
+                    "value": [
+                        {
+                            "id": "unique-current-segment",
+                            "createdDateTime": "2026-07-17T17:00:00Z",
+                        },
+                        {
+                            "id": "ambiguous-segment",
+                            "createdDateTime": "2026-07-17T17:35:00Z",
+                        },
+                    ]
+                }
+            return {"value": [{"id": "opaque-meeting-id"}]}
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(first, second)),
+            artifact_discovery_client=GraphTranscriptDiscoveryClient(
+                access_token="token",
+                api_base_url="https://graph.example/v1.0",
+                fetch_json=fetch_json,
+            ),
+            since=date(2026, 7, 17),
+            now=datetime.fromisoformat("2026-07-17T19:00:00+00:00"),
+        )
+
+        self.assertEqual(plan.items[0].decision, "process")
+        transcript_artifact = plan.items[0].bundle.artifact("Teams transcript text")
+        assert transcript_artifact is not None
+        assert transcript_artifact.diagnostics is not None
+        self.assertEqual(transcript_artifact.diagnostics.selected_transcripts, ())
+        rendered = render_transcript_sync_plan(plan)
+        self.assertIn("meeting_sync_occurrence_errors: 1", rendered)
+        self.assertEqual(
+            rendered.count("meeting_sync_occurrence_error: ambiguous_transcript_assignment"),
+            1,
+        )
+        self.assertIn(
+            "meeting_sync_occurrence_error: ambiguous_transcript_assignment",
+            rendered,
+        )
+        self.assertIn("candidate_transcript_id: ambiguous-segment", rendered)
+        self.assertIn(
+            "candidate_transcript_created_at: 2026-07-17T17:35:00+00:00",
+            rendered,
+        )
+        self.assertIn(
+            "scheduled_window: 2026-07-17T17:00:00+00:00 to 2026-07-17T17:25:00+00:00",
+            rendered,
+        )
+        self.assertIn(
+            "selection_window: 2026-07-17T16:45:00+00:00 to 2026-07-17T17:55:00+00:00",
+            rendered,
+        )
+        self.assertIn(
+            "scheduled_window: 2026-07-17T17:30:00+00:00 to 2026-07-17T17:55:00+00:00",
+            rendered,
+        )
+        self.assertIn(
+            "selection_window: 2026-07-17T17:15:00+00:00 to 2026-07-17T18:25:00+00:00",
+            rendered,
+        )
+        self.assertIn("occurrence_id: occurrence-first", rendered)
+        self.assertIn("occurrence_id: occurrence-second", rendered)
+        self.assertNotIn("selected_transcript_id: ambiguous-segment", rendered)
+        self.assertNotIn("selected_transcript_id: unique-current-segment", rendered)
+
     def test_dry_run_renders_safe_structured_transcript_diagnostics(self) -> None:
         meeting = _recurring_meeting()
         diagnostics = TranscriptDiagnostics(
@@ -84,6 +263,91 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             rendered,
         )
         self.assertIn("  local_transcript_action: downloaded", rendered)
+
+    def test_later_artifact_ambiguity_is_rendered_after_selected_diagnostics(self) -> None:
+        meeting = replace(
+            _recurring_meeting(),
+            occurrence_context=(
+                OccurrenceWindow(
+                    occurrence_id="occurrence-first",
+                    series_id="series",
+                    scheduled_start=datetime.fromisoformat("2026-07-17T17:00:00+00:00"),
+                    scheduled_end=datetime.fromisoformat("2026-07-17T17:25:00+00:00"),
+                ),
+                OccurrenceWindow(
+                    occurrence_id="occurrence-second",
+                    series_id="series",
+                    scheduled_start=datetime.fromisoformat("2026-07-17T17:30:00+00:00"),
+                    scheduled_end=datetime.fromisoformat("2026-07-17T17:55:00+00:00"),
+                ),
+            ),
+        )
+        meeting = replace(meeting, event_id="occurrence-first")
+        selected_diagnostics = TranscriptDiagnostics(
+            candidate_count=1,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic(
+                    "selected-segment",
+                    datetime.fromisoformat("2026-07-17T17:05:00+00:00"),
+                ),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="validated",
+        )
+        ambiguous_diagnostics = TranscriptDiagnostics(
+            candidate_count=1,
+            selected_transcripts=(),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="none",
+            assignment_conflicts=(
+                meeting_sync_module.AssignmentConflict(
+                    "later-ambiguous-segment",
+                    datetime.fromisoformat("2026-07-17T17:35:00+00:00"),
+                    ("occurrence-first", "occurrence-second"),
+                ),
+            ),
+        )
+        bundle = MeetingSourceBundle(
+            meeting=meeting,
+            artifacts=(
+                MeetingArtifact("Teams .vtt transcript", "available", diagnostics=selected_diagnostics),
+                MeetingArtifact("Teams transcript text", "missing", diagnostics=ambiguous_diagnostics),
+            ),
+            teams_meeting_id=meeting.teams_meeting_id(),
+        )
+        item = TranscriptSyncPlanItem(
+            decision="process",
+            meeting=meeting,
+            bundle=bundle,
+            reasons=(),
+            intake_bundle_note=None,
+        )
+        plan = TranscriptSyncPlan(
+            since=date(2026, 7, 17),
+            generated_at=datetime.fromisoformat("2026-07-17T19:00:00+00:00"),
+            provider_label="test",
+            warning=None,
+            items=(item,),
+        )
+
+        self.assertEqual(plan.occurrence_error_count, 1)
+        self.assertTrue(plan.has_ambiguous_transcript_assignments)
+        self.assertEqual(plan.occurrence_errors[0].transcript_id, "later-ambiguous-segment")
+        rendered = render_transcript_sync_plan(plan)
+        self.assertEqual(rendered.count("selected_transcript_id: selected-segment"), 1)
+        self.assertEqual(
+            rendered.count("meeting_sync_occurrence_error: ambiguous_transcript_assignment"),
+            1,
+        )
+        self.assertIn("candidate_transcript_id: later-ambiguous-segment", rendered)
+        self.assertIn(
+            "candidate_transcript_created_at: 2026-07-17T17:35:00+00:00",
+            rendered,
+        )
+        self.assertIn("occurrence_id: occurrence-first", rendered)
+        self.assertIn("occurrence_id: occurrence-second", rendered)
 
     def test_fetch_graph_json_omits_outlook_timezone_preference_by_default(self) -> None:
         captured: dict[str, object] = {}
@@ -1281,7 +1545,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(artifact_by_name["Copilot recap / AI summary"].status, "available")
             self.assertEqual(artifact_by_name["Copilot recap / AI summary"].matched_paths, (fallback_path,))
             self.assertEqual(artifact_by_name["Teams meeting chat"].status, "available")
-            self.assertTrue(fallback_path.exists())
+            self.assertIsNotNone(artifact_by_name["Copilot recap / AI summary"].planned_content)
+            self.assertFalse(fallback_path.exists())
             self.assertGreaterEqual(len(requested_urls), 5)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
@@ -1321,6 +1586,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                             },
                         ],
                         "type": "singleInstance",
+                        "seriesMasterId": "series-master-123",
                     }
                 ]
             },
@@ -1336,6 +1602,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(len(snapshot.meetings), 1)
         meeting = snapshot.meetings[0]
         self.assertEqual(meeting.event_id, "evt-123")
+        self.assertEqual(meeting.series_master_id, "series-master-123")
         self.assertEqual(meeting.organizer, "Casey")
         self.assertEqual(meeting.response_status, "accepted")
         self.assertTrue(meeting.is_teams_meeting())
@@ -1828,7 +2095,14 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 self.assertEqual(token, "token")
                 if len(requested_json_urls) == 1:
                     return {"value": [{"id": "opaque-meeting-id"}]}
-                return {"value": [{"id": "transcript 1"}]}
+                return {
+                    "value": [
+                        {
+                            "id": "transcript 1",
+                            "createdDateTime": "2026-05-04T13:05:00Z",
+                        }
+                    ]
+                }
 
             def fetch_bytes(url: str, token: str) -> bytes:
                 requested_content_urls.append(url)
@@ -1871,6 +2145,15 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
             self.assertEqual(artifacts[0].status, "available")
             self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
+            self.assertEqual(artifacts[0].occurrence_validated_paths, (transcript_path,))
+            self.assertIsNotNone(
+                transcript_provenance.matching_provenance(
+                    transcript_path,
+                    event_id=meeting.event_id,
+                    occurrence_start_at=meeting.start_at,
+                    occurrence_end_at=meeting.end_at,
+                )
+            )
             self.assertFalse((intake_root / "2026-05-04 - Teams - Platform Sync.vtt").exists())
             self.assertEqual(
                 transcript_path.read_text(encoding="utf-8"),
@@ -2083,7 +2366,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(list(archive_path.parent.glob("*.vtt")), [archive_path])
             self.assertIn("Validated", rerun_artifacts[0].detail or "")
             assert rerun_artifacts[0].diagnostics is not None
-            self.assertIsNone(rerun_artifacts[0].diagnostics.candidate_count)
+            self.assertEqual(rerun_artifacts[0].diagnostics.candidate_count, 1)
 
             rerun_plan = build_transcript_sync_plan(
                 client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
@@ -2091,9 +2374,9 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 since=date(2026, 7, 17),
                 now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
             )
-            self.assertIn("  transcript_candidates: unknown", render_transcript_sync_plan(rerun_plan))
+            self.assertIn("  transcript_candidates: 1", render_transcript_sync_plan(rerun_plan))
             metadata = json.loads(render_outlook_metadata_sidecar(meeting=meeting, bundle=rerun_plan.items[0].bundle))
-            self.assertIsNone(metadata["artifacts"][0]["transcript_diagnostics"]["candidate_count"])
+            self.assertEqual(metadata["artifacts"][0]["transcript_diagnostics"]["candidate_count"], 1)
 
     def test_graph_transcript_download_short_circuits_with_matching_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2127,7 +2410,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(
                 artifacts[0].diagnostics,
                 TranscriptDiagnostics(
-                    candidate_count=None,
+                    candidate_count=1,
                     selected_transcripts=(
                         SelectedTranscriptDiagnostic("july-17", datetime.fromisoformat("2026-07-17T17:25:00+00:00")),
                     ),
@@ -2136,6 +2419,185 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                     local_action="validated",
                 ),
             )
+
+    def test_graph_transcript_provenance_fast_path_rejects_new_overlapping_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            first = _recurring_meeting()
+            second = replace(
+                first,
+                event_id="evt-recurring-overlap",
+                start_at=datetime.fromisoformat("2026-07-17T17:30:00+00:00"),
+                end_at=datetime.fromisoformat("2026-07-17T17:55:00+00:00"),
+            )
+            contextual_first = meeting_sync_module._meetings_with_occurrence_context((first, second))[0]
+            transcript_path = intake_root / meeting_sync_module._transcript_relative_path(first)
+            content = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCURRENT\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(content)
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=first.event_id,
+                occurrence_start_at=first.start_at,
+                occurrence_end_at=first.end_at,
+                transcripts=[{"id": "overlapping-segment", "created_at": "2026-07-17T17:25:00+00:00"}],
+                content=content,
+            )
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                fetch_json=lambda _url, _token: self.fail("validated provenance must not trigger Graph discovery"),
+                fetch_bytes=lambda _url, _token: self.fail("validated provenance must not trigger content download"),
+            )
+
+            artifacts = client.discover_artifacts(meeting=contextual_first)
+
+            self.assertEqual(artifacts[0].status, "missing")
+            self.assertEqual(artifacts[0].occurrence_validated_paths, ())
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.selected_transcripts, ())
+            self.assertEqual(len(artifacts[0].diagnostics.assignment_conflicts), 1)
+            self.assertEqual(
+                artifacts[0].diagnostics.assignment_conflicts[0].occurrence_ids,
+                (first.event_id, second.event_id),
+            )
+
+            marker_path = meeting_sync_module._meeting_identity_path(first, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-07-18T17:25:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(first,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(artifacts=artifacts),
+                since=date(2026, 7, 17),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            self.assertIn(
+                "meeting_sync_occurrence_error: ambiguous_transcript_assignment",
+                render_transcript_sync_plan(plan),
+            )
+
+    def test_graph_transcript_text_provenance_fast_path_rejects_new_overlapping_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            first = _recurring_meeting()
+            second = replace(
+                first,
+                event_id="evt-recurring-overlap",
+                start_at=datetime.fromisoformat("2026-07-17T17:30:00+00:00"),
+                end_at=datetime.fromisoformat("2026-07-17T17:55:00+00:00"),
+            )
+            contextual_first = meeting_sync_module._meetings_with_occurrence_context((first, second))[0]
+            transcript_path = intake_root / meeting_sync_module._transcript_text_relative_path(first)
+            content = b"# Transcript\n\nOverlapping segment.\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(content)
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=first.event_id,
+                occurrence_start_at=first.start_at,
+                occurrence_end_at=first.end_at,
+                transcripts=[{"id": "overlapping-segment", "created_at": "2026-07-17T17:25:00+00:00"}],
+                content=content,
+            )
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                fetch_json=lambda _url, _token: self.fail("validated provenance must not trigger Graph discovery"),
+                fetch_bytes=lambda _url, _token: self.fail("validated provenance must not trigger content download"),
+            )
+
+            artifacts = client.discover_artifacts(meeting=contextual_first)
+            transcript_artifact = artifacts[1]
+
+            self.assertEqual(transcript_artifact.status, "missing")
+            self.assertEqual(transcript_artifact.occurrence_validated_paths, ())
+            assert transcript_artifact.diagnostics is not None
+            self.assertEqual(transcript_artifact.diagnostics.selected_transcripts, ())
+            self.assertEqual(len(transcript_artifact.diagnostics.assignment_conflicts), 1)
+            self.assertEqual(
+                transcript_artifact.diagnostics.assignment_conflicts[0].occurrence_ids,
+                (first.event_id, second.event_id),
+            )
+
+            marker_path = meeting_sync_module._meeting_identity_path(first, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-07-18T17:25:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(first,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(artifacts=artifacts),
+                since=date(2026, 7, 17),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-07-17T18:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            self.assertIn(
+                "meeting_sync_occurrence_error: ambiguous_transcript_assignment",
+                render_transcript_sync_plan(plan),
+            )
+
+    def test_graph_transcript_text_provenance_without_timestamp_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _recurring_meeting()
+            transcript_path = intake_root / meeting_sync_module._transcript_text_relative_path(meeting)
+            content = b"# Transcript\n\nMissing timestamp.\n"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_path.write_bytes(content)
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                transcripts=[{"id": "missing-timestamp", "created_at": None}],
+                content=content,
+            )
+            client = GraphTranscriptDownloadClient(
+                access_token="token",
+                intake_root=intake_root,
+                fetch_json=lambda _url, _token: self.fail("validated provenance must not trigger Graph discovery"),
+                fetch_bytes=lambda _url, _token: self.fail("validated provenance must not trigger content download"),
+            )
+
+            transcript_artifact = client.discover_artifacts(meeting=meeting)[1]
+
+            self.assertEqual(transcript_artifact.status, "missing")
+            self.assertEqual(transcript_artifact.matched_paths, ())
+            self.assertEqual(transcript_artifact.occurrence_validated_paths, ())
+            assert transcript_artifact.diagnostics is not None
+            self.assertEqual(transcript_artifact.diagnostics.candidate_count, 1)
+            self.assertEqual(transcript_artifact.diagnostics.selected_transcripts, ())
 
     def test_graph_transcript_repair_orders_archive_before_target_before_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2573,7 +3035,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(requested_content_urls, [])
             self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
 
-    def test_graph_transcript_download_supports_single_timestamp_free_record(self) -> None:
+    def test_graph_transcript_download_rejects_single_timestamp_free_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             json_call_count = 0
             requested_content_urls: list[str] = []
@@ -2608,9 +3070,8 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(len(requested_content_urls), 1)
-            self.assertIn("/transcripts/timestamp-free/content?", requested_content_urls[0])
-            self.assertEqual(artifacts[0].status, "available")
+            self.assertEqual(requested_content_urls, [])
+            self.assertEqual([artifact.status for artifact in artifacts], ["missing", "missing"])
 
     def test_graph_transcript_download_preserves_opaque_online_meeting_id_path_characters(self) -> None:
         tmp_dir = tempfile.TemporaryDirectory()
@@ -2662,7 +3123,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         self.assertEqual(artifacts[0].diagnostics.selected_transcripts, ())
         self.assertEqual(artifacts[0].diagnostics.local_action, "none")
 
-    def test_graph_transcript_download_reuses_proven_existing_vtt_without_fetching(self) -> None:
+    def test_graph_transcript_download_rejects_proven_vtt_without_assignment_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             transcript_path = intake_root / "bundles" / "raw_transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
@@ -2692,8 +3153,12 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             artifacts = client.discover_artifacts(meeting=meeting)
 
             self.assertEqual(artifacts[0].source_name, "Teams .vtt transcript")
-            self.assertEqual(artifacts[0].status, "available")
-            self.assertEqual(artifacts[0].matched_paths, (transcript_path,))
+            self.assertEqual(artifacts[0].status, "missing")
+            self.assertEqual(artifacts[0].matched_paths, ())
+            self.assertEqual(artifacts[0].occurrence_validated_paths, ())
+            assert artifacts[0].diagnostics is not None
+            self.assertEqual(artifacts[0].diagnostics.candidate_count, 1)
+            self.assertEqual(artifacts[0].diagnostics.selected_transcripts, ())
 
     def test_graph_transcript_download_marks_content_permission_blocked(self) -> None:
         tmp_dir = tempfile.TemporaryDirectory()
@@ -2701,7 +3166,14 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
         client = GraphTranscriptDownloadClient(
             access_token="token",
             intake_root=Path(tmp_dir.name) / "00_Intake",
-            fetch_json=lambda url, token: {"value": [{"id": "transcript-1"}]},
+            fetch_json=lambda url, token: {
+                "value": [
+                    {
+                        "id": "transcript-1",
+                        "createdDateTime": "2026-05-04T13:05:00Z",
+                    }
+                ]
+            },
             fetch_bytes=lambda url, token: (_ for _ in ()).throw(_SyntheticHTTPError(url, 403, "Forbidden")),
         )
 
@@ -2759,7 +3231,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             "Graph transcript discovery failed with HTTP 400. Graph said: BadRequest: The requested online meeting identifier is invalid.",
         )
 
-    def test_graph_meeting_fallback_summary_writes_recap_markdown_and_uses_chat_as_context(self) -> None:
+    def test_graph_meeting_fallback_summary_plans_recap_without_writing_until_bundle_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             requested_urls: list[str] = []
@@ -2812,14 +3284,27 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 fetch_json=fetch_json,
             )
 
-            artifacts = client.discover_artifacts(meeting=meeting)
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=client,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:30:00+00:00"),
+            )
             fallback_path = intake_root / meeting_sync_module._fallback_summary_relative_path(meeting)
 
-            self.assertEqual(artifacts[0].source_name, "Copilot recap / AI summary")
-            self.assertEqual(artifacts[0].status, "available")
-            self.assertEqual(artifacts[0].matched_paths, (fallback_path,))
-            self.assertEqual(artifacts[1].source_name, "Teams meeting chat")
-            self.assertEqual(artifacts[1].status, "available")
+            recap_artifact = plan.items[0].bundle.artifact("Copilot recap / AI summary")
+            chat_artifact = plan.items[0].bundle.artifact("Teams meeting chat")
+            assert recap_artifact is not None
+            assert chat_artifact is not None
+            self.assertEqual(recap_artifact.status, "available")
+            self.assertEqual(recap_artifact.matched_paths, (fallback_path,))
+            self.assertEqual(chat_artifact.status, "available")
+            self.assertIsNotNone(recap_artifact.planned_content)
+            self.assertFalse(fallback_path.exists())
+
+            write_planned_bundle_notes(plan)
+
             self.assertTrue(fallback_path.exists())
             rendered = fallback_path.read_text(encoding="utf-8")
             self.assertIn("## Summary", rendered)
@@ -2884,9 +3369,17 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 fetch_json=fetch_json,
             )
 
-            first_artifacts = client.discover_artifacts(meeting=meeting)
-            self.assertEqual(first_artifacts[1].source_name, "Teams meeting chat")
-            self.assertEqual(first_artifacts[1].status, "available")
+            first_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=client,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T14:30:00+00:00"),
+            )
+            first_chat = first_plan.items[0].bundle.artifact("Teams meeting chat")
+            assert first_chat is not None
+            self.assertEqual(first_chat.status, "available")
+            write_planned_bundle_notes(first_plan)
             requested_urls.clear()
 
             second_artifacts = client.discover_artifacts(meeting=meeting)
@@ -3030,7 +3523,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 ),
                 since=date(2026, 5, 1),
                 intake_root=intake_root,
-                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+                now=datetime.fromisoformat("2026-05-04T14:30:00+00:00"),
             )
 
             note = plan.items[0].intake_bundle_note
@@ -3236,6 +3729,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             metadata_path=bundle_note.metadata_path,
         )
 
+        self.assertEqual(json.loads(rendered)["schema_version"], 2)
         self.assertIn('"source_type": "meeting_sync_pending"', rendered)
         self.assertIn('"outlook_event_id": "evt-9"', rendered)
         self.assertIn('"teams_meeting_id": "19:meeting_delivery@thread.v2"', rendered)
@@ -3298,6 +3792,159 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(metadata_payload["processor_handoff"]["preferred_input_path"], str(transcript_path))
             identity_path = second_plan.items[0].intake_bundle_note.identity_path
             self.assertTrue(identity_path.exists())
+
+    def test_pending_sync_refresh_cannot_downgrade_processed_marker_that_wins_race(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            first_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+            write_planned_bundle_notes(first_plan)
+            refresh_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=11),
+            )
+            refresh_note = refresh_plan.items[0].intake_bundle_note
+            assert refresh_note is not None
+            processed = {
+                "source_type": "meeting_bundle_processed",
+                "schema_version": 2,
+                "processing_source_kind": "manual",
+                "upgrade_state": "terminal",
+            }
+            real_write_identity_marker = meeting_sync_module.write_identity_marker
+
+            def processed_write_wins_before_refresh(
+                path: Path,
+                payload: dict[str, object],
+            ) -> None:
+                real_write_identity_marker(path, processed)
+                real_write_identity_marker(path, payload)
+
+            with (
+                patch.object(
+                    meeting_sync_module,
+                    "write_identity_marker",
+                    side_effect=processed_write_wins_before_refresh,
+                ),
+                self.assertRaisesRegex(ValueError, "processed identity marker"),
+            ):
+                write_planned_bundle_notes(refresh_plan)
+
+            self.assertEqual(
+                json.loads(refresh_note.identity_path.read_text(encoding="utf-8")),
+                processed,
+            )
+
+    def test_bundle_refresh_keeps_metadata_old_when_bundle_atomic_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            initial_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+            write_planned_bundle_notes(initial_plan)
+            initial_note = initial_plan.items[0].intake_bundle_note
+            assert initial_note is not None
+            old_bundle = initial_note.path.read_bytes()
+            old_metadata = initial_note.metadata_path.read_bytes()
+            refresh_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=11),
+            )
+            refresh_note = refresh_plan.items[0].intake_bundle_note
+            assert refresh_note is not None
+            real_atomic_write = transcript_provenance.atomic_write_bytes
+
+            def fail_bundle_write(path: Path, content: bytes) -> None:
+                if path == refresh_note.path:
+                    raise OSError("bundle atomic write failed")
+                real_atomic_write(path, content)
+
+            with (
+                patch.object(meeting_sync_module, "atomic_write_bytes", side_effect=fail_bundle_write),
+                self.assertRaisesRegex(OSError, "bundle atomic write failed"),
+            ):
+                write_planned_bundle_notes(refresh_plan)
+
+            self.assertEqual(refresh_note.path.read_bytes(), old_bundle)
+            self.assertEqual(refresh_note.metadata_path.read_bytes(), old_metadata)
+            self.assertIsInstance(json.loads(old_metadata), dict)
+
+    def test_bundle_refresh_leaves_complete_note_and_old_valid_metadata_when_metadata_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            initial_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+            write_planned_bundle_notes(initial_plan)
+            initial_note = initial_plan.items[0].intake_bundle_note
+            assert initial_note is not None
+            old_metadata = initial_note.metadata_path.read_bytes()
+            refresh_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=11),
+            )
+            refresh_note = refresh_plan.items[0].intake_bundle_note
+            assert refresh_note is not None
+            real_atomic_write = transcript_provenance.atomic_write_bytes
+
+            def fail_metadata_write(path: Path, content: bytes) -> None:
+                if path == refresh_note.metadata_path:
+                    raise OSError("metadata atomic write failed")
+                real_atomic_write(path, content)
+
+            with (
+                patch.object(meeting_sync_module, "atomic_write_bytes", side_effect=fail_metadata_write),
+                self.assertRaisesRegex(OSError, "metadata atomic write failed"),
+            ):
+                write_planned_bundle_notes(refresh_plan)
+
+            self.assertEqual(
+                refresh_note.path.read_bytes(),
+                (refresh_note.content + "\n").encode("utf-8"),
+            )
+            self.assertEqual(refresh_note.metadata_path.read_bytes(), old_metadata)
+            self.assertIsInstance(json.loads(old_metadata), dict)
+
+    def test_bundle_write_validates_metadata_before_writing_bundle_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(_teams_meeting(),)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T13:40:00+00:00"),
+            )
+            item = plan.items[0]
+            note = item.intake_bundle_note
+            assert note is not None
+            invalid_note = replace(note, metadata_content="[]")
+            invalid_plan = replace(plan, items=(replace(item, intake_bundle_note=invalid_note),))
+
+            with self.assertRaisesRegex(ValueError, "metadata sidecar must be a JSON object"):
+                write_planned_bundle_notes(invalid_plan)
+
+            self.assertFalse(note.path.exists())
+            self.assertFalse(note.metadata_path.exists())
+            self.assertFalse(note.identity_path.exists())
 
     def test_pending_identity_marker_retries_artifact_discovery_inside_retry_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3430,6 +4077,51 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 since=date(2026, 5, 1),
                 intake_root=intake_root,
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            self.assertEqual(discovery_client.calls, 0)
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertEqual(plan.items[0].reasons, ("Skipped meeting because it was already processed.",))
+
+    def test_dangling_identity_marker_symlink_skips_artifact_discovery_conservatively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            intake_root.mkdir(parents=True)
+            now = datetime.fromisoformat("2026-05-04T14:00:00+00:00")
+            meeting = _meeting(
+                event_id="evt-dangling",
+                subject="Platform Sync",
+                response_status="accepted",
+                join_url=(
+                    "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"
+                ),
+                online_meeting_provider="teamsForBusiness",
+            )
+            planning_probe = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=now,
+            )
+            existing_identity = planning_probe.items[0].intake_bundle_note.identity_path
+            existing_identity.parent.mkdir(parents=True)
+            existing_identity.symlink_to("missing-identity-target.json")
+            discovery_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        source_name="Teams .vtt transcript",
+                        status="available",
+                        detail="Should not be discovered for a malformed identity entry.",
+                    ),
+                )
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=discovery_client,
+                since=date(2026, 5, 1),
+                intake_root=intake_root,
+                now=now,
             )
 
             self.assertEqual(discovery_client.calls, 0)
@@ -3599,6 +4291,8 @@ class BundleProcessingPlanTests(unittest.TestCase):
                         "identity_key": "evt-1|19:meeting_platform@thread.v2",
                         "outlook_event_id": "evt-1",
                         "subject": "Platform Sync",
+                        "scheduled_start_at": "2026-05-04T13:00:00+00:00",
+                        "scheduled_end_at": "2026-05-04T13:30:00+00:00",
                         "teams_meeting_id": "19:meeting_platform@thread.v2",
                         "processed_marker_path": str(processed_marker_path),
                         "artifacts": [
@@ -3627,13 +4321,17 @@ class BundleProcessingPlanTests(unittest.TestCase):
             )
 
             canonical_note_path = Path(tmp_dir) / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md"
+            canonical_note_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_note_path.write_text("# Platform Sync\n", encoding="utf-8")
             actions_file_path = Path(tmp_dir) / "07_Actions" / "2026-05-04.md"
             processor = _BundleProcessorStub(
                 result=ProcessResult(
                     processed=True,
                     canonical_note_path=canonical_note_path,
                     actions_file_path=actions_file_path,
-                )
+                ),
+                meetings_path=canonical_note_path.parent,
+                vault_path=Path(tmp_dir),
             )
 
             plan = build_bundle_processing_plan(
@@ -3686,6 +4384,8 @@ class BundleProcessingPlanTests(unittest.TestCase):
                         "identity_key": "evt-1|19:meeting_platform@thread.v2",
                         "outlook_event_id": "evt-1",
                         "subject": "Platform Sync",
+                        "scheduled_start_at": "2026-05-04T13:00:00+00:00",
+                        "scheduled_end_at": "2026-05-04T13:30:00+00:00",
                         "teams_meeting_id": "19:meeting_platform@thread.v2",
                         "processed_marker_path": str(processed_marker_path),
                         "artifacts": [
@@ -3707,14 +4407,25 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            processor = _BundleProcessorStub(result=ProcessResult(processed=True))
+            canonical_note_path = Path(tmp_dir) / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md"
+            canonical_note_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_note_path.write_text("# Platform Sync\n", encoding="utf-8")
+            processor = _BundleProcessorStub(
+                result=ProcessResult(processed=True, canonical_note_path=canonical_note_path),
+                meetings_path=canonical_note_path.parent,
+                vault_path=Path(tmp_dir),
+            )
             plan = build_bundle_processing_plan(
                 intake_root=intake_root,
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
             )
 
-            with patch.object(process_bundles_module, "_write_json_atomically", side_effect=OSError("disk full")):
+            with patch.object(
+                process_bundles_module.IdentityMarkerTransaction,
+                "compare_and_write",
+                side_effect=OSError("disk full"),
+            ):
                 result = execute_bundle_processing_plan(plan, processor=processor)
 
             self.assertEqual(result.failed_count, 1)
@@ -3722,6 +4433,863 @@ class BundleProcessingPlanTests(unittest.TestCase):
             self.assertTrue(metadata_path.exists())
             self.assertTrue(managed_transcript.exists())
             self.assertFalse(processed_marker_path.exists())
+
+    def test_grace_recap_ten_minutes_after_end_is_discovered_without_processor_handoff(self) -> None:
+        recap_path = Path("/tmp/vault/00_Intake/bundles/fallbacks/platform-sync.md")
+        meeting = _teams_meeting()
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        "Copilot recap / AI summary",
+                        "available",
+                        "Recap downloaded.",
+                        matched_paths=(recap_path,),
+                    ),
+                )
+            ),
+            since=date(2026, 5, 4),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=meeting.end_at + timedelta(minutes=10),
+        )
+
+        item = plan.items[0]
+        assert item.intake_bundle_note is not None
+        self.assertEqual(item.decision, "process")
+        self.assertEqual(item.bundle.source_status("Copilot recap / AI summary"), "available")
+        self.assertIsNone(item.intake_bundle_note.processor_input_path)
+        self.assertIsNone(item.intake_bundle_note.processor_input_source_name)
+        self.assertIn("Recap fallback deferred until 2026-05-04T14:30:00+00:00.", item.reasons)
+
+    def test_grace_planned_recap_persists_on_explicit_write_without_processor_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            recap_path = intake_root / "bundles" / "fallbacks" / "platform-sync.md"
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Copilot recap / AI summary",
+                            "available",
+                            "Recap content is planned for explicit persistence.",
+                            matched_paths=(recap_path,),
+                            planned_content="# Planned recap\n",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+
+            note = plan.items[0].intake_bundle_note
+            assert note is not None
+            self.assertIsNone(note.processor_input_path)
+            self.assertFalse(recap_path.exists())
+
+            write_planned_bundle_notes(plan)
+
+            self.assertEqual(recap_path.read_text(encoding="utf-8"), "# Planned recap\n")
+
+    def test_grace_planned_recap_rejects_target_outside_owned_bundles_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            outside_path = Path(tmp_dir) / "outside.md"
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Copilot recap / AI summary",
+                            "available",
+                            matched_paths=(outside_path,),
+                            planned_content="# Must stay owned\n",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+
+            with self.assertRaisesRegex(ValueError, "outside the owned bundles root"):
+                write_planned_bundle_notes(plan)
+
+            self.assertFalse(outside_path.exists())
+
+    def test_grace_planned_recap_rejects_symlinked_parent_below_owned_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            bundles_root = intake_root / "bundles"
+            escape_root = Path(tmp_dir) / "escape"
+            bundles_root.mkdir(parents=True)
+            escape_root.mkdir()
+            (bundles_root / "fallbacks").symlink_to(escape_root, target_is_directory=True)
+            recap_path = bundles_root / "fallbacks" / "platform-sync.md"
+            meeting = _teams_meeting()
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Copilot recap / AI summary",
+                            "available",
+                            matched_paths=(recap_path,),
+                            planned_content="# Must not escape\n",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+
+            with self.assertRaisesRegex(ValueError, "symlinked path component"):
+                write_planned_bundle_notes(plan)
+
+            self.assertFalse((escape_root / "platform-sync.md").exists())
+
+    def test_bundle_write_rejects_symlinked_owned_bundles_root_before_any_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            escape_root = Path(tmp_dir) / "escape"
+            intake_root.mkdir()
+            escape_root.mkdir()
+            (intake_root / "bundles").symlink_to(escape_root, target_is_directory=True)
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(_teams_meeting(),)),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-04T13:40:00+00:00"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "owned bundles root is symlinked"):
+                write_planned_bundle_notes(plan)
+
+            self.assertEqual(tuple(escape_root.iterdir()), ())
+
+    def test_grace_planned_recap_preserves_competing_create(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            recap_path = intake_root / "bundles" / "fallbacks" / "platform-sync.md"
+            meeting = _teams_meeting()
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Copilot recap / AI summary",
+                            "available",
+                            matched_paths=(recap_path,),
+                            planned_content="# Planned recap\n",
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=meeting.end_at + timedelta(minutes=10),
+            )
+            real_atomic_create = transcript_provenance.atomic_create_bytes
+
+            def competing_create(path: Path, content: bytes) -> bool:
+                path.write_bytes(b"COMPETING")
+                return real_atomic_create(path, content)
+
+            with patch.object(
+                meeting_sync_module,
+                "atomic_create_bytes",
+                side_effect=competing_create,
+            ):
+                write_planned_bundle_notes(plan)
+
+            self.assertEqual(recap_path.read_bytes(), b"COMPETING")
+
+    def test_grace_transcript_wins_over_available_recap(self) -> None:
+        meeting = _teams_meeting()
+        transcript_path = Path("/tmp/vault/00_Intake/bundles/raw_transcripts/platform-sync.vtt")
+        recap_path = Path("/tmp/vault/00_Intake/bundles/fallbacks/platform-sync.md")
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact("Teams .vtt transcript", "available", matched_paths=(transcript_path,)),
+                    MeetingArtifact("Copilot recap / AI summary", "available", matched_paths=(recap_path,)),
+                )
+            ),
+            since=date(2026, 5, 4),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=meeting.end_at + timedelta(minutes=10),
+        )
+
+        note = plan.items[0].intake_bundle_note
+        assert note is not None
+        self.assertEqual(note.processor_input_path, transcript_path)
+        self.assertEqual(note.processor_input_source_name, "Teams .vtt transcript")
+
+    def test_grace_recap_is_processor_ready_at_default_deadline(self) -> None:
+        meeting = _teams_meeting()
+        recap_path = Path("/tmp/vault/00_Intake/bundles/fallbacks/platform-sync.md")
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Copilot recap / AI summary", "available", matched_paths=(recap_path,)),)
+            ),
+            since=date(2026, 5, 4),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=meeting.end_at + timedelta(minutes=60),
+        )
+
+        note = plan.items[0].intake_bundle_note
+        assert note is not None
+        self.assertEqual(note.processor_input_path, recap_path)
+        self.assertEqual(note.processor_input_source_name, "Copilot recap / AI summary")
+        self.assertIn(
+            "meeting_sync_fallback_awaiting_transcript: 0",
+            render_transcript_sync_plan(plan),
+        )
+
+    def test_grace_override_changes_fallback_deadline(self) -> None:
+        meeting = _teams_meeting()
+        recap_path = Path("/tmp/vault/00_Intake/bundles/fallbacks/platform-sync.md")
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            artifact_discovery_client=_StubArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Copilot recap / AI summary", "available", matched_paths=(recap_path,)),)
+            ),
+            since=date(2026, 5, 4),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=meeting.end_at + timedelta(minutes=70),
+            transcript_grace_minutes=90,
+        )
+
+        item = plan.items[0]
+        assert item.intake_bundle_note is not None
+        self.assertIsNone(item.intake_bundle_note.processor_input_path)
+        self.assertIn("Recap fallback deferred until 2026-05-04T15:00:00+00:00.", item.reasons)
+        self.assertEqual(plan.fallback_deferred_count, 1)
+        self.assertEqual(plan.fallback_awaiting_transcript_count, 0)
+        self.assertEqual(plan.late_transcript_upgrade_count, 0)
+        rendered = render_transcript_sync_plan(plan)
+        self.assertIn("meeting_sync_fallback_deferred: 1", rendered)
+        self.assertIn("meeting_sync_fallback_awaiting_transcript: 0", rendered)
+        self.assertIn("meeting_sync_late_transcript_upgrades: 0", rendered)
+
+    def test_grace_sidecars_include_deadlines_and_occurrence_selection_identity(self) -> None:
+        meeting = _teams_meeting()
+
+        plan = build_transcript_sync_plan(
+            client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+            since=date(2026, 5, 4),
+            intake_root=Path("/tmp/vault/00_Intake"),
+            now=meeting.end_at + timedelta(minutes=10),
+        )
+
+        note = plan.items[0].intake_bundle_note
+        assert note is not None
+        metadata = json.loads(note.metadata_content)
+        identity = json.loads(note.identity_content)
+        expected_fields = {
+            "fallback_not_before": "2026-05-04T14:30:00+00:00",
+            "retry_until": "2026-05-05T13:30:00+00:00",
+            "primary_occurrence_event_id": "evt-1",
+            "scheduled_start_at": "2026-05-04T13:00:00+00:00",
+            "scheduled_end_at": "2026-05-04T13:30:00+00:00",
+            "selection_window_start_at": "2026-05-04T12:45:00+00:00",
+            "selection_window_end_at": "2026-05-04T14:00:00+00:00",
+        }
+        for payload in (metadata, identity):
+            for key, value in expected_fields.items():
+                self.assertEqual(payload[key], value)
+
+    def test_fallback_processed_before_retry_deadline_polls_transcripts_without_summary_or_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_payload = {
+                "schema_version": 2,
+                "source_type": "meeting_bundle_processed",
+                "processing_source_kind": "fallback",
+                "upgrade_state": "awaiting_transcript",
+                "retry_until": "2026-05-05T13:30:00+00:00",
+            }
+            marker_path.write_text(json.dumps(marker_payload) + "\n", encoding="utf-8")
+            transcript_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Teams .vtt transcript", "missing", "No valid transcript."),)
+            )
+            summary_client = GraphMeetingFallbackSummaryClient(
+                access_token="unused",
+                intake_root=intake_root,
+                fetch_json=lambda _url, _token: self.fail("fallback summary client must not be called"),
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=ChainedMeetingArtifactDiscoveryClient(
+                    transcript_client,
+                    summary_client,
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+            write_result = write_planned_bundle_notes(plan)
+
+            self.assertTrue(GraphMeetingFallbackSummaryClient.provides_summary_fallback)
+            self.assertEqual(transcript_client.calls, 1)
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            self.assertEqual(write_result.written_count, 0)
+            self.assertEqual(write_result.written_metadata_paths, ())
+            self.assertEqual(write_result.written_identity_paths, ())
+            self.assertEqual(json.loads(marker_path.read_text(encoding="utf-8")), marker_payload)
+            self.assertEqual(plan.fallback_deferred_count, 0)
+            self.assertEqual(plan.fallback_awaiting_transcript_count, 1)
+            self.assertEqual(plan.late_transcript_upgrade_count, 0)
+            rendered = render_transcript_sync_plan(plan)
+            self.assertIn("meeting_sync_fallback_deferred: 0", rendered)
+            self.assertIn("meeting_sync_fallback_awaiting_transcript: 1", rendered)
+            self.assertIn("meeting_sync_late_transcript_upgrades: 0", rendered)
+
+    def test_fallback_processed_legacy_marker_plans_unique_transcript_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "source_type": "meeting_bundle_processed",
+                        "preferred_input_source_name": "Copilot recap / AI summary",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            transcript_path = intake_root / "bundles" / "raw_transcripts" / "2026-05-04 - Teams - Platform Sync.vtt"
+            transcript_path.parent.mkdir(parents=True)
+            transcript_content = b"WEBVTT\n\nVerified occurrence bytes.\n"
+            transcript_path.write_bytes(transcript_content)
+            transcript_provenance.write_provenance(
+                transcript_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                transcripts=(
+                    {
+                        "id": "verified-segment",
+                        "created_at": "2026-05-04T13:10:00+00:00",
+                    },
+                ),
+                content=transcript_content,
+            )
+            transcript_client = LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root)
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=transcript_client,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            item = plan.items[0]
+            assert item.intake_bundle_note is not None
+            item.intake_bundle_note.path.parent.mkdir(parents=True, exist_ok=True)
+            item.intake_bundle_note.path.write_text("stale fallback bundle\n", encoding="utf-8")
+            item.intake_bundle_note.metadata_path.write_text("{}\n", encoding="utf-8")
+            marker_before_write = marker_path.read_text(encoding="utf-8")
+            write_result = write_planned_bundle_notes(plan)
+
+            self.assertEqual(item.decision, "process")
+            self.assertEqual(item.intake_bundle_note.processor_input_path, transcript_path)
+            self.assertEqual(item.intake_bundle_note.processor_input_source_name, "Teams .vtt transcript")
+            self.assertIn("Would upgrade fallback-processed meeting with a transcript.", item.reasons)
+            self.assertEqual(plan.fallback_deferred_count, 0)
+            self.assertEqual(plan.fallback_awaiting_transcript_count, 0)
+            self.assertEqual(plan.late_transcript_upgrade_count, 1)
+            rendered = render_transcript_sync_plan(plan)
+            self.assertIn("meeting_sync_fallback_deferred: 0", rendered)
+            self.assertIn("meeting_sync_fallback_awaiting_transcript: 0", rendered)
+            self.assertIn("meeting_sync_late_transcript_upgrades: 1", rendered)
+            self.assertEqual(write_result.written_bundle_note_paths, (item.intake_bundle_note.path,))
+            self.assertEqual(write_result.written_metadata_paths, (item.intake_bundle_note.metadata_path,))
+            self.assertEqual(write_result.written_identity_paths, ())
+            self.assertEqual(marker_path.read_text(encoding="utf-8"), marker_before_write)
+
+    def test_fallback_processed_local_only_transcript_without_provenance_does_not_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            transcript_path = intake_root / "2026-05-04 - Teams - Platform Sync.vtt"
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Teams .vtt transcript",
+                            "available",
+                            matched_paths=(transcript_path,),
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            self.assertIn("occurrence-valid transcript provenance", plan.items[0].reasons[0])
+
+    def test_fallback_processed_graph_diagnostics_plus_unvalidated_local_transcript_does_not_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            diagnostics = TranscriptDiagnostics(
+                candidate_count=1,
+                selected_transcripts=(
+                    SelectedTranscriptDiagnostic(
+                        "graph-selected-segment",
+                        datetime.fromisoformat("2026-05-04T13:10:00+00:00"),
+                    ),
+                ),
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                local_action="none",
+            )
+            local_path = intake_root / "2026-05-04 - Teams - Platform Sync.md"
+            discovery_client = ChainedMeetingArtifactDiscoveryClient(
+                _StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Teams transcript text",
+                            "available",
+                            "Graph metadata selected this occurrence.",
+                            diagnostics=diagnostics,
+                        ),
+                    )
+                ),
+                _StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Teams transcript text",
+                            "available",
+                            "Local transcript matched the occurrence filename.",
+                            matched_paths=(local_path,),
+                        ),
+                    )
+                ),
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=discovery_client,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            self.assertIn("occurrence-valid transcript provenance", plan.items[0].reasons[0])
+
+    def test_chain_does_not_transplant_occurrence_validated_path_to_replacement_path(self) -> None:
+        meeting = _teams_meeting()
+        graph_path = Path("/tmp/vault/00_Intake/bundles/raw_transcripts/graph.vtt")
+        local_path = Path("/tmp/vault/00_Intake/2026-05-04 - Teams - Platform Sync.md")
+        diagnostics = TranscriptDiagnostics(
+            candidate_count=1,
+            selected_transcripts=(
+                SelectedTranscriptDiagnostic(
+                    "graph-selected-segment",
+                    datetime.fromisoformat("2026-05-04T13:10:00+00:00"),
+                ),
+            ),
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            local_action="validated",
+        )
+        client = ChainedMeetingArtifactDiscoveryClient(
+            _StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "available",
+                        matched_paths=(graph_path,),
+                        diagnostics=diagnostics,
+                        occurrence_validated_paths=(graph_path,),
+                    ),
+                )
+            ),
+            _StubArtifactDiscoveryClient(
+                artifacts=(
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "available",
+                        matched_paths=(local_path,),
+                    ),
+                )
+            ),
+        )
+
+        artifact = client.discover_artifacts(meeting=meeting)[0]
+
+        self.assertEqual(artifact.matched_paths, (local_path,))
+        self.assertEqual(artifact.occurrence_validated_paths, ())
+        self.assertEqual(artifact.diagnostics, diagnostics)
+
+    def test_fallback_processed_graph_metadata_content_fallback_retains_provenance_and_upgrades(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fetch_json(url: str, token: str) -> dict[str, object]:
+                self.assertEqual(token, "token")
+                if "/onlineMeetings?" in url:
+                    return {"value": [{"id": "opaque-meeting-id"}]}
+                if url.endswith("/transcripts"):
+                    return {
+                        "value": [
+                            {
+                                "id": "selected-segment",
+                                "createdDateTime": "2026-05-04T13:10:00Z",
+                            }
+                        ]
+                    }
+                self.fail(f"Unexpected Graph URL: {url}")
+
+            def fetch_bytes(url: str, token: str) -> bytes:
+                self.assertEqual(token, "token")
+                if url.endswith("/metadataContent"):
+                    return b'{"speakerName":"Priya","spokenText":"Metadata fallback transcript."}\n'
+                raise _SyntheticHTTPError(url, 404, "Not Found")
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=GraphTranscriptDownloadClient(
+                    access_token="token",
+                    intake_root=intake_root,
+                    api_base_url="https://graph.example/v1.0",
+                    fetch_json=fetch_json,
+                    fetch_bytes=fetch_bytes,
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            item = plan.items[0]
+            artifact = item.bundle.artifact("Teams transcript text")
+            assert artifact is not None
+            assert artifact.diagnostics is not None
+            self.assertEqual(item.decision, "process")
+            self.assertEqual(artifact.occurrence_validated_paths, artifact.matched_paths)
+            self.assertIsNotNone(
+                transcript_provenance.matching_provenance(
+                    artifact.matched_paths[0],
+                    event_id=meeting.event_id,
+                    occurrence_start_at=meeting.start_at,
+                    occurrence_end_at=meeting.end_at,
+                )
+            )
+            self.assertEqual(
+                tuple(selected.transcript_id for selected in artifact.diagnostics.selected_transcripts),
+                ("selected-segment",),
+            )
+            assert item.intake_bundle_note is not None
+            self.assertEqual(
+                item.intake_bundle_note.processor_input_source_name,
+                "Teams transcript text",
+            )
+
+            artifact.matched_paths[0].write_text("mutated after validation\n", encoding="utf-8")
+            mutated_plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=LocalIntakeTranscriptDiscoveryClient(intake_root=intake_root),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            self.assertEqual(mutated_plan.items[0].decision, "skip")
+            self.assertIsNone(mutated_plan.items[0].intake_bundle_note)
+
+    def test_fallback_processed_filename_match_with_graph_ambiguity_does_not_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            diagnostics = TranscriptDiagnostics(
+                candidate_count=1,
+                selected_transcripts=(),
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                local_action="none",
+                assignment_conflicts=(
+                    meeting_sync_module.AssignmentConflict(
+                        "ambiguous-segment",
+                        datetime.fromisoformat("2026-05-04T13:20:00+00:00"),
+                        ("evt-1", "evt-2"),
+                    ),
+                ),
+            )
+            local_path = intake_root / "2026-05-04 - Teams - Platform Sync.md"
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Teams transcript text",
+                            "available",
+                            matched_paths=(local_path,),
+                            diagnostics=diagnostics,
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            self.assertIn(
+                "meeting_sync_occurrence_error: ambiguous_transcript_assignment",
+                render_transcript_sync_plan(plan),
+            )
+
+    def test_fallback_processed_nested_chain_removes_summary_clients_recursively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            transcript_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Teams .vtt transcript", "missing"),)
+            )
+            summary_client = GraphMeetingFallbackSummaryClient(
+                access_token="unused",
+                intake_root=intake_root,
+                fetch_json=lambda _url, _token: self.fail("nested fallback summary client must not be called"),
+            )
+            nested_chain = ChainedMeetingArtifactDiscoveryClient(
+                ChainedMeetingArtifactDiscoveryClient(summary_client),
+                transcript_client,
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=nested_chain,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            self.assertEqual(transcript_client.calls, 1)
+            self.assertEqual(plan.items[0].decision, "skip")
+
+    def test_fallback_processed_marker_is_eligible_at_deadline_and_terminal_strictly_after(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            at_deadline_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Teams .vtt transcript", "missing"),)
+            )
+
+            at_deadline = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=at_deadline_client,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+            after_deadline_client = _RecordingArtifactDiscoveryClient(
+                artifacts=(MeetingArtifact("Teams .vtt transcript", "available"),)
+            )
+            after_deadline = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=after_deadline_client,
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:01+00:00"),
+            )
+
+            self.assertEqual(at_deadline_client.calls, 1)
+            self.assertEqual(at_deadline.items[0].decision, "skip")
+            self.assertEqual(after_deadline_client.calls, 0)
+            self.assertEqual(after_deadline.items[0].decision, "skip")
+            self.assertEqual(
+                after_deadline.items[0].reasons,
+                ("Skipped meeting because it was already processed.",),
+            )
+
+    def test_fallback_processed_ambiguous_transcript_does_not_upgrade_and_renders_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_root = Path(tmp_dir) / "00_Intake"
+            meeting = _teams_meeting()
+            marker_path = meeting_sync_module._meeting_identity_path(meeting, intake_root=intake_root)
+            assert marker_path is not None
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "source_type": "meeting_bundle_processed",
+                        "processing_source_kind": "fallback",
+                        "upgrade_state": "awaiting_transcript",
+                        "retry_until": "2026-05-05T13:30:00+00:00",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            diagnostics = TranscriptDiagnostics(
+                candidate_count=1,
+                selected_transcripts=(),
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+                local_action="none",
+                assignment_conflicts=(
+                    meeting_sync_module.AssignmentConflict(
+                        "ambiguous-segment",
+                        datetime.fromisoformat("2026-05-04T13:20:00+00:00"),
+                        ("evt-1", "evt-2"),
+                    ),
+                ),
+            )
+
+            plan = build_transcript_sync_plan(
+                client=_StubMeetingDiscoveryClient(meetings=(meeting,)),
+                artifact_discovery_client=_StubArtifactDiscoveryClient(
+                    artifacts=(
+                        MeetingArtifact(
+                            "Teams .vtt transcript",
+                            "missing",
+                            "Ambiguous transcript was not selected.",
+                            diagnostics=diagnostics,
+                        ),
+                    )
+                ),
+                since=date(2026, 5, 4),
+                intake_root=intake_root,
+                now=datetime.fromisoformat("2026-05-05T13:30:00+00:00"),
+            )
+
+            self.assertEqual(plan.items[0].decision, "skip")
+            self.assertIsNone(plan.items[0].intake_bundle_note)
+            rendered = render_transcript_sync_plan(plan)
+            self.assertIn("meeting_sync_occurrence_error: ambiguous_transcript_assignment", rendered)
+            self.assertIn("candidate_transcript_id: ambiguous-segment", rendered)
+            self.assertNotIn("selected_transcript_id: ambiguous-segment", rendered)
 
 
 @dataclass(slots=True)
@@ -3772,11 +5340,15 @@ class _RecordingArtifactDiscoveryClient:
 @dataclass(slots=True)
 class _BundleProcessorStub:
     result: ProcessResult
+    meetings_path: Path
+    vault_path: Path
     calls: list[Path] = field(default_factory=list)
     intake_state: object = field(init=False)
+    actions_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
         self.intake_state = _BundleIntakeStateStub()
+        self.actions_path = self.vault_path / "07_Actions"
 
     def skip_reason(self, path: Path) -> None:
         del path
@@ -3822,6 +5394,16 @@ def _meeting(
         join_url=join_url,
         online_meeting_provider=online_meeting_provider,
         discovered_artifacts=discovered_artifacts,
+    )
+
+
+def _teams_meeting() -> OutlookMeetingCandidate:
+    return _meeting(
+        event_id="evt-1",
+        subject="Platform Sync",
+        response_status="accepted",
+        join_url=("https://teams.microsoft.com/l/meetup-join/19%3Ameeting_bundle123%40thread.v2/0?context=%7B%7D"),
+        online_meeting_provider="teamsForBusiness",
     )
 
 

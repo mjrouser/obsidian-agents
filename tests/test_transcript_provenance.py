@@ -254,6 +254,69 @@ class TranscriptProvenanceTests(unittest.TestCase):
             self.assertFalse(target_path.exists())
             self.assertEqual(list(Path(tmp_dir).iterdir()), [])
 
+    def test_atomic_write_preserves_existing_target_when_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_path = Path(tmp_dir) / "meeting.vtt"
+            target_path.write_bytes(b"EXISTING")
+
+            with (
+                patch.object(transcript_provenance.os, "replace", side_effect=OSError("replace failed")),
+                self.assertRaisesRegex(OSError, "replace failed"),
+            ):
+                atomic_write_bytes(target_path, _CONTENT)
+
+            self.assertEqual(target_path.read_bytes(), b"EXISTING")
+            self.assertEqual(tuple(Path(tmp_dir).iterdir()), (target_path,))
+
+    def test_atomic_create_writes_once_and_preserves_competing_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_path = Path(tmp_dir) / "meeting.vtt"
+
+            created = transcript_provenance.atomic_create_bytes(target_path, _CONTENT)
+            competing_create = transcript_provenance.atomic_create_bytes(target_path, b"DIFFERENT")
+
+            self.assertTrue(created)
+            self.assertFalse(competing_create)
+            self.assertEqual(target_path.read_bytes(), _CONTENT)
+            self.assertEqual(tuple(Path(tmp_dir).iterdir()), (target_path,))
+
+    def test_atomic_create_fsyncs_directory_after_hard_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_path = Path(tmp_dir) / "meeting.vtt"
+            events: list[str] = []
+            real_link = os.link
+
+            def link(source: str | Path, target: str | Path) -> None:
+                events.append("link")
+                real_link(source, target)
+
+            with (
+                patch.object(transcript_provenance.os, "link", side_effect=link),
+                patch.object(
+                    transcript_provenance,
+                    "_fsync_directory",
+                    side_effect=lambda path: events.append("directory_fsync"),
+                    create=True,
+                ),
+            ):
+                created = transcript_provenance.atomic_create_bytes(target_path, _CONTENT)
+
+            self.assertTrue(created)
+            self.assertEqual(events, ["link", "directory_fsync"])
+
+    def test_atomic_create_removes_temporary_file_when_link_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_path = Path(tmp_dir) / "meeting.vtt"
+
+            with (
+                patch.object(transcript_provenance.os, "link", side_effect=OSError("link failed")),
+                self.assertRaisesRegex(OSError, "link failed"),
+            ):
+                transcript_provenance.atomic_create_bytes(target_path, _CONTENT)
+
+            self.assertFalse(target_path.exists())
+            self.assertEqual(list(Path(tmp_dir).iterdir()), [])
+
     def test_archive_collision_never_overwrites_different_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

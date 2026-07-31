@@ -224,6 +224,61 @@ Current implementation status in this repo:
 - Direct chat retrieval and richer recap expansion are still future work beyond
   the current fallback staging flow.
 
+## Occurrence Matching, Grace, And Safe Upgrades
+
+Every Outlook occurrence is evaluated independently. Recurrence cadence is not
+part of the matching rule: the same logic applies to a daily series, a weekly
+series that runs for months, an irregular series, or an isolated meeting.
+Transcript creation timestamps must fall within the occurrence selection
+window:
+
+- 15 minutes before the scheduled start
+- 30 minutes after the scheduled end
+
+These tolerances account for meetings that start or finish a few minutes outside
+the Outlook time box. If the tolerance windows overlap and a transcript could
+belong to more than one occurrence, sync refuses automatic selection rather
+than guessing. Diagnostics include the candidate transcript ID and timestamp,
+the conflicting occurrence IDs, and each occurrence's scheduled and selection
+windows. Transcript content is not printed.
+
+The default `meeting_transcript_grace_minutes: 60` delays recap fallback
+selection for one hour after meeting end. It is configurable in local
+`config.yaml`. After fallback processing, transcript-only polling continues
+until the 24-hour retry deadline so a late transcript can upgrade that specific
+occurrence.
+
+Before initial bundle processing, each occurrence has its own
+`meeting_sync_pending` marker. That marker records occurrence identity, the
+recap fallback deadline, and the 24-hour retry deadline while transcripts and
+recap artifacts are still pending.
+
+After bundle processing, schema-v2 identity markers use these upgrade states:
+
+- `awaiting_transcript`: a fallback was processed and remains eligible for a
+  verified late transcript.
+- `terminal`: transcript processing completed, or the retry deadline passed.
+- `manual_review_required`: automatic upgrade was refused because the existing
+  note or its provenance could not be verified safely.
+
+Before an upgrade, the executor compares the current canonical note with the
+SHA-256 hash recorded when the fallback was created. Edited notes are never
+overwritten. A verified fallback is archived under the configured intake
+archive root in `Meeting Upgrades`, then the transcript-backed note replaces the
+canonical occurrence note and action backlinks are migrated without duplicating
+actions. This is occurrence-scoped behavior; there is no historical bulk rename
+of existing fallback notes.
+
+Machine-readable output includes:
+
+- `meeting_sync_occurrence_errors`
+- `meeting_sync_occurrence_error: ambiguous_transcript_assignment`
+- `meeting_sync_fallback_deferred`
+- `meeting_sync_fallback_awaiting_transcript`
+- `meeting_sync_late_transcript_upgrades`
+- `meeting_bundle_process_manual_review_required`
+- `meeting_bundle_process_upgrade_archived_note`
+
 ## Live Validation Lane
 
 Use validation mode after inspecting a dry-run window when you want to process a
