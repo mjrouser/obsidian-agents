@@ -22,6 +22,8 @@ FRONT_MATTER_KEYS = [
     "attendance_confidence",
     "sources_used",
     "source_limitations",
+    "artifact_state",
+    "supersedes_note",
 ]
 
 
@@ -85,6 +87,8 @@ def render_extracted_meeting_note(
         attendance_confidence=_optional_string(context.get("attendance_confidence")),
         sources_used=_string_list(context.get("sources_used", [])),
         source_limitations=_string_list(context.get("source_limitations", [])),
+        artifact_state=_optional_string(context.get("artifact_state")),
+        supersedes_note=_optional_string(context.get("supersedes_note")),
     )
     return (
         f"{front_matter}"
@@ -127,6 +131,8 @@ def render_meeting_note(
         attendance_confidence=_optional_string(context.get("attendance_confidence")),
         sources_used=_string_list(context.get("sources_used", [])),
         source_limitations=_string_list(context.get("source_limitations", [])),
+        artifact_state=_optional_string(context.get("artifact_state")),
+        supersedes_note=_optional_string(context.get("supersedes_note")),
     )
     return (
         f"{front_matter}"
@@ -160,6 +166,8 @@ def render_meeting_front_matter(
     attendance_confidence: str | None = None,
     sources_used: list[str] | None = None,
     source_limitations: list[str] | None = None,
+    artifact_state: str | None = None,
+    supersedes_note: str | None = None,
 ) -> str:
     values: dict[str, object] = {
         "date": date,
@@ -179,6 +187,8 @@ def render_meeting_front_matter(
         "attendance_confidence": attendance_confidence,
         "sources_used": sources_used or [],
         "source_limitations": source_limitations or [],
+        "artifact_state": artifact_state,
+        "supersedes_note": supersedes_note,
     }
     lines = ["---"]
     for key in FRONT_MATTER_KEYS:

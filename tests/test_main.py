@@ -721,6 +721,72 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("meeting_sync_mode: download-transcripts", output)
             self.assertIn("meeting_sync_bundle_notes_written: 0", output)
 
+    def test_meetings_sync_transcripts_wires_default_grace_to_builder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            fake_plan = TranscriptSyncPlan(
+                since=date(2026, 5, 1),
+                generated_at=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+                provider_label="stub_outlook_calendar",
+                warning=None,
+                items=(),
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.build_transcript_sync_plan", return_value=fake_plan) as plan_mock,
+                patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(plan_mock.call_args.kwargs["transcript_grace_minutes"], 60)
+
+    def test_meetings_sync_transcripts_wires_configured_grace_override_to_builder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault, meeting_transcript_grace_minutes=90)
+            fake_plan = TranscriptSyncPlan(
+                since=date(2026, 5, 1),
+                generated_at=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+                provider_label="stub_outlook_calendar",
+                warning=None,
+                items=(),
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.build_transcript_sync_plan", return_value=fake_plan) as plan_mock,
+                patch("sys.stdout", new_callable=io.StringIO),
+            ):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "sync-transcripts",
+                        "--since",
+                        "2026-05-01",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(plan_mock.call_args.kwargs["transcript_grace_minutes"], 90)
+
     def test_meetings_process_bundles_prints_dry_run_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -890,6 +956,8 @@ class MainCliTests(unittest.TestCase):
                         "{",
                         '  "outlook_event_id": "evt-validation",',
                         '  "subject": "Platform Sync",',
+                        '  "scheduled_start_at": "2026-05-04T13:00:00+00:00",',
+                        '  "scheduled_end_at": "2026-05-04T13:30:00+00:00",',
                         '  "processor_handoff": {',
                         f'    "preferred_input_path": "{preferred_input}",',
                         '    "preferred_input_source_name": "Teams .vtt transcript"',
@@ -1244,6 +1312,7 @@ def _write_config(
     dry_run: bool = False,
     git_auto_commit_vault: bool = False,
     git_auto_commit_project: bool = False,
+    meeting_transcript_grace_minutes: int | None = None,
 ) -> Path:
     config_path = repo / "config.yaml"
     config_path.write_text(
@@ -1264,6 +1333,11 @@ def _write_config(
                 'extraction_mode: "draft"',
                 f"git_auto_commit_vault: {'true' if git_auto_commit_vault else 'false'}",
                 f"git_auto_commit_project: {'true' if git_auto_commit_project else 'false'}",
+                *(
+                    [f"meeting_transcript_grace_minutes: {meeting_transcript_grace_minutes}"]
+                    if meeting_transcript_grace_minutes is not None
+                    else []
+                ),
             ]
         )
         + "\n",

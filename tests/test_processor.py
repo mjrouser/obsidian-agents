@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from obsidian_intake_agent.meetings.sync import MeetingAttendee, MeetingDiscoverySnapshot, OutlookMeetingCandidate
 from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
+from obsidian_intake_agent.processors.meeting_metadata import MeetingMetadata
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor
 from tests.helpers import config as _config
 
@@ -117,6 +118,310 @@ class MeetingProcessorTests(unittest.TestCase):
 
             self.assertEqual(first, second)
             self.assertEqual(second.count("complete Codex setup by Friday"), 1)
+
+    def test_source_note_aliases_prevent_duplicate_actions_without_rewriting_existing_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            actions_dir = vault / "07_Actions"
+            intake_dir.mkdir(parents=True)
+            actions_dir.mkdir(parents=True)
+            old_source = "2026-05-04 - Teams - Delivery Review (fallback).md"
+            canonical_source = "2026-05-04 - Teams - Delivery Review.md"
+            existing = (
+                "# Actions — Week of 2026-05-04\n\n"
+                "## This Week\n\n"
+                "- [ ] send the delivery update. (Owner: Matthew Rouser) — Source: 2026-05-04 "
+                f"[[{old_source}]]\n"
+            )
+            actions_path = actions_dir / "2026-05-04.md"
+            actions_path.write_text(existing, encoding="utf-8")
+            source = intake_dir / old_source
+            source.write_text("Action: Matthew will send the delivery update.\n", encoding="utf-8")
+            metadata = MeetingMetadata(
+                date="2026-05-04",
+                source="Teams",
+                title="Delivery Review",
+                canonical_basename=canonical_source,
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+            processor.process_file(
+                source,
+                meeting_metadata=metadata,
+                source_note_aliases={old_source: canonical_source},
+            )
+
+            self.assertEqual(actions_path.read_text(encoding="utf-8"), existing)
+
+    def test_source_note_aliases_dedupe_path_qualified_and_display_links(self) -> None:
+        for existing_source in (
+            "01_Meetings/2026-05-04 - Teams - Delivery Review (fallback).md",
+            "2026-05-04 - Teams - Delivery Review (fallback).md|Delivery Review",
+        ):
+            with self.subTest(existing_source=existing_source), tempfile.TemporaryDirectory() as tmp_dir:
+                vault = Path(tmp_dir) / "vault"
+                intake_dir = vault / "00_Intake"
+                actions_dir = vault / "07_Actions"
+                intake_dir.mkdir(parents=True)
+                actions_dir.mkdir(parents=True)
+                old_source = "2026-05-04 - Teams - Delivery Review (fallback).md"
+                canonical_source = "2026-05-04 - Teams - Delivery Review.md"
+                existing = (
+                    "# Actions — Week of 2026-05-04\n\n"
+                    "## This Week\n\n"
+                    "- [ ] send the delivery update. (Owner: Matthew Rouser) — Source: 2026-05-04 "
+                    f"[[{existing_source}]]\n"
+                )
+                actions_path = actions_dir / "2026-05-04.md"
+                actions_path.write_text(existing, encoding="utf-8")
+                source = intake_dir / old_source
+                source.write_text("Action: Matthew will send the delivery update.\n", encoding="utf-8")
+                metadata = MeetingMetadata(
+                    date="2026-05-04",
+                    source="Teams",
+                    title="Delivery Review",
+                    canonical_basename=canonical_source,
+                )
+
+                processor = MeetingProcessor(_config(vault, dry_run=False))
+                processor.process_file(
+                    source,
+                    meeting_metadata=metadata,
+                    source_note_aliases={
+                        "01_Meetings\\2026-05-04 - Teams - Delivery Review (fallback).md": (
+                            "01_Meetings/2026-05-04 - Teams - Delivery Review.md"
+                        )
+                    },
+                )
+
+                self.assertEqual(actions_path.read_text(encoding="utf-8"), existing)
+
+    def test_source_note_aliases_do_not_match_different_qualified_directory_with_same_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            actions_dir = vault / "07_Actions"
+            intake_dir.mkdir(parents=True)
+            actions_dir.mkdir(parents=True)
+            old_source = "2026-05-04 - Teams - Delivery Review (fallback).md"
+            canonical_source = "2026-05-04 - Teams - Delivery Review.md"
+            actions_path = actions_dir / "2026-05-04.md"
+            actions_path.write_text(
+                "# Actions — Week of 2026-05-04\n\n"
+                "## This Week\n\n"
+                "- [ ] send the delivery update. (Owner: Matthew Rouser) — Source: 2026-05-04 "
+                f"[[02_Other/{old_source}]]\n",
+                encoding="utf-8",
+            )
+            source = intake_dir / old_source
+            source.write_text("Action: Matthew will send the delivery update.\n", encoding="utf-8")
+            metadata = MeetingMetadata(
+                date="2026-05-04",
+                source="Teams",
+                title="Delivery Review",
+                canonical_basename=canonical_source,
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+            processor.process_file(
+                source,
+                meeting_metadata=metadata,
+                source_note_aliases={
+                    f"01_Meetings/{old_source}": f"01_Meetings/{canonical_source}",
+                },
+            )
+
+            self.assertEqual(
+                actions_path.read_text(encoding="utf-8").count("send the delivery update"),
+                2,
+            )
+
+    def test_source_note_aliases_dedupe_extensionless_and_heading_qualified_links(self) -> None:
+        for existing_source, alias_source in (
+            (
+                "2026-05-04 - Teams - Delivery Review (fallback)",
+                "2026-05-04 - Teams - Delivery Review (fallback).md",
+            ),
+            (
+                "01_Meetings/2026-05-04 - Teams - Delivery Review (fallback).md#Action Items|Delivery Review",
+                "01_Meetings\\2026-05-04 - Teams - Delivery Review (fallback).md",
+            ),
+        ):
+            with self.subTest(existing_source=existing_source), tempfile.TemporaryDirectory() as tmp_dir:
+                vault = Path(tmp_dir) / "vault"
+                intake_dir = vault / "00_Intake"
+                actions_dir = vault / "07_Actions"
+                intake_dir.mkdir(parents=True)
+                actions_dir.mkdir(parents=True)
+                old_source = "2026-05-04 - Teams - Delivery Review (fallback).md"
+                canonical_source = "2026-05-04 - Teams - Delivery Review.md"
+                existing = (
+                    "# Actions — Week of 2026-05-04\n\n"
+                    "## This Week\n\n"
+                    "- [ ] send the delivery update. (Owner: Matthew Rouser) — Source: 2026-05-04 "
+                    f"[[{existing_source}]]\n"
+                )
+                actions_path = actions_dir / "2026-05-04.md"
+                actions_path.write_text(existing, encoding="utf-8")
+                source = intake_dir / old_source
+                source.write_text("Action: Matthew will send the delivery update.\n", encoding="utf-8")
+                metadata = MeetingMetadata(
+                    date="2026-05-04",
+                    source="Teams",
+                    title="Delivery Review",
+                    canonical_basename=canonical_source,
+                )
+
+                processor = MeetingProcessor(_config(vault, dry_run=False))
+                processor.process_file(
+                    source,
+                    meeting_metadata=metadata,
+                    source_note_aliases={alias_source: "01_Meetings/2026-05-04 - Teams - Delivery Review.md"},
+                )
+
+                self.assertEqual(actions_path.read_text(encoding="utf-8"), existing)
+
+    def test_metadata_override_controls_markdown_canonical_identity_and_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "staged (fallback).md"
+            source.write_text("Summary-derived meeting content.\n", encoding="utf-8")
+            metadata = MeetingMetadata(
+                date="2026-05-04",
+                source="Teams",
+                title="Delivery Review",
+                canonical_basename="2026-05-04 - Teams - Delivery Review.md",
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+            result = processor.process_file(
+                source,
+                meeting_metadata=metadata,
+                meeting_context={
+                    "artifact_state": "fallback",
+                    "outlook_event_id": "evt-1",
+                    "sources_used": ["Copilot recap / AI summary", "Outlook calendar metadata"],
+                    "source_limitations": ["Processor input is summary-derived and not a verbatim transcript."],
+                },
+            )
+
+            self.assertEqual(
+                result.canonical_note_path,
+                vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md",
+            )
+            note = result.canonical_note_path.read_text(encoding="utf-8")
+            self.assertIn("# 2026-05-04 - Teams - Delivery Review", note)
+            self.assertNotIn("# 2026-05-04 - Teams - staged (fallback)", note)
+            self.assertIn('artifact_state: "fallback"', note)
+            self.assertIn('outlook_event_id: "evt-1"', note)
+
+    def test_metadata_override_controls_vtt_canonical_identity_and_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "staged.vtt"
+            source.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nDelivery discussion.\n",
+                encoding="utf-8",
+            )
+            metadata = MeetingMetadata(
+                date="2026-05-04",
+                source="Teams",
+                title="Delivery Review",
+                canonical_basename="2026-05-04 - Teams - Delivery Review.md",
+            )
+
+            discovery_client = _StubMeetingDiscoveryClient(meetings=())
+            processor = MeetingProcessor(
+                _config(vault, dry_run=False, llm_provider="none"),
+                meeting_discovery_client=discovery_client,
+            )
+            result = processor.process_file(
+                source,
+                meeting_metadata=metadata,
+                meeting_context={
+                    "artifact_state": "transcript",
+                    "teams_meeting_id": "teams-1",
+                    "sources_used": ["Teams .vtt transcript", "Outlook calendar metadata"],
+                    "source_limitations": [],
+                },
+            )
+
+            self.assertEqual(
+                result.canonical_note_path,
+                vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md",
+            )
+            note = result.canonical_note_path.read_text(encoding="utf-8")
+            self.assertIn('artifact_state: "transcript"', note)
+            self.assertIn('teams_meeting_id: "teams-1"', note)
+            self.assertIn('sources_used: ["Teams .vtt transcript", "Outlook calendar metadata"]', note)
+            self.assertIn("source_limitations: []", note)
+            self.assertIn(
+                "## Source\n\n"
+                "- Attendance Confidence: unknown\n"
+                "- Source Used: Teams .vtt transcript\n"
+                "- Source Used: Outlook calendar metadata",
+                note,
+            )
+            self.assertNotIn("- Limitation:", note)
+            self.assertNotIn("summary-derived and not a verbatim transcript", note)
+            self.assertEqual(discovery_client.calls, [])
+
+    def test_vtt_metadata_override_replaces_sources_and_limitations_for_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "fallback-input.vtt"
+            source.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSummary-derived delivery discussion.\n",
+                encoding="utf-8",
+            )
+            metadata = MeetingMetadata(
+                date="2026-05-04",
+                source="Teams",
+                title="Delivery Review",
+                canonical_basename="2026-05-04 - Teams - Delivery Review.md",
+            )
+            sources = [
+                "Copilot recap / AI summary",
+                "Teams meeting chat",
+                "Outlook calendar metadata",
+            ]
+            limitations = ["Processor input is summary-derived and not a verbatim transcript."]
+
+            processor = MeetingProcessor(_config(vault, dry_run=False, llm_provider="none"))
+            result = processor.process_file(
+                source,
+                meeting_metadata=metadata,
+                meeting_context={
+                    "artifact_state": "fallback",
+                    "sources_used": sources,
+                    "source_limitations": limitations,
+                },
+            )
+
+            note = result.canonical_note_path.read_text(encoding="utf-8")
+            self.assertIn(
+                'sources_used: ["Copilot recap / AI summary", "Teams meeting chat", "Outlook calendar metadata"]',
+                note,
+            )
+            self.assertIn(
+                'source_limitations: ["Processor input is summary-derived and not a verbatim transcript."]',
+                note,
+            )
+            self.assertIn("- Source Used: Copilot recap / AI summary", note)
+            self.assertIn("- Source Used: Teams meeting chat", note)
+            self.assertIn("- Source Used: Outlook calendar metadata", note)
+            self.assertIn(
+                "- Limitation: Processor input is summary-derived and not a verbatim transcript.",
+                note,
+            )
+            self.assertNotIn("- Source Used: VTT transcript", note)
 
     def test_existing_action_variants_do_not_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

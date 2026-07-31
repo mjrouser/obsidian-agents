@@ -302,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     since=since,
                     intake_root=config.vault_path / config.intake_dir,
+                    transcript_grace_minutes=config.meeting_transcript_grace_minutes,
                 )
             except MeetingSyncGraphTimeoutError as exc:
                 _print_meeting_sync_graph_timeout(exc)

@@ -41,6 +41,8 @@ watcher_settle_seconds: 5
 watcher_stable_seconds: 2
 automation_log_dir: "logs"
 automation_error_dir: "_System/Agent Errors"
+# Wait this long after scheduled meeting end before processing a recap fallback.
+meeting_transcript_grace_minutes: 60
 # Entra public-client auth settings. Tenant/client IDs are not credentials, but
 # keep real organization/app values in local config.yaml rather than committing
 # them here.
