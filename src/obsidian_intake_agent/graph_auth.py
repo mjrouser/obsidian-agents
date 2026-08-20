@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import msal  # type: ignore[import-untyped]
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from .config import Config
 
@@ -16,6 +18,13 @@ GRAPH_AUTH_RECOVERY_STEPS = (
     ".venv/bin/obsidian-agent graph logout",
     ".venv/bin/obsidian-agent graph login",
 )
+GRAPH_AUTH_CONNECTION_RETRY_DELAYS_SECONDS = (5, 10)
+
+
+class GraphAuthNetworkUnavailableError(RuntimeError):
+    def __init__(self, *, attempts: int) -> None:
+        self.attempts = attempts
+        super().__init__(f"Microsoft Graph authentication was unreachable after {attempts} attempts.")
 
 
 class MsalPublicClient(Protocol):
@@ -104,8 +113,7 @@ class GraphAuthProvider:
         missing = self._missing_config_message()
         if missing is not None:
             return GraphTokenResult(None, "unconfigured", missing)
-        app = self._build_app()
-        result, _account_count = self._acquire_silent_token(app)
+        result, _account_count = self._acquire_silent_token_with_connection_retry()
         if result is not None:
             return result
         return GraphTokenResult(
@@ -204,6 +212,18 @@ class GraphAuthProvider:
                     len(accounts),
                 )
         return None, len(accounts)
+
+    def _acquire_silent_token_with_connection_retry(self) -> tuple[GraphTokenResult | None, int]:
+        for delay_seconds in (*GRAPH_AUTH_CONNECTION_RETRY_DELAYS_SECONDS, None):
+            try:
+                return self._acquire_silent_token(self._build_app())
+            except RequestsConnectionError as exc:
+                if delay_seconds is None:
+                    raise GraphAuthNetworkUnavailableError(
+                        attempts=len(GRAPH_AUTH_CONNECTION_RETRY_DELAYS_SECONDS) + 1
+                    ) from exc
+                time.sleep(delay_seconds)
+        raise AssertionError("unreachable")
 
     def _save_cache_if_changed(self) -> None:
         cache = self._cache

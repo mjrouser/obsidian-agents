@@ -88,6 +88,14 @@ there is no refreshable auth state, sync exits nonzero with
 failure also creates the action-needed failure note and best-effort desktop
 notification.
 
+When the laptop wakes before DNS or Wi-Fi is ready, Graph authentication retries
+connection failures twice, after 5 seconds and then 10 seconds. A successful
+attempt supplies one token to both Graph clients for the entire sync. If all
+three attempts fail, sync exits nonzero with
+`meeting_sync_error: graph_auth_network_unavailable`; launchd creates one
+action-needed failure note, and the next scheduled run retries normally. If the
+failure repeats while the laptop is online, run `obsidian-agent graph status`.
+
 ## Auto-Recording Strategy
 
 Preferred strategy:

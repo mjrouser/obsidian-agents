@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from obsidian_intake_agent.config import Config
+from obsidian_intake_agent.graph_auth import GraphAuthNetworkUnavailableError
 from obsidian_intake_agent.main import _build_meeting_artifact_discovery_client, _build_meeting_discovery_client, main
 from obsidian_intake_agent.meetings import (
     AttachTranscriptResult,
@@ -579,6 +580,50 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("meeting_sync_provider: outlook_calendar", output)
             self.assertIn("meeting_sync_warning: Outlook calendar discovery is not configured yet;", output)
 
+    def test_meetings_sync_transcripts_reuses_one_resolved_token_for_graph_clients(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+            fake_plan = TranscriptSyncPlan(
+                since=date(2026, 5, 1),
+                generated_at=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+                provider_label="stub_outlook_calendar",
+                warning=None,
+                items=(),
+            )
+
+            with (
+                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
+                patch(
+                    "obsidian_intake_agent.main.build_transcript_sync_plan",
+                    return_value=fake_plan,
+                ),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                provider_class.return_value.get_access_token.side_effect = [
+                    _FakeTokenResult("cached-token"),
+                    AssertionError("Graph auth was resolved more than once"),
+                ]
+                try:
+                    exit_code = main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "meetings",
+                            "sync-transcripts",
+                            "--since",
+                            "2026-05-01",
+                            "--dry-run",
+                        ]
+                    )
+                except AssertionError as exc:
+                    self.fail(str(exc))
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_sync_mode: dry-run", stdout.getvalue())
+
     def test_meetings_sync_transcripts_graph_timeout_prints_concise_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
@@ -616,6 +661,52 @@ class MainCliTests(unittest.TestCase):
             self.assertIn("meeting_sync_error_detail:", error_output)
             self.assertIn("30 seconds", error_output)
             self.assertIn("meeting_sync_next_step:", error_output)
+            self.assertNotIn("Traceback", error_output)
+
+    def test_meetings_sync_transcripts_network_exhaustion_prints_concise_error_before_planning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            vault.mkdir(parents=True)
+            config_path = _write_config(repo, vault)
+
+            with (
+                patch(
+                    "obsidian_intake_agent.main._resolve_graph_access_token_result",
+                    side_effect=GraphAuthNetworkUnavailableError(attempts=3),
+                ),
+                patch(
+                    "obsidian_intake_agent.main.build_transcript_sync_plan",
+                    side_effect=AssertionError("sync planning must not start when Graph auth is unreachable"),
+                ),
+                patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                try:
+                    exit_code = main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "meetings",
+                            "sync-transcripts",
+                            "--since",
+                            "2026-05-01",
+                            "--dry-run",
+                        ]
+                    )
+                except GraphAuthNetworkUnavailableError:
+                    self.fail("meeting sync did not handle exhausted Graph auth connection retries")
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            error_output = stderr.getvalue()
+            self.assertIn("meeting_sync_error: graph_auth_network_unavailable", error_output)
+            self.assertIn(
+                "meeting_sync_error_detail: Microsoft Graph authentication was unreachable after 3 attempts.",
+                error_output,
+            )
+            self.assertIn("meeting_sync_next_step:", error_output)
+            self.assertNotIn("tenant-specific", error_output)
             self.assertNotIn("Traceback", error_output)
 
     def test_meetings_sync_transcripts_write_bundles_prints_write_summary(self) -> None:
@@ -1042,8 +1133,7 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
-                client = _build_meeting_discovery_client(config)
+            client = _build_meeting_discovery_client(config, access_token="token-value")
 
             self.assertIsInstance(client, GraphOutlookMeetingDiscoveryClient)
 
@@ -1055,8 +1145,7 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with patch.dict(os.environ, {}, clear=True):
-                client = _build_meeting_discovery_client(config)
+            client = _build_meeting_discovery_client(config, access_token=None)
 
             self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
 
@@ -1068,12 +1157,7 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with (
-                patch.dict(os.environ, {}, clear=True),
-                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
-            ):
-                provider_class.return_value.get_access_token.return_value = _FakeTokenResult("cached-token")
-                client = _build_meeting_discovery_client(config)
+            client = _build_meeting_discovery_client(config, access_token="cached-token")
 
             self.assertIsInstance(client, GraphOutlookMeetingDiscoveryClient)
 
@@ -1085,12 +1169,7 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with (
-                patch.dict(os.environ, {}, clear=True),
-                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
-            ):
-                provider_class.return_value.get_access_token.return_value = _FakeTokenResult(None)
-                client = _build_meeting_discovery_client(config)
+            client = _build_meeting_discovery_client(config, access_token=None)
 
             self.assertIsInstance(client, UnconfiguredOutlookMeetingDiscoveryClient)
 
@@ -1102,8 +1181,7 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with patch.dict(os.environ, {}, clear=True):
-                client = _build_meeting_artifact_discovery_client(config)
+            client = _build_meeting_artifact_discovery_client(config, access_token=None)
 
             self.assertIsInstance(client, LocalIntakeTranscriptDiscoveryClient)
 
@@ -1115,12 +1193,10 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with (
-                patch.dict(os.environ, {}, clear=True),
-                patch("obsidian_intake_agent.main.GraphAuthProvider") as provider_class,
-            ):
-                provider_class.return_value.get_access_token.return_value = _FakeTokenResult("cached-token")
-                client = _build_meeting_artifact_discovery_client(config)
+            client = _build_meeting_artifact_discovery_client(
+                config,
+                access_token="cached-token",
+            )
 
             self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
 
@@ -1132,8 +1208,10 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
-                client = _build_meeting_artifact_discovery_client(config)
+            client = _build_meeting_artifact_discovery_client(
+                config,
+                access_token="token-value",
+            )
 
             self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
 
@@ -1145,8 +1223,11 @@ class MainCliTests(unittest.TestCase):
             config_path = _write_config(repo, vault)
             config = Config.load(config_path)
 
-            with patch.dict(os.environ, {"OBSIDIAN_AGENT_GRAPH_ACCESS_TOKEN": "token-value"}, clear=False):
-                client = _build_meeting_artifact_discovery_client(config, download_transcripts=True)
+            client = _build_meeting_artifact_discovery_client(
+                config,
+                access_token="token-value",
+                download_transcripts=True,
+            )
 
             self.assertIsInstance(client, ChainedMeetingArtifactDiscoveryClient)
 

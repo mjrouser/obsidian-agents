@@ -14,6 +14,7 @@ dependencies = [
   "python-docx",
   "webvtt-py",
   "msal>=1.31,<2",
+  "requests>=2.32,<3",
   "idna>=3.15",
 ]
 
