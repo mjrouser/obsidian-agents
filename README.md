@@ -317,6 +317,12 @@ Successful upgrades archive the exact fallback note under
 rename historical fallback notes; it upgrades only the occurrence currently
 being processed.
 
+If `vault_path` changes from a symlink alias to the equivalent physical vault
+path, existing managed bundle metadata and fallback markers are rebased only
+when the stored path and the configured path resolve to the same existing
+trusted file. External paths, dangling aliases, and leaf-file symlinks remain
+blocked by the upgrade safety checks, as do paths containing parent traversal.
+
 Validate recent meetings without touching production note lanes:
 
 ```bash
