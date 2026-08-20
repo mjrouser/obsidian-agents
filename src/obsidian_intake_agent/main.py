@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from .config import Config
-from .graph_auth import GraphAuthProvider, GraphTokenResult
+from .graph_auth import GraphAuthNetworkUnavailableError, GraphAuthProvider, GraphTokenResult
 from .meetings import (
     ChainedMeetingArtifactDiscoveryClient,
     GraphMeetingFallbackSummaryClient,
@@ -203,7 +203,10 @@ def main(argv: list[str] | None = None) -> int:
         if processor is None:
             processor = MeetingProcessor(
                 config,
-                meeting_discovery_client=_build_meeting_discovery_client(config),
+                meeting_discovery_client=_build_meeting_discovery_client(
+                    config,
+                    access_token=_resolve_graph_access_token(config),
+                ),
             )
         return processor
 
@@ -288,16 +291,24 @@ def main(argv: list[str] | None = None) -> int:
                     "`obsidian-agent meetings sync-transcripts` requires exactly one of "
                     "`--dry-run`, `--write-bundles`, or `--download-transcripts`."
                 )
-            token_result = _resolve_graph_access_token_result(config)
+            try:
+                token_result = _resolve_graph_access_token_result(config)
+            except GraphAuthNetworkUnavailableError as exc:
+                _print_meeting_sync_graph_auth_network_unavailable(exc)
+                return 1
             if _graph_auth_requires_manual_action(token_result):
                 _print_graph_auth_required(token_result)
                 return 2
             since = date.fromisoformat(args.since)
             try:
                 sync_plan = build_transcript_sync_plan(
-                    client=_build_meeting_discovery_client(config),
+                    client=_build_meeting_discovery_client(
+                        config,
+                        access_token=token_result.access_token,
+                    ),
                     artifact_discovery_client=_build_meeting_artifact_discovery_client(
                         config,
+                        access_token=token_result.access_token,
                         download_transcripts=args.download_transcripts,
                     ),
                     since=since,
@@ -324,7 +335,10 @@ def main(argv: list[str] | None = None) -> int:
             bundle_processor = MeetingProcessor(
                 config,
                 output_mode="validation" if args.validation else "normal",
-                meeting_discovery_client=_build_meeting_discovery_client(config),
+                meeting_discovery_client=_build_meeting_discovery_client(
+                    config,
+                    access_token=_resolve_graph_access_token(config),
+                ),
             )
             bundle_plan = build_bundle_processing_plan(
                 intake_root=config.vault_path / config.intake_dir / "bundles",
@@ -486,6 +500,16 @@ def _print_meeting_sync_graph_timeout(exc: MeetingSyncGraphTimeoutError) -> None
     )
 
 
+def _print_meeting_sync_graph_auth_network_unavailable(exc: GraphAuthNetworkUnavailableError) -> None:
+    print("meeting_sync_error: graph_auth_network_unavailable", file=sys.stderr)
+    print(f"meeting_sync_error_detail: {exc}", file=sys.stderr)
+    print(
+        "meeting_sync_next_step: The next scheduled run will retry automatically. "
+        "If this repeats while the laptop is online, run `obsidian-agent graph status`.",
+        file=sys.stderr,
+    )
+
+
 def _warn_if_not_using_repo_venv() -> None:
     executable = Path(sys.executable)
     repo_root = Path(__file__).resolve().parents[2]
@@ -504,12 +528,13 @@ def _warn_if_not_using_repo_venv() -> None:
 
 def _build_meeting_discovery_client(
     config: Config,
+    *,
+    access_token: str | None,
 ) -> GraphOutlookMeetingDiscoveryClient | UnconfiguredOutlookMeetingDiscoveryClient:
-    token = _resolve_graph_access_token(config)
-    if not token:
+    if not access_token:
         return UnconfiguredOutlookMeetingDiscoveryClient()
     return GraphOutlookMeetingDiscoveryClient(
-        access_token=token,
+        access_token=access_token,
         api_base_url=config.outlook_graph_api_base_url,
     )
 
@@ -517,23 +542,23 @@ def _build_meeting_discovery_client(
 def _build_meeting_artifact_discovery_client(
     config: Config,
     *,
+    access_token: str | None,
     download_transcripts: bool = False,
 ) -> MeetingArtifactDiscoveryClient:
     local_client = LocalIntakeTranscriptDiscoveryClient(
         intake_root=config.vault_path / config.intake_dir,
     )
-    token = _resolve_graph_access_token(config)
-    if not token:
+    if not access_token:
         return local_client
     if download_transcripts:
         return ChainedMeetingArtifactDiscoveryClient(
             GraphTranscriptDownloadClient(
-                access_token=token,
+                access_token=access_token,
                 intake_root=config.vault_path / config.intake_dir,
                 api_base_url=config.outlook_graph_api_base_url,
             ),
             GraphMeetingFallbackSummaryClient(
-                access_token=token,
+                access_token=access_token,
                 intake_root=config.vault_path / config.intake_dir,
                 api_base_url=config.outlook_graph_api_base_url,
             ),
@@ -541,11 +566,11 @@ def _build_meeting_artifact_discovery_client(
         )
     return ChainedMeetingArtifactDiscoveryClient(
         GraphTranscriptDiscoveryClient(
-            access_token=token,
+            access_token=access_token,
             api_base_url=config.outlook_graph_api_base_url,
         ),
         GraphMeetingFallbackSummaryClient(
-            access_token=token,
+            access_token=access_token,
             intake_root=config.vault_path / config.intake_dir,
             api_base_url=config.outlook_graph_api_base_url,
         ),

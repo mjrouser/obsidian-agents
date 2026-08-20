@@ -6,6 +6,8 @@ from pathlib import Path
 from stat import S_IMODE
 from unittest.mock import patch
 
+from requests.exceptions import ConnectionError as RequestsConnectionError
+
 from obsidian_intake_agent.config import Config
 from obsidian_intake_agent.graph_auth import GraphAuthProvider
 
@@ -67,6 +69,58 @@ class GraphAuthProviderTests(unittest.TestCase):
         self.assertEqual(result.access_token, "refreshed-token")
         self.assertEqual(result.source, "cache")
         self.assertIn("cached or refreshed", result.message)
+
+    def test_transient_connection_errors_retry_before_returning_cached_token(self) -> None:
+        app = _FakeMsalApp(
+            accounts=[{"username": "matthew@example.com"}],
+            silent_results=[{"access_token": "cached-token"}],
+        )
+        attempts = 0
+
+        def build_app(**kwargs: object) -> _FakeMsalApp:
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            if attempts < 3:
+                raise RequestsConnectionError("temporary DNS failure")
+            return app
+
+        provider = GraphAuthProvider(_config(), environ={}, app_factory=build_app)
+
+        with patch("time.sleep") as sleep:
+            try:
+                result = provider.get_access_token()
+            except RequestsConnectionError:
+                self.fail("transient Graph connection errors were not retried")
+
+        self.assertEqual(result.access_token, "cached-token")
+        self.assertEqual(attempts, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10])
+
+    def test_exhausted_connection_retries_raise_sanitized_network_error(self) -> None:
+        attempts = 0
+
+        def build_app(**kwargs: object) -> _FakeMsalApp:
+            nonlocal attempts
+            del kwargs
+            attempts += 1
+            raise RequestsConnectionError("tenant-specific connection detail")
+
+        provider = GraphAuthProvider(_config(), environ={}, app_factory=build_app)
+
+        with patch("time.sleep") as sleep:
+            try:
+                provider.get_access_token()
+            except BaseException as exc:
+                raised = exc
+            else:
+                self.fail("persistent Graph connection failure did not raise")
+
+        self.assertIsInstance(raised, RuntimeError)
+        self.assertNotIsInstance(raised, RequestsConnectionError)
+        self.assertEqual(str(raised), "Microsoft Graph authentication was unreachable after 3 attempts.")
+        self.assertEqual(attempts, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10])
 
     def test_silent_lookup_does_not_start_device_code_flow(self) -> None:
         app = _FakeMsalApp(accounts=[{"username": "matthew@example.com"}], silent_results=[{}])
