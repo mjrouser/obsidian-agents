@@ -717,6 +717,33 @@ class BundleProcessingPlanTests(unittest.TestCase):
             self.assertEqual(len(plan.warnings), 1)
             self.assertIn("processed marker path must be directly under", plan.warnings[0])
 
+    def test_parent_traversal_processed_marker_path_rejects_unsafe_bundle_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault, bundle_root, _input_path, metadata_path, marker_path = _ready_marker_bundle(
+                tmp_dir=tmp_dir,
+                preferred_source="Manual / semi-manual intake",
+                extension=".md",
+            )
+            outside = Path(tmp_dir) / "outside"
+            outside.mkdir()
+            traversal_path = outside / ".." / marker_path.relative_to(Path(tmp_dir))
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["processed_marker_path"] = str(traversal_path)
+            metadata_path.write_text(
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=_processor_for_vault(vault),
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.candidate_count, 0)
+            self.assertEqual(len(plan.warnings), 1)
+            self.assertIn("processed marker path must not contain parent traversal", plan.warnings[0])
+
     def test_symlinked_processed_marker_ancestor_rejects_unsafe_bundle_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault, bundle_root, _input_path, metadata_path, marker_path = _ready_marker_bundle(
@@ -2848,6 +2875,123 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 ),
                 1,
             )
+
+    def test_upgrade_rebases_legacy_vault_alias_paths_to_current_physical_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (
+                vault,
+                bundle_root,
+                _transcript_path,
+                metadata_path,
+                marker_path,
+                canonical_path,
+                _actions_path,
+            ) = _ready_upgrade_bundle(tmp_dir)
+            legacy_vault_alias = Path(tmp_dir) / "legacy-vault-alias"
+            legacy_vault_alias.symlink_to(vault, target_is_directory=True)
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["processed_marker_path"] = str(legacy_vault_alias / marker_path.relative_to(vault))
+            metadata_path.write_text(
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker["canonical_note_path"] = str(legacy_vault_alias / canonical_path.relative_to(vault))
+            marker_path.write_text(
+                json.dumps(marker, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+
+            self.assertEqual(plan.warnings, ())
+            self.assertEqual(plan.ready_count, 1)
+            self.assertEqual(plan.items[0].metadata.processed_marker_path, marker_path)
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 1)
+            self.assertEqual(result.failed_count, 0)
+            self.assertIn('artifact_state: "transcript"', canonical_path.read_text(encoding="utf-8"))
+            upgraded_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(upgraded_marker["processing_source_kind"], "transcript")
+            self.assertEqual(upgraded_marker["upgrade_state"], "terminal")
+            self.assertEqual(upgraded_marker["canonical_note_path"], str(canonical_path))
+
+    def test_upgrade_rejects_leaf_symlink_alias_for_stored_canonical_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (
+                vault,
+                bundle_root,
+                _transcript_path,
+                _metadata_path,
+                marker_path,
+                canonical_path,
+                _actions_path,
+            ) = _ready_upgrade_bundle(tmp_dir)
+            canonical_alias = Path(tmp_dir) / "canonical-alias.md"
+            canonical_alias.symlink_to(canonical_path)
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker["canonical_note_path"] = str(canonical_alias)
+            marker_path.write_text(
+                json.dumps(marker, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 0)
+            self.assertEqual(result.manual_review_required_count, 1)
+            self.assertEqual(canonical_path.read_bytes(), b"fallback canonical\n")
+            updated_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated_marker["upgrade_state"], "manual_review_required")
+            self.assertEqual(updated_marker["manual_review_reason"], "canonical_note_path_missing_or_unexpected")
+
+    def test_upgrade_rejects_parent_traversal_for_stored_canonical_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (
+                vault,
+                bundle_root,
+                _transcript_path,
+                _metadata_path,
+                marker_path,
+                canonical_path,
+                _actions_path,
+            ) = _ready_upgrade_bundle(tmp_dir)
+            traversal_path = canonical_path.parent / ".." / canonical_path.parent.name / canonical_path.name
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker["canonical_note_path"] = str(traversal_path)
+            marker_path.write_text(
+                json.dumps(marker, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-05T12:00:00+00:00"),
+            )
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 0)
+            self.assertEqual(result.manual_review_required_count, 1)
+            self.assertEqual(canonical_path.read_bytes(), b"fallback canonical\n")
+            updated_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated_marker["upgrade_state"], "manual_review_required")
+            self.assertEqual(updated_marker["manual_review_reason"], "canonical_note_path_missing_or_unexpected")
 
     def test_graph_transcript_sync_rerun_retains_upgrade_evidence_through_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

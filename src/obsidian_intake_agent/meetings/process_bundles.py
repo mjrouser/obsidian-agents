@@ -1264,10 +1264,18 @@ def _validated_processed_marker_path(*, bundle_root: Path, path: Path | None) ->
     if bundle_root.is_symlink():
         raise ValueError("bundle root must not be a symlink")
     identities_root = bundle_root / "_meeting_sync" / "identities"
+    if ".." in path.parts:
+        raise ValueError("processed marker path must not contain parent traversal")
+    if path.is_symlink():
+        raise ValueError("processed marker path must not be a symlink")
     try:
         relative_path = path.relative_to(identities_root)
     except ValueError as exc:
-        raise ValueError(f"processed marker path must be directly under {identities_root}") from exc
+        candidate = identities_root / path.name
+        if not _same_existing_path(path, candidate):
+            raise ValueError(f"processed marker path must be directly under {identities_root}") from exc
+        path = candidate
+        relative_path = Path(path.name)
     if len(relative_path.parts) != 1 or relative_path.parts[0] in {"", ".", ".."} or path.suffix.casefold() != ".json":
         raise ValueError(f"processed marker path must be a direct JSON entry under {identities_root}")
     for ancestor in (bundle_root / "_meeting_sync", identities_root):
@@ -1278,6 +1286,13 @@ def _validated_processed_marker_path(*, bundle_root: Path, path: Path | None) ->
     if path.exists() and not path.is_file():
         raise ValueError("processed marker path must be a regular JSON file")
     return path
+
+
+def _same_existing_path(first: Path, second: Path) -> bool:
+    try:
+        return first.resolve(strict=True) == second.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
 
 
 def _datetime_or_none(value: object) -> datetime | None:
@@ -1555,7 +1570,14 @@ def _validate_fallback_upgrade(
         raise ValueError("fallback upgrade meetings root is unsafe")
     expected_path = meetings_root / _authoritative_meeting_metadata(metadata).canonical_basename
     raw_marker_path = _string_or_none(previous_payload.get("canonical_note_path"))
-    if raw_marker_path is None or Path(raw_marker_path) != expected_path:
+    if raw_marker_path is None:
+        return None, "canonical_note_path_missing_or_unexpected", expected_path
+    stored_canonical_path = Path(raw_marker_path)
+    if (
+        ".." in stored_canonical_path.parts
+        or stored_canonical_path.is_symlink()
+        or (stored_canonical_path != expected_path and not _same_existing_path(stored_canonical_path, expected_path))
+    ):
         return None, "canonical_note_path_missing_or_unexpected", expected_path
     if expected_path.is_symlink() or not expected_path.exists() or not expected_path.is_file():
         return None, "canonical_note_path_missing_or_unsafe", expected_path
