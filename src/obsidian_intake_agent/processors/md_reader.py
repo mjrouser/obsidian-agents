@@ -21,7 +21,7 @@ OWNER_LABEL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ASSIGNED_TO_PATTERN = re.compile(
-    rf"^Assigned\s+to\s+(?P<owner>{OWNER_NAME_PATTERN})\s*:\s*(?P<text>.+)$",
+    rf"^Assigned\s+to(?:\s*:\s*|\s+)(?P<owner>{OWNER_NAME_PATTERN})\s*(?::|[-—])\s*(?P<text>.+)$",
     re.IGNORECASE,
 )
 OWNER_ASSIGNMENT_PATTERN = re.compile(
@@ -29,7 +29,6 @@ OWNER_ASSIGNMENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ACTION_SECTION_PATTERN = re.compile(r"#+\s+.*(?:action items?|next steps?)", re.IGNORECASE)
-BULLET_PATTERN = re.compile(r"^-\s+(?!\[[ xX]\]\s*)(?P<text>.+)$")
 TASK_OWNER_PATTERN = re.compile(rf"^(?P<text>.+?)\s*\((?P<owner>{OWNER_NAME_PATTERN})\)$")
 DISALLOWED_OWNER_TOKENS = {
     "notes",
@@ -60,54 +59,52 @@ def read_markdown(path: Path) -> str:
 
 def extract_markdown_action_items(text: str) -> list[ActionItem]:
     items: list[ActionItem] = []
-    in_action_section = False
+    action_section_level: int | None = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if line.startswith("#"):
-            in_action_section = ACTION_SECTION_PATTERN.match(line) is not None
+            heading_level = len(line) - len(line.lstrip("#"))
+            if ACTION_SECTION_PATTERN.match(line) is not None:
+                action_section_level = heading_level
+            elif action_section_level is not None and heading_level <= action_section_level:
+                action_section_level = None
             continue
+        in_action_section = action_section_level is not None
         if line.lower().startswith("action:"):
             action_text = line[len("action:") :].strip()
-            items.append(parse_action_text(action_text))
+            items.append(parse_action_text(action_text, allow_owner_label=True))
             continue
         if line.startswith("- [ ]"):
             action_text = line[len("- [ ]") :].strip()
-            items.append(parse_action_text(action_text))
+            items.append(parse_action_text(action_text, allow_owner_label=True))
             continue
         if line.startswith("- "):
             action_text = line[len("- ") :].strip()
-            parsed_bullet = parse_action_text(action_text)
+            parsed_bullet = parse_action_text(action_text, allow_owner_label=in_action_section)
             if parsed_bullet.owner is not None:
                 items.append(parsed_bullet)
-                continue
-        parsed_standalone = parse_action_text(line)
-        if parsed_standalone.owner is not None and not line.startswith("-"):
-            items.append(parsed_standalone)
             continue
-        if in_action_section:
-            match = BULLET_PATTERN.match(line)
-            if match is None:
-                continue
-            action_text = match.group("text").strip()
-            parsed = parse_action_text(action_text)
-            if parsed.owner is not None:
-                items.append(parsed)
-                continue
+        parsed_standalone = parse_action_text(line, allow_owner_label=in_action_section)
+        if parsed_standalone.owner is not None:
+            items.append(parsed_standalone)
     return items
 
 
-def parse_action_text(action_text: str) -> ActionItem:
-    for pattern in (
+def parse_action_text(action_text: str, *, allow_owner_label: bool = True) -> ActionItem:
+    patterns: list[re.Pattern[str]] = [
         OWNER_WILL_PATTERN,
         COORDINATED_OWNER_TO_PATTERN,
         OWNER_TO_PATTERN,
         TRAILING_OWNER_WILL_PATTERN,
         ASSIGNED_TO_PATTERN,
         OWNER_ASSIGNMENT_PATTERN,
-        OWNER_LABEL_PATTERN,
-    ):
+    ]
+    if allow_owner_label:
+        patterns.append(OWNER_LABEL_PATTERN)
+
+    for pattern in patterns:
         match = pattern.match(action_text)
         if match and _is_owner_like(match.group("owner")):
             return ActionItem(

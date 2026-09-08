@@ -384,7 +384,16 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Meeting notes start with YAML front matter for Obsidian properties, including
   participant, attendee, organizer, Outlook event, Teams meeting, transcript,
   and source-file fields when that context is available.
-- Markdown intake files extract action items from `Action:` lines and `- [ ]` checkboxes.
+- Markdown intake files recognize unambiguous actions anywhere: explicit
+  `Action:` lines, unchecked `- [ ]` tasks, `<Owner> to ...` and
+  `<Owner> will ...` commitments, `Assigned to ...` and `Owner: ...`
+  assignments, and parenthetical owner metadata.
+- Ambiguous owner-label entries such as `Matthew: ...` or `Matthew - ...` count
+  as actions only under explicit `Action Items` or `Next Steps` headings, after
+  `Action:`, or inside an unchecked task checkbox.
+- In other sections, including `Meeting Chat`, plain participant-prefixed
+  colon/dash lines remain in the canonical meeting note but are not routed to
+  weekly actions merely because of that prefix.
 - Raw `.vtt` files are never modified; processing writes a canonical meeting note plus a processed intake sidecar note in `00_Intake/Intake Notes`.
 - `.vtt` extraction uses Codex CLI when `llm_provider: "codex_cli"` and otherwise falls back to heuristic extraction from `Action:`, `Decision:`, `Risk:`, and `Question:` lines.
 - If Codex CLI times out during VTT extraction, the processor writes a heuristic note with an explicit source limitation instead of failing the watcher.
