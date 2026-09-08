@@ -52,7 +52,7 @@ packaging==26.2
     #   pip-requirements-parser
 pathspec==1.1.1
     # via mypy
-pip==26.1.2
+pip==26.2.1
     # via pip-api
 pip-api==0.0.34
     # via pip-audit
