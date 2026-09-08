@@ -911,6 +911,51 @@ class BundleProcessingPlanTests(unittest.TestCase):
             self.assertIn("meeting_bundle_process_processed: 1", rendered)
             self.assertIn("reason: Bundle preferred input was processed successfully.", rendered)
 
+    def test_execute_fallback_routes_action_items_but_not_meeting_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault, bundle_root, input_path, metadata_path, _marker_path = _ready_marker_bundle(
+                tmp_dir=tmp_dir,
+                preferred_source="Copilot recap / AI summary",
+                extension=".md",
+            )
+            input_path.write_text(
+                "## Action Items\n\n"
+                "- Matthew: Send the delivery update\n"
+                "## Meeting Chat\n\n"
+                "- Matthew: Thanks!\n"
+                "- Matthew: I see it now\n"
+                "- Matthew - I'll be joining 5 minutes late today\n",
+                encoding="utf-8",
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["fallback_not_before"] = metadata["scheduled_end_at"]
+            metadata_path.write_text(
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            processor = _processor_for_vault(vault)
+            plan = build_bundle_processing_plan(
+                intake_root=bundle_root,
+                processor=processor,
+                now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
+            )
+
+            result = execute_bundle_processing_plan(plan, processor=processor)
+
+            self.assertEqual(result.processed_count, 1)
+            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_text = canonical_path.read_text(encoding="utf-8")
+            actions_text = (vault / "07_Actions" / "2026-05-04.md").read_text(encoding="utf-8")
+            self.assertIn("## Meeting Chat", canonical_text)
+            self.assertIn("Matthew: Thanks!", canonical_text)
+            self.assertIn("Matthew: I see it now", canonical_text)
+            self.assertIn("Matthew - I'll be joining 5 minutes late today", canonical_text)
+            self.assertEqual(actions_text.count("- [ ]"), 1)
+            self.assertIn("Send the delivery update", actions_text)
+            self.assertNotIn("Thanks!", actions_text)
+            self.assertNotIn("I see it now", actions_text)
+            self.assertNotIn("joining 5 minutes late", actions_text)
+
     def test_processed_marker_fallback_writes_v2_upgrade_state_hash_and_allowlisted_pending_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault, bundle_root, input_path, metadata_path, marker_path = _ready_marker_bundle(

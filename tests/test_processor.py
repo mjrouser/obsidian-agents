@@ -1154,18 +1154,67 @@ class MeetingProcessorTests(unittest.TestCase):
         self.assertEqual(items[0].owner, "Matthew")
         self.assertEqual(items[0].text, "Draft SOW")
 
-    def test_extracts_standalone_explicit_assignment_formats(self) -> None:
+    def test_extracts_only_unambiguous_standalone_assignment_formats(self) -> None:
         items = extract_markdown_action_items(
-            "Matthew to draft the SOW\nMatthew: draft the SOW\nAssigned to Matthew: draft the SOW\n"
+            "Matthew: send the follow-up\n"
+            "Matthew to send the follow-up\n"
+            "Assigned to Matthew: draft the SOW\n"
+            "Assigned to: Matthew — Draft the summary\n"
         )
 
-        self.assertEqual(len(items), 3)
-        self.assertEqual(items[0].owner, "Matthew")
-        self.assertEqual(items[0].text, "draft the SOW")
-        self.assertEqual(items[1].owner, "Matthew")
-        self.assertEqual(items[1].text, "draft the SOW")
-        self.assertEqual(items[2].owner, "Matthew")
-        self.assertEqual(items[2].text, "draft the SOW")
+        self.assertEqual(
+            [(item.owner, item.text) for item in items],
+            [
+                ("Matthew", "send the follow-up"),
+                ("Matthew", "draft the SOW"),
+                ("Matthew", "Draft the summary"),
+            ],
+        )
+
+    def test_owner_label_requires_explicit_action_context(self) -> None:
+        items = extract_markdown_action_items(
+            "## Meeting Chat\n\n"
+            "- Matthew Rouser: Thanks!\n"
+            "- Matthew Rouser: I see it now\n"
+            "- Matthew Rouser - I'll be joining 5 minutes late today\n"
+            "## Status Updates\n\n"
+            "Matthew: another status update\n"
+            "Action: Matthew: Send the recap\n"
+            "## Next Steps\n\n"
+            "Matthew Rouser: Schedule the follow-up\n"
+            "Matthew Rouser - Prepare the agenda\n"
+        )
+
+        self.assertEqual(
+            [(item.owner, item.text) for item in items],
+            [
+                ("Matthew", "Send the recap"),
+                ("Matthew Rouser", "Schedule the follow-up"),
+                ("Matthew Rouser", "Prepare the agenda"),
+            ],
+        )
+
+    def test_owner_label_action_context_respects_heading_levels(self) -> None:
+        items = extract_markdown_action_items(
+            "## Action Items\n"
+            "### Current Sprint\n"
+            "Matthew: Draft the summary\n"
+            "## Discussion\n"
+            "Matthew: Ignore the equal-level section\n"
+            "## Next Steps\n"
+            "### Follow-up\n"
+            "Matthew - Send the recap\n"
+            "# Meeting Notes\n"
+            "Matthew: Ignore the higher-level section\n"
+        )
+
+        self.assertEqual(
+            [(item.owner, item.text) for item in items],
+            [
+                ("Matthew", "Draft the summary"),
+                ("Matthew", "Send the recap"),
+            ],
+        )
 
     def test_extracts_explicit_non_checkbox_bullet_outside_action_section(self) -> None:
         items = extract_markdown_action_items("- Matt to review changes Raymond made to the staffing model\n")
@@ -1344,6 +1393,48 @@ class MeetingProcessorTests(unittest.TestCase):
             processor.process_file(vault / "_Archive" / "Intake" / source.name, force=True)
             actions_text_again = (vault / "07_Actions" / "2026-03-16.md").read_text(encoding="utf-8")
             self.assertEqual(actions_text_again, actions_text)
+
+    def test_markdown_meeting_chat_is_preserved_but_not_routed_as_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-03-16 - Teams - E&O Weekly Practice Sync.md"
+            chat_messages = (
+                "These are both great updates!",
+                "Did we cancel today?",
+                "Ah, missed it",
+                "Internet is out at my place and it’s been a bit of a juggling act",
+                "I see it now",
+                "Thanks!",
+                "I'll be joining 5 minutes late today",
+            )
+            source.write_text(
+                "## Action Items\n\n"
+                "- Matthew Rouser: Send the recap\n"
+                "## Meeting Chat\n\n" + "".join(f"- Matthew Rouser: {message}\n" for message in chat_messages),
+                encoding="utf-8",
+            )
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            result = processor.process_file(source)
+
+            self.assertTrue(result.processed)
+            meeting_path = vault / "01_Meetings" / source.name
+            actions_path = vault / "07_Actions" / "2026-03-16.md"
+            meeting_text = meeting_path.read_text(encoding="utf-8")
+            actions_text = actions_path.read_text(encoding="utf-8")
+
+            processor.process_file(vault / "_Archive" / "Intake" / source.name, force=True)
+
+            self.assertEqual(meeting_path.read_text(encoding="utf-8"), meeting_text)
+            self.assertEqual(actions_path.read_text(encoding="utf-8"), actions_text)
+            for message in chat_messages:
+                self.assertIn(message, meeting_text)
+                self.assertNotIn(message, actions_text)
+            self.assertEqual(actions_text.count("- [ ]"), 1)
+            self.assertIn("Send the recap", actions_text)
 
     def test_non_checkbox_bullet_outside_action_section_routes_matthew_owned_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
