@@ -37,6 +37,90 @@ from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor,
 
 
 class BundleProcessingPlanTests(unittest.TestCase):
+    def test_transient_metadata_read_skips_only_locked_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            bundle_root = vault / "00_Intake" / "bundles"
+            input_path = bundle_root / "raw_transcripts" / "ready.vtt"
+            input_path.parent.mkdir(parents=True)
+            input_path.write_text("WEBVTT\n", encoding="utf-8")
+            locked_metadata = bundle_root / "locked (outlook).json"
+            ready_metadata = bundle_root / "ready (outlook).json"
+            _write_ready_bundle_metadata(
+                metadata_path=locked_metadata,
+                preferred_input=input_path,
+                event_id="evt-locked",
+                subject="Locked bundle",
+            )
+            _write_ready_bundle_metadata(
+                metadata_path=ready_metadata,
+                preferred_input=input_path,
+                event_id="evt-ready",
+                subject="Ready bundle",
+            )
+            original_read = process_bundles_module.read_text_with_retry
+
+            def _read_metadata(path: Path, *, encoding: str = "utf-8") -> str:
+                if path == locked_metadata:
+                    raise process_bundles_module.TransientVaultReadError(path)
+                return original_read(path, encoding=encoding)
+
+            with patch.object(process_bundles_module, "read_text_with_retry", side_effect=_read_metadata):
+                plan = build_bundle_processing_plan(
+                    intake_root=bundle_root,
+                    processor=_processor_for_vault(vault),
+                )
+
+            self.assertEqual(len(plan.items), 1)
+            self.assertEqual(plan.items[0].metadata.event_id, "evt-ready")
+            self.assertEqual(
+                plan.warnings,
+                (
+                    "Skipped temporarily unavailable bundle data "
+                    f"{locked_metadata}: it will be retried on the next scheduled run.",
+                ),
+            )
+
+    def test_transient_preferred_input_read_skips_only_affected_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            bundle_root = vault / "00_Intake" / "bundles"
+            locked_input = bundle_root / "raw_transcripts" / "locked.vtt"
+            ready_input = bundle_root / "raw_transcripts" / "ready.vtt"
+            locked_input.parent.mkdir(parents=True)
+            locked_input.write_text("WEBVTT\n", encoding="utf-8")
+            ready_input.write_text("WEBVTT\n", encoding="utf-8")
+            _write_ready_bundle_metadata(
+                metadata_path=bundle_root / "locked (outlook).json",
+                preferred_input=locked_input,
+                event_id="evt-locked",
+                subject="Locked input",
+            )
+            _write_ready_bundle_metadata(
+                metadata_path=bundle_root / "ready (outlook).json",
+                preferred_input=ready_input,
+                event_id="evt-ready",
+                subject="Ready input",
+            )
+
+            def _read_input(path: Path) -> str:
+                if path == locked_input:
+                    raise process_bundles_module.TransientVaultReadError(path)
+                return path.read_text(encoding="utf-8")
+
+            with patch(
+                "obsidian_intake_agent.processors.intake_state.read_text_with_retry",
+                side_effect=_read_input,
+            ):
+                plan = build_bundle_processing_plan(
+                    intake_root=bundle_root,
+                    processor=_processor_for_vault(vault),
+                )
+
+            self.assertEqual(len(plan.items), 1)
+            self.assertEqual(plan.items[0].metadata.event_id, "evt-ready")
+            self.assertIn(str(locked_input), plan.warnings[0])
+
     def test_processor_ready_bundle_blocks_missing_authoritative_event_id_without_filename_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"

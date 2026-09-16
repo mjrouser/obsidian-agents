@@ -18,6 +18,7 @@ from typing import Literal, cast
 from ..processors.meeting_metadata import MeetingMetadata, meeting_output_path
 from ..processors.meeting_processor import MeetingProcessor, OutputMode, ProcessResult
 from ..utils.dates import monday_of_week
+from ..utils.vault_reads import TransientVaultReadError, read_text_with_retry
 from .identity_state import (
     IdentityMarkerTransaction,
     identity_marker_entry_exists,
@@ -233,10 +234,15 @@ def build_bundle_processing_plan(
     for metadata_path in sorted(intake_root.glob("* (outlook).json")):
         try:
             metadata = _load_bundle_metadata_record(metadata_path)
+            items.append(_plan_bundle_processing_item(metadata=metadata, processor=processor, now=generated_at))
         except ValueError as exc:
             warnings.append(f"Skipped unreadable bundle metadata {metadata_path}: {exc}")
             continue
-        items.append(_plan_bundle_processing_item(metadata=metadata, processor=processor, now=generated_at))
+        except TransientVaultReadError as exc:
+            warnings.append(
+                f"Skipped temporarily unavailable bundle data {exc.path}: it will be retried on the next scheduled run."
+            )
+            continue
 
     return BundleProcessingPlan(
         generated_at=generated_at,
@@ -1112,7 +1118,7 @@ def _plan_bundle_processing_item(
 
 def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:
     try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload = json.loads(read_text_with_retry(metadata_path))
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
