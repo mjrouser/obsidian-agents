@@ -4320,7 +4320,9 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            canonical_note_path = Path(tmp_dir) / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md"
+            canonical_note_path = (
+                Path(tmp_dir) / "01_Meetings" / "2026" / "05_May" / "2026-05-04 - Teams - Platform Sync.md"
+            )
             canonical_note_path.parent.mkdir(parents=True, exist_ok=True)
             canonical_note_path.write_text("# Platform Sync\n", encoding="utf-8")
             actions_file_path = Path(tmp_dir) / "07_Actions" / "2026-05-04.md"
@@ -4330,7 +4332,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
                     canonical_note_path=canonical_note_path,
                     actions_file_path=actions_file_path,
                 ),
-                meetings_path=canonical_note_path.parent,
+                meetings_path=Path(tmp_dir) / "01_Meetings",
                 vault_path=Path(tmp_dir),
             )
 

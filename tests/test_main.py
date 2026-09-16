@@ -31,6 +31,33 @@ from obsidian_intake_agent.utils.git import GitCommitStatus
 
 
 class MainCliTests(unittest.TestCase):
+    def test_meetings_organize_dry_run_prints_migration_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(tmp_dir)
+            vault = repo / "vault"
+            meetings_root = vault / "01_Meetings"
+            meetings_root.mkdir(parents=True)
+            (meetings_root / "2026-07-15 - Teams - July Sync.md").write_text("meeting\n", encoding="utf-8")
+            config_path = _write_config(repo, vault)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config_path),
+                        "meetings",
+                        "organize",
+                        "--through",
+                        "2026-07-31",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("meeting_organization_mode: dry-run", stdout.getvalue())
+            self.assertIn("01_Meetings/2026/07_July/2026-07-15 - Teams - July Sync.md", stdout.getvalue())
+            self.assertTrue((meetings_root / "2026-07-15 - Teams - July Sync.md").exists())
+
     def test_run_once_prints_summary_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)

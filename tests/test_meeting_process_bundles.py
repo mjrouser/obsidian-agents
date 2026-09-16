@@ -32,6 +32,7 @@ from obsidian_intake_agent.meetings import (
     write_planned_bundle_notes,
 )
 from obsidian_intake_agent.meetings.transcript_provenance import provenance_path, write_provenance
+from obsidian_intake_agent.processors.meeting_metadata import meeting_output_path
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor, ProcessResult
 
 
@@ -1252,7 +1253,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
             )
-            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
             terminal = {
                 "schema_version": 2,
                 "source_type": "meeting_bundle_processed",
@@ -1332,7 +1337,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
             )
-            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
             start_barrier = Barrier(2)
             processor_started = Event()
             second_processor_started = Event()
@@ -1409,7 +1418,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                         second_processor_started.set()
                 processor_started.set()
                 release_processors.wait(timeout=2)
-                canonical_path = processor.meetings_path / meeting_metadata.canonical_basename
+                canonical_path = meeting_output_path(
+                    processor.meetings_path,
+                    meeting_date=meeting_metadata.date,
+                    basename=meeting_metadata.canonical_basename,
+                )
                 canonical_path.parent.mkdir(parents=True, exist_ok=True)
                 actions_path.parent.mkdir(parents=True, exist_ok=True)
                 canonical_path.write_bytes(f"canonical-{label}\n".encode())
@@ -1504,7 +1517,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                         second_processor_started.set()
                 processor_started.set()
                 release_processors.wait(timeout=2)
-                canonical_path = processor.meetings_path / meeting_metadata.canonical_basename
+                canonical_path = meeting_output_path(
+                    processor.meetings_path,
+                    meeting_date=meeting_metadata.date,
+                    basename=meeting_metadata.canonical_basename,
+                )
                 canonical_path.parent.mkdir(parents=True, exist_ok=True)
                 actions_path.parent.mkdir(parents=True, exist_ok=True)
                 canonical_path.write_bytes(f"canonical-{label}\n".encode())
@@ -1588,7 +1605,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                     processor=processor,
                     now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
                 )
-                canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+                canonical_path = meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Delivery Review.md",
+                )
                 actions_path = vault / "07_Actions" / "2026-05-04.md"
                 canonical_before = b"existing canonical\n"
                 actions_before = b"existing actions\n"
@@ -1644,7 +1665,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
             )
-            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
             actions_path = vault / "07_Actions" / "2026-05-04.md"
 
             def write_committed_outputs(*_args: object, **_kwargs: object) -> ProcessResult:
@@ -1698,7 +1723,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 processor=processor,
                 now=datetime.fromisoformat("2026-05-04T14:00:00+00:00"),
             )
-            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
             actions_path = vault / "07_Actions" / "2026-05-04.md"
 
             def mutate_then_fail(*_args: object, **_kwargs: object) -> ProcessResult:
@@ -1936,7 +1965,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 extension=".md",
             )
             processor = _processor_for_vault(vault)
-            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
             target = Path(tmp_dir) / "canonical-target.md"
             target.write_text("target\n", encoding="utf-8")
             canonical_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1971,7 +2004,12 @@ class BundleProcessingPlanTests(unittest.TestCase):
             actual_root = Path(tmp_dir) / "actual-meetings"
             actual_root.mkdir()
             meetings_root.symlink_to(actual_root, target_is_directory=True)
-            canonical_path = meetings_root / "2026-05-04 - Teams - Delivery Review.md"
+            canonical_path = meeting_output_path(
+                meetings_root,
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
             canonical_path.write_text("target\n", encoding="utf-8")
             plan = build_bundle_processing_plan(
                 intake_root=bundle_root,
@@ -2239,7 +2277,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             result = execute_bundle_processing_plan(plan, processor=processor)
 
-            canonical_path = vault / "01_Meetings" / "2026-05-04 - Teams - Delivery - Review- Q2.md"
+            canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery - Review- Q2.md",
+            )
             self.assertEqual(result.items[0].canonical_note_path, canonical_path)
             self.assertTrue(canonical_path.exists())
             self.assertFalse((vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review (fallback).md").exists())
@@ -2355,7 +2397,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             result = execute_bundle_processing_plan(plan, processor=processor)
 
-            expected_path = vault / "01_Meetings" / "2026-05-04 - Teams - Platform- Review- Q2-Plan.md"
+            expected_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Platform- Review- Q2-Plan.md",
+            )
             self.assertEqual(result.items[0].canonical_note_path, expected_path)
             note = expected_path.read_text(encoding="utf-8")
             self.assertIn("# 2026-05-04 - Teams - Platform- Review- Q2-Plan", note)
@@ -2606,7 +2652,11 @@ class BundleProcessingPlanTests(unittest.TestCase):
             processed = next(item for item in result.items if item.status == "processed")
             self.assertEqual(
                 processed.canonical_note_path,
-                vault / "99_Test Notes" / "Meetings" / "2026-05-04 - Teams - Platform Sync.md",
+                meeting_output_path(
+                    vault / "99_Test Notes" / "Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Platform Sync.md",
+                ),
             )
             self.assertEqual(
                 processed.actions_file_path,
@@ -2821,8 +2871,13 @@ class BundleProcessingPlanTests(unittest.TestCase):
             result = execute_bundle_processing_plan(plan, processor=processor)
 
             self.assertEqual(result.processed_count, 1)
-            self.assertEqual(result.items[0].canonical_note_path, canonical_path)
-            note = canonical_path.read_text(encoding="utf-8")
+            new_canonical_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Delivery Review.md",
+            )
+            self.assertEqual(result.items[0].canonical_note_path, new_canonical_path)
+            note = new_canonical_path.read_text(encoding="utf-8")
             self.assertIn('artifact_state: "transcript"', note)
             self.assertIn("supersedes_note:", note)
             archive_path = vault / "_Archive" / "Intake" / "Meeting Upgrades" / canonical_path.name
@@ -2859,7 +2914,10 @@ class BundleProcessingPlanTests(unittest.TestCase):
                     ],
                 },
             )
-            self.assertEqual(marker["canonical_note_sha256"], hashlib.sha256(canonical_path.read_bytes()).hexdigest())
+            self.assertEqual(
+                marker["canonical_note_sha256"],
+                hashlib.sha256(new_canonical_path.read_bytes()).hexdigest(),
+            )
             self.assertFalse(transcript_path.exists())
             self.assertFalse(provenance_path(transcript_path).exists())
             self.assertFalse(metadata_path.exists())
@@ -2918,11 +2976,27 @@ class BundleProcessingPlanTests(unittest.TestCase):
 
             self.assertEqual(result.processed_count, 1)
             self.assertEqual(result.failed_count, 0)
-            self.assertIn('artifact_state: "transcript"', canonical_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                'artifact_state: "transcript"',
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Delivery Review.md",
+                ).read_text(encoding="utf-8"),
+            )
             upgraded_marker = json.loads(marker_path.read_text(encoding="utf-8"))
             self.assertEqual(upgraded_marker["processing_source_kind"], "transcript")
             self.assertEqual(upgraded_marker["upgrade_state"], "terminal")
-            self.assertEqual(upgraded_marker["canonical_note_path"], str(canonical_path))
+            self.assertEqual(
+                upgraded_marker["canonical_note_path"],
+                str(
+                    meeting_output_path(
+                        vault / "01_Meetings",
+                        meeting_date="2026-05-04",
+                        basename="2026-05-04 - Teams - Delivery Review.md",
+                    )
+                ),
+            )
 
     def test_upgrade_rejects_leaf_symlink_alias_for_stored_canonical_note(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3072,7 +3146,14 @@ class BundleProcessingPlanTests(unittest.TestCase):
             result = execute_bundle_processing_plan(process_plan, processor=processor)
 
             self.assertEqual(result.processed_count, 1)
-            self.assertIn('artifact_state: "transcript"', canonical_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                'artifact_state: "transcript"',
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Delivery Review.md",
+                ).read_text(encoding="utf-8"),
+            )
 
     def test_graph_transcript_text_sync_rerun_retains_upgrade_evidence_through_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3161,7 +3242,14 @@ class BundleProcessingPlanTests(unittest.TestCase):
             result = execute_bundle_processing_plan(process_plan, processor=processor)
 
             self.assertEqual(result.processed_count, 1)
-            self.assertIn('artifact_state: "transcript"', canonical_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                'artifact_state: "transcript"',
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Delivery Review.md",
+                ).read_text(encoding="utf-8"),
+            )
 
     def test_upgrade_edited_fallback_diverts_to_manual_review_without_processor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3662,7 +3750,11 @@ def _ready_two_marker_execution_plans(
             encoding="utf-8",
         )
         marker_paths[label] = marker_path
-        canonical_paths[label] = vault / "01_Meetings" / f"2026-05-04 - Teams - {subject}.md"
+        canonical_paths[label] = meeting_output_path(
+            vault / "01_Meetings",
+            meeting_date="2026-05-04",
+            basename=f"2026-05-04 - Teams - {subject}.md",
+        )
 
     processor = _processor_for_vault(vault)
     combined_plan = build_bundle_processing_plan(

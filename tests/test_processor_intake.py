@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from obsidian_intake_agent.processors.meeting_metadata import meeting_output_path
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor
 from tests.helpers import config
 
@@ -104,7 +105,13 @@ class MeetingProcessorIntakeTests(unittest.TestCase):
             result = processor.process_file(processed_note, force=True)
 
             self.assertTrue(result.processed)
-            self.assertTrue((vault / "01_Meetings" / "2026-03-12 - Unknown - weekly-sync.md").exists())
+            self.assertTrue(
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-03-12",
+                    basename="2026-03-12 - Unknown - weekly-sync.md",
+                ).exists()
+            )
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn(
                 "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
@@ -133,7 +140,7 @@ class MeetingProcessorIntakeTests(unittest.TestCase):
             updated_text = (vault / "_Archive" / "Intake" / "weekly-sync.md").read_text(encoding="utf-8")
             self.assertEqual(updated_text.count("STATUS: PROCESSED"), 1)
             self.assertIn(
-                "STATUS: PROCESSED — see [[01_Meetings/2026-03-12 - Unknown - weekly-sync.md]]",
+                "STATUS: PROCESSED — see [[01_Meetings/2026/03_March/2026-03-12 - Unknown - weekly-sync.md]]",
                 updated_text,
             )
 

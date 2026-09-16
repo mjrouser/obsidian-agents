@@ -48,6 +48,24 @@ Or download available Teams `.vtt` transcripts into
 ./.venv/bin/obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
 ```
 
+Meeting notes are organized by meeting date under
+`01_Meetings/<year>/<NN_Month>/` (for example, `01_January` or `07_July`).
+Preview the one-time migration of existing
+notes through July 2026:
+
+```bash
+./.venv/bin/obsidian-agent meetings organize --through 2026-07-31 --dry-run
+```
+
+Execute it only after reviewing the planned moves:
+
+```bash
+./.venv/bin/obsidian-agent meetings organize --through 2026-07-31 --execute
+```
+
+The migration leaves undated notes in place, does not overwrite collisions,
+and updates exact Markdown links to moved meeting notes.
+
 ## Daily Commands
 
 Run commands from the repository root:
@@ -111,7 +129,7 @@ Run a weekly job for a specific date:
 
 For intake processing, the app reads from `vault_path/intake_dir` and can write:
 
-- canonical meeting notes under `meetings_dir`
+- canonical meeting notes under `meetings_dir/<year>/<NN_Month>`
 - weekly action notes under `actions_dir`
 - archived source files under `archive_intake_dir`
 - processed status markers on markdown intake notes

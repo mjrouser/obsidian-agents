@@ -72,7 +72,7 @@ def main() -> int:
             text=True,
         )
 
-        meeting = vault / "01_Meetings" / "2026-03-12 - Teams - Smoke Test.md"
+        meeting = vault / "01_Meetings" / "2026" / "03_March" / "2026-03-12 - Teams - Smoke Test.md"
         actions = vault / "07_Actions" / "2026-03-09.md"
         archived = vault / "_Archive" / "Intake" / source.name
 

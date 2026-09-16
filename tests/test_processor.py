@@ -11,12 +11,32 @@ from unittest.mock import patch
 
 from obsidian_intake_agent.meetings.sync import MeetingAttendee, MeetingDiscoverySnapshot, OutlookMeetingCandidate
 from obsidian_intake_agent.processors.md_reader import extract_markdown_action_items, parse_action_text
-from obsidian_intake_agent.processors.meeting_metadata import MeetingMetadata
+from obsidian_intake_agent.processors.meeting_metadata import MeetingMetadata, meeting_output_path
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor
 from tests.helpers import config as _config
 
 
 class MeetingProcessorTests(unittest.TestCase):
+    def test_processes_markdown_into_year_and_month_meeting_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            intake_dir = vault / "00_Intake"
+            intake_dir.mkdir(parents=True)
+            source = intake_dir / "2026-08-12 - Teams - Planning.md"
+            source.write_text("Agenda\n", encoding="utf-8")
+
+            processor = MeetingProcessor(_config(vault, dry_run=False))
+
+            result = processor.process_file(source)
+
+            expected = vault / "01_Meetings" / "2026" / "08_August" / source.name
+            self.assertEqual(result.canonical_note_path, expected)
+            self.assertTrue(expected.exists())
+            self.assertIn(
+                "STATUS: PROCESSED — see [[01_Meetings/2026/08_August/2026-08-12 - Teams - Planning.md]]",
+                (vault / "_Archive" / "Intake" / source.name).read_text(encoding="utf-8"),
+            )
+
     def test_processes_markdown_and_updates_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -35,7 +55,11 @@ class MeetingProcessorTests(unittest.TestCase):
 
             processor.process_all_unprocessed()
 
-            meeting_path = vault / "01_Meetings" / "2026-03-11 - Unknown - weekly-sync.md"
+            meeting_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-03-11",
+                basename="2026-03-11 - Unknown - weekly-sync.md",
+            )
             actions_path = vault / "07_Actions" / "2026-03-09.md"
             archived_path = vault / "_Archive" / "Intake" / "weekly-sync.md"
             self.assertTrue(meeting_path.exists())
@@ -43,7 +67,7 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertTrue(archived_path.exists())
             self.assertIn(
-                "STATUS: PROCESSED — see [[01_Meetings/2026-03-11 - Unknown - weekly-sync.md]]",
+                "STATUS: PROCESSED — see [[01_Meetings/2026/03_March/2026-03-11 - Unknown - weekly-sync.md]]",
                 archived_path.read_text(encoding="utf-8"),
             )
             meeting_text = meeting_path.read_text(encoding="utf-8")
@@ -310,7 +334,11 @@ class MeetingProcessorTests(unittest.TestCase):
 
             self.assertEqual(
                 result.canonical_note_path,
-                vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md",
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Delivery Review.md",
+                ),
             )
             note = result.canonical_note_path.read_text(encoding="utf-8")
             self.assertIn("# 2026-05-04 - Teams - Delivery Review", note)
@@ -353,7 +381,11 @@ class MeetingProcessorTests(unittest.TestCase):
 
             self.assertEqual(
                 result.canonical_note_path,
-                vault / "01_Meetings" / "2026-05-04 - Teams - Delivery Review.md",
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-05-04",
+                    basename="2026-05-04 - Teams - Delivery Review.md",
+                ),
             )
             note = result.canonical_note_path.read_text(encoding="utf-8")
             self.assertIn('artifact_state: "transcript"', note)
@@ -713,7 +745,11 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertEqual(summary.processed_files, 1)
             self.assertEqual(archived_vtt_path.read_text(encoding="utf-8"), raw_vtt)
 
-            meeting_path = vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md"
+            meeting_path = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-03-12",
+                basename="2026-03-12 - Teams - Platform Sync.md",
+            )
             actions_path = vault / "07_Actions" / "2026-03-09.md"
             sidecar_path = intake_dir / "Intake Notes" / "2026-03-12 - Teams - Platform Sync (intake).md"
 
@@ -743,7 +779,10 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertIn("Do we need legal review?", meeting_text)
 
             sidecar_text = sidecar_path.read_text(encoding="utf-8")
-            self.assertIn("STATUS: PROCESSED — see [[2026-03-12 - Teams - Platform Sync.md]]", sidecar_text)
+            self.assertIn(
+                "STATUS: PROCESSED — see [[01_Meetings/2026/03_March/2026-03-12 - Teams - Platform Sync.md]]",
+                sidecar_text,
+            )
             self.assertIn(
                 "[../../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt]"
                 "(../../_Archive/Intake/2026-03-12 - Teams - Platform Sync.vtt)",
@@ -753,7 +792,7 @@ class MeetingProcessorTests(unittest.TestCase):
             actions_text = actions_path.read_text(encoding="utf-8")
             self.assertIn(
                 "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
-                "[[2026-03-12 - Teams - Platform Sync.md]]",
+                "[[01_Meetings/2026/03_March/2026-03-12 - Teams - Platform Sync.md]]",
                 actions_text,
             )
 
@@ -800,7 +839,11 @@ class MeetingProcessorTests(unittest.TestCase):
 
             self.assertTrue(result.processed)
             self.assertEqual(discovery_client.calls, [(date(2026, 5, 4), datetime(2026, 5, 5, tzinfo=UTC))])
-            meeting_text = (vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            meeting_text = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Platform Sync.md",
+            ).read_text(encoding="utf-8")
             self.assertIn('organizer: "Morgan Lee"', meeting_text)
             self.assertIn('attendees: ["Matthew Rouser <matthew@example.com> (required, accepted)"]', meeting_text)
             self.assertIn('outlook_event_id: "evt-platform"', meeting_text)
@@ -834,7 +877,11 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertIn(
                 "manual_vtt_graph_enrichment ambiguous_matches event_ids=evt-one, evt-two", result.processing_warnings
             )
-            meeting_text = (vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            meeting_text = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Platform Sync.md",
+            ).read_text(encoding="utf-8")
             self.assertIn("outlook_event_id: null", meeting_text)
             self.assertIn("teams_meeting_id: null", meeting_text)
             self.assertIn("Multiple plausible Outlook calendar matches were found", meeting_text)
@@ -862,7 +909,11 @@ class MeetingProcessorTests(unittest.TestCase):
                 "manual_vtt_graph_enrichment unavailable: Outlook calendar discovery is not configured yet.",
                 result.processing_warnings,
             )
-            meeting_text = (vault / "01_Meetings" / "2026-05-04 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            meeting_text = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-05-04",
+                basename="2026-05-04 - Teams - Platform Sync.md",
+            ).read_text(encoding="utf-8")
             self.assertIn("outlook_event_id: null", meeting_text)
             self.assertIn(
                 "Outlook calendar metadata was not available: Outlook calendar discovery is not configured yet.",
@@ -887,8 +938,20 @@ class MeetingProcessorTests(unittest.TestCase):
             self.assertEqual(summary.processed_files, 1)
             self.assertEqual(summary.skipped_files, 1)
             self.assertEqual(summary.skipped_already_processed, 1)
-            self.assertTrue((vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md").exists())
-            self.assertFalse((vault / "01_Meetings" / "2026-03-12 - Unknown - Platform Sync Copy.md").exists())
+            self.assertTrue(
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-03-12",
+                    basename="2026-03-12 - Teams - Platform Sync.md",
+                ).exists()
+            )
+            self.assertFalse(
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-03-12",
+                    basename="2026-03-12 - Unknown - Platform Sync Copy.md",
+                ).exists()
+            )
             self.assertTrue(duplicate.exists())
             sidecar_text = (intake_dir / "Intake Notes" / "2026-03-12 - Teams - Platform Sync (intake).md").read_text(
                 encoding="utf-8"
@@ -909,11 +972,21 @@ class MeetingProcessorTests(unittest.TestCase):
 
             result = processor.process_file(source)
 
-            expected_note = vault / "99_Test Notes" / "Meetings" / "2026-03-12 - Teams - weekly-sync.md"
+            expected_note = meeting_output_path(
+                vault / "99_Test Notes" / "Meetings",
+                meeting_date="2026-03-12",
+                basename="2026-03-12 - Teams - weekly-sync.md",
+            )
             self.assertTrue(result.processed)
             self.assertEqual(result.canonical_note_path, expected_note)
             self.assertTrue(expected_note.exists())
-            self.assertFalse((vault / "01_Meetings" / "2026-03-12 - Teams - weekly-sync.md").exists())
+            self.assertFalse(
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-03-12",
+                    basename="2026-03-12 - Teams - weekly-sync.md",
+                ).exists()
+            )
             self.assertIn("validation_mode: true", expected_note.read_text(encoding="utf-8"))
 
     def test_process_markdown_validation_mode_routes_actions_to_test_lane(self) -> None:
@@ -1056,7 +1129,11 @@ class MeetingProcessorTests(unittest.TestCase):
             processor.process_file(source)
             processor.process_file(vault / "_Archive" / "Intake" / "Raw Transcripts" / source.name, force=True)
 
-            meeting_text = (vault / "01_Meetings" / "2026-03-12 - Teams - Platform Sync.md").read_text(encoding="utf-8")
+            meeting_text = meeting_output_path(
+                vault / "01_Meetings",
+                meeting_date="2026-03-12",
+                basename="2026-03-12 - Teams - Platform Sync.md",
+            ).read_text(encoding="utf-8")
             self.assertEqual(
                 meeting_text.count("[[_Archive/Intake/Raw Transcripts/2026-03-12 - Teams - Platform Sync.md]]"),
                 1,
@@ -1387,7 +1464,7 @@ class MeetingProcessorTests(unittest.TestCase):
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn(
                 "- [ ] ship the update by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
-                "[[2026-03-12 - Teams - Platform Sync.md]]",
+                "[[01_Meetings/2026/03_March/2026-03-12 - Teams - Platform Sync.md]]",
                 actions_text,
             )
 

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from ..processors.meeting_metadata import MeetingMetadata
+from ..processors.meeting_metadata import MeetingMetadata, meeting_output_path
 from ..processors.meeting_processor import MeetingProcessor, OutputMode, ProcessResult
 from ..utils.dates import monday_of_week
 from .identity_state import (
@@ -777,7 +777,11 @@ def _capture_expected_output_snapshots(
         raise ValueError("trusted meetings output root must not be a symlink")
     if actions_root.is_symlink():
         raise ValueError("trusted actions output root must not be a symlink")
-    canonical_path = meetings_root / meeting_metadata.canonical_basename
+    canonical_path = meeting_output_path(
+        meetings_root,
+        meeting_date=meeting_metadata.date,
+        basename=meeting_metadata.canonical_basename,
+    )
     action_week = monday_of_week(metadata.start_at.date()) if metadata.start_at is not None else None
     if action_week is None:
         raise ValueError("bundle metadata is missing the action-note week")
@@ -901,6 +905,7 @@ def _process_file_with_deferred_retention(
     source_note_aliases = _qualified_bundle_source_note_aliases(
         processor=processor,
         preferred_input=preferred_input,
+        meeting_date=meeting_metadata.date,
         canonical_basename=meeting_metadata.canonical_basename,
     )
     if source_note_aliases is not None:
@@ -925,6 +930,7 @@ def _qualified_bundle_source_note_aliases(
     *,
     processor: object,
     preferred_input: Path,
+    meeting_date: str,
     canonical_basename: str,
 ) -> dict[str, str] | None:
     meetings_path = getattr(processor, "meetings_path", None)
@@ -937,11 +943,13 @@ def _qualified_bundle_source_note_aliases(
         return None
     if not relative_meetings_path.parts:
         return None
-    return {
-        (relative_meetings_path / preferred_input.name).as_posix(): (
-            relative_meetings_path / canonical_basename
-        ).as_posix()
-    }
+    canonical_path = meeting_output_path(
+        meetings_path,
+        meeting_date=meeting_date,
+        basename=canonical_basename,
+    )
+    canonical_relative_path = canonical_path.resolve().relative_to(vault_path.resolve())
+    return {(relative_meetings_path / preferred_input.name).as_posix(): (canonical_relative_path).as_posix()}
 
 
 def render_bundle_execution_result(result: BundleExecutionResult) -> str:
@@ -1568,18 +1576,29 @@ def _validate_fallback_upgrade(
     meetings_root = getattr(processor, "meetings_path", None)
     if not isinstance(meetings_root, Path) or meetings_root.is_symlink():
         raise ValueError("fallback upgrade meetings root is unsafe")
-    expected_path = meetings_root / _authoritative_meeting_metadata(metadata).canonical_basename
+    meeting_metadata = _authoritative_meeting_metadata(metadata)
+    expected_path = meeting_output_path(
+        meetings_root,
+        meeting_date=meeting_metadata.date,
+        basename=meeting_metadata.canonical_basename,
+    )
+    legacy_path = meetings_root / meeting_metadata.canonical_basename
     raw_marker_path = _string_or_none(previous_payload.get("canonical_note_path"))
     if raw_marker_path is None:
         return None, "canonical_note_path_missing_or_unexpected", expected_path
     stored_canonical_path = Path(raw_marker_path)
-    if (
-        ".." in stored_canonical_path.parts
-        or stored_canonical_path.is_symlink()
-        or (stored_canonical_path != expected_path and not _same_existing_path(stored_canonical_path, expected_path))
-    ):
+    if ".." in stored_canonical_path.parts or stored_canonical_path.is_symlink():
         return None, "canonical_note_path_missing_or_unexpected", expected_path
-    if expected_path.is_symlink() or not expected_path.exists() or not expected_path.is_file():
+    legacy_match = stored_canonical_path == legacy_path or _same_existing_path(stored_canonical_path, legacy_path)
+    if legacy_match and not expected_path.exists() and legacy_path.exists():
+        canonical_path = legacy_path
+    elif legacy_match and expected_path.exists():
+        canonical_path = expected_path
+    elif stored_canonical_path == expected_path or _same_existing_path(stored_canonical_path, expected_path):
+        canonical_path = expected_path
+    else:
+        return None, "canonical_note_path_missing_or_unexpected", expected_path
+    if canonical_path.is_symlink() or not canonical_path.exists() or not canonical_path.is_file():
         return None, "canonical_note_path_missing_or_unsafe", expected_path
 
     expected_hash = _string_or_none(previous_payload.get("canonical_note_sha256"))
@@ -1588,9 +1607,9 @@ def _validate_fallback_upgrade(
         or len(expected_hash) != 64
         or any(character not in "0123456789abcdefABCDEF" for character in expected_hash)
     ):
-        return None, "canonical_note_hash_missing_or_invalid", expected_path
-    if not canonical_matches_hash(expected_path, expected_hash):
-        return None, "canonical_note_hash_mismatch", expected_path
+        return None, "canonical_note_hash_missing_or_invalid", canonical_path
+    if not canonical_matches_hash(canonical_path, expected_hash):
+        return None, "canonical_note_hash_mismatch", canonical_path
 
     try:
         identity_fields = _processed_marker_identity_fields(
@@ -1609,7 +1628,7 @@ def _validate_fallback_upgrade(
             selected_transcripts=selected_transcripts,
         )
     except ValueError:
-        return None, "transcript_provenance_changed_or_invalid", expected_path
+        return None, "transcript_provenance_changed_or_invalid", canonical_path
 
     fallback_source_alias = _fallback_source_alias(
         processor=processor,
@@ -1617,7 +1636,7 @@ def _validate_fallback_upgrade(
     )
     return (
         _FallbackUpgradeContext(
-            canonical_note_path=expected_path,
+            canonical_note_path=canonical_path,
             archived_fallback_note_path=None,
             previous_payload=dict(previous_payload),
             previous_canonical_sha256=expected_hash.casefold(),
@@ -2099,7 +2118,12 @@ def _trusted_canonical_note_output(
     meetings_root = getattr(processor, "meetings_path", None)
     if not isinstance(meetings_root, Path):
         raise ValueError("processor does not expose a trusted meetings output root")
-    expected_path = meetings_root / _authoritative_meeting_metadata(metadata).canonical_basename
+    meeting_metadata = _authoritative_meeting_metadata(metadata)
+    expected_path = meeting_output_path(
+        meetings_root,
+        meeting_date=meeting_metadata.date,
+        basename=meeting_metadata.canonical_basename,
+    )
     if canonical_note_path != expected_path:
         raise ValueError("canonical note path does not match the trusted meetings output")
     if meetings_root.is_symlink():

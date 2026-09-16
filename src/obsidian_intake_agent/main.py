@@ -28,6 +28,7 @@ from .meetings import (
     render_transcript_sync_plan,
     write_planned_bundle_notes,
 )
+from .meetings.organization import organize_meetings, render_organization_summary
 from .processors.meeting_processor import MeetingProcessor
 from .processors.web_clip_processor import WebClipProcessor
 from .utils.git import auto_commit_repo
@@ -156,6 +157,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     attach_parser.add_argument("--event-id", required=True, help="Outlook event ID from the meeting bundle metadata.")
     attach_parser.add_argument("--file", required=True, help="Local .vtt, .md, or .docx transcript file to attach.")
+    organize_parser = meetings_subparsers.add_parser(
+        "organize",
+        help="Move existing meeting notes into year/month folders.",
+    )
+    organize_parser.add_argument(
+        "--through",
+        required=True,
+        help="Move notes dated on or before this YYYY-MM-DD date.",
+    )
+    organize_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned moves without changing the vault.",
+    )
+    organize_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform the planned moves and update exact Markdown links.",
+    )
 
     web_clips_parser = subparsers.add_parser("web-clips", help="Capture and process web clips.")
     web_clips_subparsers = web_clips_parser.add_subparsers(dest="web_clips_command", required=True)
@@ -370,6 +390,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"meeting_bundle_metadata_updated: {attach_result.metadata_path}")
             print(f"meeting_bundle_preferred_source: {attach_result.source_name}")
             return 0
+        if args.meetings_command == "organize":
+            if args.dry_run == args.execute:
+                parser.error("`obsidian-agent meetings organize` requires exactly one of `--dry-run` or `--execute`.")
+            try:
+                through = date.fromisoformat(args.through)
+            except ValueError:
+                parser.error("`--through` must be a valid YYYY-MM-DD date.")
+            meetings_root = config.vault_path / config.meetings_dir
+            organization_summary = organize_meetings(
+                vault_path=config.vault_path,
+                meetings_root=meetings_root,
+                through=through,
+                dry_run=args.dry_run,
+            )
+            print(render_organization_summary(organization_summary, dry_run=args.dry_run, through=through))
+            if not args.dry_run and (
+                organization_summary.moved
+                or organization_summary.renamed_month_folders
+                or organization_summary.updated_reference_files
+            ):
+                _maybe_auto_commit(config, vault_source_name="meeting organization")
+            return 0 if not organization_summary.failed else 1
 
     if args.command == "web-clips":
         if args.web_clips_command == "bookmarklet":

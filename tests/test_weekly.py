@@ -17,6 +17,22 @@ from obsidian_intake_agent.weekly import (
 
 
 class WeeklySnapshotTests(unittest.TestCase):
+    def test_build_source_bundle_finds_nested_year_month_meeting_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            nested_meeting = vault / "01_Meetings" / "2026" / "August" / "2026-08-27 - Teams - Nested.md"
+            nested_meeting.parent.mkdir(parents=True)
+            nested_meeting.write_text("nested meeting", encoding="utf-8")
+
+            bundle = build_weekly_source_bundle(
+                _config(vault),
+                monday=date(2026, 8, 24),
+                run_date=date(2026, 8, 28),
+                mode="briefing",
+            )
+
+            self.assertIn("2026-08-27 - Teams - Nested.md", bundle)
+
     def test_review_filename_uses_monday_date_and_mode(self) -> None:
         monday = date(2026, 3, 30)
         self.assertEqual(_review_filename(monday=monday, mode="briefing"), "2026-03-30 Weekly Briefing.md")
