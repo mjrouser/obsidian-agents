@@ -29,7 +29,9 @@ from .meeting_upgrade import (
     canonical_matches_hash,
     migrate_action_backlinks,
 )
-from .transcript_provenance import matching_provenance, provenance_path
+from .occurrence_assignment import OccurrenceWindow
+from .recap_provenance import RECAP_SOURCE, read_recap_provenance
+from .transcript_provenance import atomic_create_bytes, matching_provenance, provenance_path
 
 ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
 BundleProcessDecision = Literal["ready", "blocked"]
@@ -83,6 +85,7 @@ class BundleMetadataRecord:
     join_url: str | None = None
     occurrence_event_id: str | None = None
     source_limitations: tuple[str, ...] = ()
+    recap_provenance: dict[str, object] | None = None
     present_identity_fields: frozenset[str] = frozenset()
     invalid_identity_datetime_fields: frozenset[str] = frozenset()
 
@@ -540,6 +543,7 @@ def _execute_ready_bundle_item_in_transaction(
     marker_transaction: IdentityMarkerTransaction | None,
 ) -> tuple[BundleExecutionResultItem, bool]:
     try:
+        _validate_bundle_recap(plan_item.metadata)
         identity_marker_snapshot = _capture_identity_marker_snapshot(
             plan_item.metadata,
             marker_transaction=marker_transaction,
@@ -998,6 +1002,12 @@ def _plan_bundle_processing_item(
             metadata.processed_marker_path,
             metadata.end_at or metadata.start_at or datetime.min.replace(tzinfo=UTC),
         )
+    if identity_state is not None and "processing_exclusion" in identity_state.payload:
+        return BundleProcessingPlanItem(
+            decision="blocked",
+            metadata=metadata,
+            reasons=("Occurrence has a durable processing exclusion; explicit revalidation required.",),
+        )
     legacy_fallback_upgrade = (
         identity_state is not None
         and identity_state.marker_kind == "processed"
@@ -1043,6 +1053,11 @@ def _plan_bundle_processing_item(
     ):
         reasons.append(f"Recap fallback is deferred until {metadata.fallback_not_before.isoformat()}.")
         return BundleProcessingPlanItem(decision="blocked", metadata=metadata, reasons=tuple(reasons))
+
+    try:
+        _validate_bundle_recap(metadata)
+    except ValueError as exc:
+        return BundleProcessingPlanItem(decision="blocked", metadata=metadata, reasons=(str(exc),))
 
     if preferred_input is None:
         reasons.append("Missing preferred processor input path in bundle metadata.")
@@ -1199,6 +1214,16 @@ def _load_bundle_metadata_record(metadata_path: Path) -> BundleMetadataRecord:
             payload=payload,
             artifacts=tuple(artifacts),
             preferred_source=preferred_source,
+        ),
+        recap_provenance=next(
+            (
+                a.get("recap_provenance")
+                for a in (raw_artifacts or [])
+                if isinstance(a, dict)
+                and a.get("source_name") == RECAP_SOURCE
+                and isinstance(a.get("recap_provenance"), dict)
+            ),
+            None,
         ),
         present_identity_fields=present_identity_fields,
         invalid_identity_datetime_fields=invalid_identity_datetime_fields,
@@ -1469,6 +1494,25 @@ def _write_durable_processed_marker(
         ],
         **preserved_identity_fields,
     }
+    if metadata.recap_provenance is not None and processing_source_kind == "fallback":
+        payload["selected_recap"] = metadata.recap_provenance
+        source_path = metadata.processor_handoff.preferred_input_path
+        if source_path is not None:
+            archived_path = processor.intake_state.archive_destination(source_path)
+            if not archived_path.is_file() or archived_path.is_symlink():
+                raise ValueError("recap archive is missing or unsafe")
+            archived_sidecar = provenance_path(archived_path)
+            archived_provenance_bytes = (
+                json.dumps(metadata.recap_provenance, indent=2, sort_keys=True) + "\n"
+            ).encode()
+            if archived_sidecar.is_symlink():
+                raise ValueError("recap archive provenance is symlinked")
+            if not atomic_create_bytes(archived_sidecar, archived_provenance_bytes):
+                if archived_sidecar.read_bytes() != archived_provenance_bytes:
+                    raise ValueError("recap archive provenance conflicts with existing file")
+            payload["archived_recap_path"] = str(archived_path)
+            payload["archived_recap_provenance_path"] = str(archived_sidecar)
+            payload["archived_recap_sha256"] = hashlib.sha256(archived_path.read_bytes()).hexdigest()
     if upgrade_context is not None:
         if upgrade_context.archived_fallback_note_path is None:
             raise ValueError("fallback upgrade archive path is missing")
@@ -1528,6 +1572,8 @@ def _pending_marker_payload_from_bytes(content: bytes) -> dict[str, object]:
         raise ValueError("identity marker is not valid pending-marker JSON") from exc
     if not isinstance(payload, dict) or payload.get("source_type") != "meeting_sync_pending":
         raise ValueError("identity marker is no longer pending")
+    if "processing_exclusion" in payload:
+        raise ValueError("occurrence has a durable processing exclusion")
     return payload
 
 
@@ -1538,6 +1584,8 @@ def _fallback_upgrade_marker_payload_from_bytes(content: bytes) -> dict[str, obj
         raise ValueError("identity marker is not valid fallback-marker JSON") from exc
     if not isinstance(payload, dict):
         raise ValueError("identity marker is not a fallback marker")
+    if "processing_exclusion" in payload:
+        raise ValueError("occurrence has a durable processing exclusion")
     source_type = payload.get("source_type")
     if source_type not in {"meeting_bundle_processed", "meeting_sync_identity"}:
         raise ValueError("identity marker is no longer a processed fallback marker")
@@ -2346,6 +2394,11 @@ def _bundle_meeting_context(metadata: BundleMetadataRecord) -> dict[str, object]
         "source_limitations": list(metadata.source_limitations),
         "artifact_state": _bundle_artifact_state(metadata),
     }
+    if metadata.recap_provenance is not None:
+        insight = metadata.recap_provenance.get("insight")
+        if isinstance(insight, dict):
+            context["recap_insight_id"] = insight.get("id")
+            context["recap_source_created_at"] = insight.get("createdDateTime")
     return context
 
 
@@ -2466,3 +2519,31 @@ def _processor_ready_metadata_validation_reasons(metadata: BundleMetadataRecord)
     ):
         reasons.append("Recap fallback_not_before must not be before scheduled_end_at.")
     return tuple(reasons)
+
+
+def _validate_bundle_recap(metadata: BundleMetadataRecord) -> None:
+    path = metadata.processor_handoff.preferred_input_path
+    source = metadata.processor_handoff.preferred_input_source_name
+    is_managed = path is not None and ("fallbacks" in path.parts or provenance_path(path).exists())
+    if source in {"Teams .vtt transcript", "Teams transcript text"}:
+        if path is not None and provenance_path(path).exists():
+            raw = json.loads(provenance_path(path).read_text())
+            if isinstance(raw, dict) and raw.get("source_type") == "copilot_recap":
+                raise ValueError("managed recap cannot be relabeled as transcript")
+        return
+    if source != RECAP_SOURCE and not (is_managed and path is not None and path.suffix == ".md"):
+        return
+    if source != RECAP_SOURCE:
+        raise ValueError("unverified_cached_recap: managed recap cannot be relabeled")
+    if (
+        path is None
+        or metadata.start_at is None
+        or metadata.end_at is None
+        or not metadata.event_id
+        or not metadata.teams_meeting_id
+    ):
+        raise ValueError("unverified_cached_recap: missing occurrence identity")
+    target = OccurrenceWindow(metadata.event_id, metadata.teams_meeting_id, metadata.start_at, metadata.end_at)
+    provenance = read_recap_provenance(path, target)
+    if metadata.recap_provenance != provenance:
+        raise ValueError("unverified_cached_recap: staged metadata differs from source provenance")

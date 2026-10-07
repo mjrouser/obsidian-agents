@@ -33,6 +33,7 @@ from obsidian_intake_agent.meetings import (
 )
 from obsidian_intake_agent.meetings.transcript_provenance import provenance_path, write_provenance
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor, ProcessResult
+from tests.recap_fixtures import verify_metadata_fixture
 
 
 class BundleProcessingPlanTests(unittest.TestCase):
@@ -933,6 +934,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            verify_metadata_fixture(metadata_path)
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
                 intake_root=bundle_root,
@@ -992,6 +994,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 "unknown_private_context": {"content": "must-not-survive"},
             }
             marker_path.write_text(json.dumps(pending, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            verify_metadata_fixture(metadata_path)
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
                 intake_root=bundle_root,
@@ -2260,6 +2263,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 },
             ]
             metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            verify_metadata_fixture(metadata_path)
             processor = _processor_for_vault(vault)
             plan = build_bundle_processing_plan(
                 intake_root=bundle_root,
@@ -3577,6 +3581,8 @@ def _write_ready_bundle_metadata(
         + "\n",
         encoding="utf-8",
     )
+
+    verify_metadata_fixture(metadata_path)
 
 
 def _ready_marker_bundle(

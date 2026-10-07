@@ -45,6 +45,7 @@ from obsidian_intake_agent.meetings import (
 from obsidian_intake_agent.meetings import process_bundles as process_bundles_module
 from obsidian_intake_agent.meetings import sync as meeting_sync_module
 from obsidian_intake_agent.processors.meeting_processor import ProcessResult
+from tests.recap_fixtures import verified_artifact
 
 
 class TranscriptSyncPlannerTests(unittest.TestCase):
@@ -1496,10 +1497,11 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 if url.endswith("/me?$select=id"):
                     return {"id": "user-123"}
                 if url.endswith("/copilot/users/user-123/onlineMeetings/opaque-meeting-id/aiInsights"):
-                    return {"value": [{"id": "insight-1"}]}
+                    return {"value": [{"id": "insight-1", "createdDateTime": "2026-05-04T13:05:00Z"}]}
                 if url.endswith("/copilot/users/user-123/onlineMeetings/opaque-meeting-id/aiInsights/insight-1"):
                     return {
                         "id": "insight-1",
+                        "createdDateTime": "2026-05-04T13:05:00Z",
                         "meetingNotes": [
                             {"title": "Summary", "text": "Metadata-only transcript should not suppress fallback."}
                         ],
@@ -1544,10 +1546,10 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(artifact_by_name["Teams transcript text"].status, "available")
             self.assertEqual(artifact_by_name["Copilot recap / AI summary"].status, "available")
             self.assertEqual(artifact_by_name["Copilot recap / AI summary"].matched_paths, (fallback_path,))
-            self.assertEqual(artifact_by_name["Teams meeting chat"].status, "available")
+            self.assertEqual(artifact_by_name["Teams meeting chat"].status, "not_attempted")
             self.assertIsNotNone(artifact_by_name["Copilot recap / AI summary"].planned_content)
             self.assertFalse(fallback_path.exists())
-            self.assertGreaterEqual(len(requested_urls), 5)
+            self.assertGreaterEqual(len(requested_urls), 4)
 
     def test_graph_client_parses_outlook_events_into_meeting_candidates(self) -> None:
         client = GraphOutlookMeetingDiscoveryClient(
@@ -3254,10 +3256,11 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 if url.endswith("/me?$select=id"):
                     return {"id": "user-123"}
                 if url.endswith("/copilot/users/user-123/onlineMeetings/opaque-meeting-id/aiInsights"):
-                    return {"value": [{"id": "insight-1"}]}
+                    return {"value": [{"id": "insight-1", "createdDateTime": "2026-05-04T13:05:00Z"}]}
                 if url.endswith("/copilot/users/user-123/onlineMeetings/opaque-meeting-id/aiInsights/insight-1"):
                     return {
                         "id": "insight-1",
+                        "createdDateTime": "2026-05-04T13:05:00Z",
                         "meetingNotes": [{"title": "Summary", "text": "Decided to ship the fallback path."}],
                         "actionItems": [{"owner": "Matt", "text": "Validate the ingest handoff."}],
                         "contentCorrelation": {"mentionedSubjects": ["Fallback path"]},
@@ -3299,7 +3302,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             assert chat_artifact is not None
             self.assertEqual(recap_artifact.status, "available")
             self.assertEqual(recap_artifact.matched_paths, (fallback_path,))
-            self.assertEqual(chat_artifact.status, "available")
+            self.assertEqual(chat_artifact.status, "not_attempted")
             self.assertIsNotNone(recap_artifact.planned_content)
             self.assertFalse(fallback_path.exists())
 
@@ -3312,13 +3315,13 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertIn("## Action Items", rendered)
             self.assertIn("Validate the ingest handoff.", rendered)
             self.assertIn("## Meeting Chat", rendered)
-            self.assertIn("Priya: Please capture the fallback decision.", rendered)
+            self.assertNotIn("Priya: Please capture the fallback decision.", rendered)
             self.assertIn("- Source Used: Copilot recap / AI summary", rendered)
-            self.assertIn("- Source Used: Teams meeting chat", rendered)
+            self.assertNotIn("- Source Used: Teams meeting chat", rendered)
             self.assertIn("- Source Used: Outlook calendar metadata", rendered)
-            self.assertGreaterEqual(len(requested_urls), 5)
+            self.assertGreaterEqual(len(requested_urls), 4)
 
-    def test_graph_meeting_fallback_summary_reuses_existing_file_and_preserves_chat_provenance(self) -> None:
+    def test_graph_meeting_fallback_summary_reuses_verified_cache_without_chat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
             requested_urls: list[str] = []
@@ -3341,10 +3344,11 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 if url.endswith("/me?$select=id"):
                     return {"id": "user-123"}
                 if url.endswith("/copilot/users/user-123/onlineMeetings/opaque-meeting-id/aiInsights"):
-                    return {"value": [{"id": "insight-1"}]}
+                    return {"value": [{"id": "insight-1", "createdDateTime": "2026-05-04T13:05:00Z"}]}
                 if url.endswith("/copilot/users/user-123/onlineMeetings/opaque-meeting-id/aiInsights/insight-1"):
                     return {
                         "id": "insight-1",
+                        "createdDateTime": "2026-05-04T13:05:00Z",
                         "meetingNotes": [{"title": "Summary", "text": "Decided to ship the fallback path."}],
                     }
                 if url.endswith("/me/onlineMeetings/opaque-meeting-id?$select=chatInfo"):
@@ -3378,7 +3382,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             )
             first_chat = first_plan.items[0].bundle.artifact("Teams meeting chat")
             assert first_chat is not None
-            self.assertEqual(first_chat.status, "available")
+            self.assertEqual(first_chat.status, "not_attempted")
             write_planned_bundle_notes(first_plan)
             requested_urls.clear()
 
@@ -3386,8 +3390,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             artifact_by_name = {artifact.source_name: artifact for artifact in second_artifacts}
 
             self.assertEqual(artifact_by_name["Copilot recap / AI summary"].status, "available")
-            self.assertEqual(artifact_by_name["Teams meeting chat"].status, "available")
-            self.assertIn("existing fallback summary file", artifact_by_name["Teams meeting chat"].detail or "")
+            self.assertNotIn("Teams meeting chat", artifact_by_name)
             self.assertEqual(requested_urls, [])
 
     def test_vtt_transcript_remains_primary_when_summary_fallback_is_also_available(self) -> None:
@@ -4605,7 +4608,8 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 "atomic_create_bytes",
                 side_effect=competing_create,
             ):
-                write_planned_bundle_notes(plan)
+                with self.assertRaises(ValueError):
+                    write_planned_bundle_notes(plan)
 
             self.assertEqual(recap_path.read_bytes(), b"COMPETING")
 
@@ -5318,8 +5322,7 @@ class _StubArtifactDiscoveryClient:
         *,
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
-        del meeting
-        return self.artifacts
+        return tuple(verified_artifact(artifact, meeting) for artifact in self.artifacts)
 
 
 @dataclass(slots=True)

@@ -357,3 +357,13 @@ rg -n "vtt_extraction_fallback" logs/intake-watcher.log
 Chunked transcript extraction remains a potential feature under evaluation. Use
 the fallback warning volume, affected meeting lengths, and note-quality impact to
 decide whether the added complexity is justified.
+
+## Occurrence-safe Copilot fallbacks
+
+Copilot fallback selection now requires a unique timestamped insight for the
+calendar occurrence. Managed recap Markdown and its `.provenance.json` sidecar
+must agree before sync or direct bundle processing can use them. Unverified caches
+are preserved for review, and recurring-thread chat is omitted from new fallbacks.
+Existing transcript priority, grace periods, retry deadlines, and upgrade handling
+remain in effect. See [validation and recovery](recap_validation_and_recovery.md)
+for diagnostic meanings, the live release gate, and separately authorized repair.
