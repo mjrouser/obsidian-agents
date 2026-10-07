@@ -15,6 +15,9 @@ dependencies = [
   "webvtt-py",
   "msal>=1.31,<2",
   "requests>=2.32,<3",
+  # Security floors for MSAL and Requests transitive dependencies.
+  "pyjwt>=2.15,<3",
+  "urllib3>=2.8,<3",
   "idna>=3.15",
 ]
 

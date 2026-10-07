@@ -591,6 +591,10 @@ Current behavior:
 
 Update the dependency lockfile after changing `pyproject.toml`:
 
+The manifest sets explicit security minimums for PyJWT (used by MSAL) and
+urllib3 (used by Requests). Keep those minimums when regenerating the lockfile
+and run `make audit` before publishing dependency changes.
+
 ```bash
 uv pip compile pyproject.toml --extra audit --extra dev --output-file requirements.lock
 ```
