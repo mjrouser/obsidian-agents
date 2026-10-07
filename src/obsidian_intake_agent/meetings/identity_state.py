@@ -33,6 +33,8 @@ class MeetingIdentityState:
     payload: dict[str, object]
 
     def is_terminal(self, *, now: datetime | None = None) -> bool:
+        if "processing_exclusion" in self.payload:
+            return True
         if self.marker_kind in {"malformed", "unknown"}:
             return True
         if self.marker_kind == "pending":
@@ -272,6 +274,11 @@ def _validate_identity_marker_transition(
         existing_payload = None
     if isinstance(existing_payload, dict):
         existing_source_type = existing_payload.get("source_type")
+        if (
+            "processing_exclusion" in existing_payload
+            and payload.get("processing_exclusion") != existing_payload["processing_exclusion"]
+        ):
+            raise ValueError("processing exclusion requires explicit operator revalidation")
     if replacement_source_type == _PENDING_SOURCE_TYPE:
         if existing_source_type == _PENDING_SOURCE_TYPE:
             return

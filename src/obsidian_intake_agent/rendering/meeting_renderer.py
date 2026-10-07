@@ -24,6 +24,8 @@ FRONT_MATTER_KEYS = [
     "source_limitations",
     "artifact_state",
     "supersedes_note",
+    "recap_insight_id",
+    "recap_source_created_at",
 ]
 
 
@@ -89,6 +91,8 @@ def render_extracted_meeting_note(
         source_limitations=_string_list(context.get("source_limitations", [])),
         artifact_state=_optional_string(context.get("artifact_state")),
         supersedes_note=_optional_string(context.get("supersedes_note")),
+        recap_insight_id=_optional_string(context.get("recap_insight_id")),
+        recap_source_created_at=_optional_string(context.get("recap_source_created_at")),
     )
     return (
         f"{front_matter}"
@@ -133,6 +137,8 @@ def render_meeting_note(
         source_limitations=_string_list(context.get("source_limitations", [])),
         artifact_state=_optional_string(context.get("artifact_state")),
         supersedes_note=_optional_string(context.get("supersedes_note")),
+        recap_insight_id=_optional_string(context.get("recap_insight_id")),
+        recap_source_created_at=_optional_string(context.get("recap_source_created_at")),
     )
     return (
         f"{front_matter}"
@@ -168,6 +174,8 @@ def render_meeting_front_matter(
     source_limitations: list[str] | None = None,
     artifact_state: str | None = None,
     supersedes_note: str | None = None,
+    recap_insight_id: str | None = None,
+    recap_source_created_at: str | None = None,
 ) -> str:
     values: dict[str, object] = {
         "date": date,
@@ -189,6 +197,8 @@ def render_meeting_front_matter(
         "source_limitations": source_limitations or [],
         "artifact_state": artifact_state,
         "supersedes_note": supersedes_note,
+        "recap_insight_id": recap_insight_id,
+        "recap_source_created_at": recap_source_created_at,
     }
     lines = ["---"]
     for key in FRONT_MATTER_KEYS:

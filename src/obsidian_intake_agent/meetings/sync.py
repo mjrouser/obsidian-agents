@@ -26,12 +26,15 @@ from .occurrence_assignment import (
     assign_transcripts,
     selection_bounds,
 )
+from .recap_provenance import RECAP_SOURCE, create_recap_provenance, read_recap_provenance, validate_recap_payload
+from .recap_selection import select_recap, validate_detail
 from .transcript_provenance import (
     TranscriptProvenancePayload,
     archive_stale_transcript,
     atomic_create_bytes,
     atomic_write_bytes,
     matching_provenance,
+    provenance_path,
     write_provenance,
 )
 
@@ -128,6 +131,8 @@ class MeetingArtifact:
     matched_paths: tuple[Path, ...] = ()
     diagnostics: TranscriptDiagnostics | None = None
     planned_content: str | None = None
+    recap_provenance: dict[str, object] | None = None
+    recap_diagnostics: dict[str, object] | None = None
     occurrence_validated_paths: tuple[Path, ...] = ()
 
 
@@ -1215,17 +1220,28 @@ class GraphMeetingFallbackSummaryClient:
             )
 
         fallback_path = self._intake_root / _fallback_summary_relative_path(meeting)
-        if fallback_path.exists():
-            chat_artifact = _chat_artifact_from_existing_fallback_summary(fallback_path)
-            return (
-                MeetingArtifact(
-                    "Copilot recap / AI summary",
-                    "available",
-                    f"Fallback summary file already exists: {fallback_path}",
-                    matched_paths=(fallback_path,),
-                ),
-                chat_artifact,
-            )
+        target, context = _recap_occurrences(meeting)
+        if fallback_path.exists() or fallback_path.is_symlink():
+            try:
+                provenance = read_recap_provenance(fallback_path, target, context)
+                return (
+                    MeetingArtifact(
+                        RECAP_SOURCE,
+                        "available",
+                        "Validated cached recap.",
+                        matched_paths=(fallback_path,),
+                        recap_provenance=provenance,
+                    ),
+                )
+            except ValueError as exc:
+                return (
+                    MeetingArtifact(
+                        RECAP_SOURCE,
+                        "not_attempted",
+                        f"manual_review_required: {exc}",
+                        recap_diagnostics={"reason": "unverified_cached_recap"},
+                    ),
+                )
 
         join_url = meeting.detected_join_url()
         if join_url is None:
@@ -1282,7 +1298,31 @@ class GraphMeetingFallbackSummaryClient:
                 access_token=self._access_token,
                 fetch_json=self._fetch_json,
             )
-            ai_insight = self._latest_ai_insight(user_id=user_id, online_meeting_id=online_meeting_id)
+            records = self._recap_records(user_id=user_id, online_meeting_id=online_meeting_id)
+            selection = select_recap(records, target, context)
+            diagnostics: dict[str, object] = {
+                "reason": selection.reason,
+                "candidate_count": selection.candidate_count,
+                "rejected_ids": list(selection.rejected),
+                "conflicting_occurrences": list(selection.conflicts),
+                "occurrence_id": target.occurrence_id,
+                "selection_start_at": selection_bounds(target)[0].isoformat(),
+                "selection_end_at": selection_bounds(target)[1].isoformat(),
+                "context_start_at": min(item.scheduled_start for item in context).isoformat(),
+                "context_end_at": max(item.scheduled_end for item in context).isoformat(),
+            }
+            if selection.selected is None:
+                status: ArtifactStatus = "missing" if selection.reason == "no_matching_recap" else "not_attempted"
+                return (MeetingArtifact(RECAP_SOURCE, status, selection.reason, recap_diagnostics=diagnostics),)
+            detail_url = f"{self._recap_list_url(user_id, online_meeting_id)}/{_graph_resource_path_id(str(selection.selected['id']))}"
+            detail_cache = getattr(self, "_recap_detail_cache", {})
+            ai_insight = detail_cache.get(detail_url)
+            if ai_insight is None:
+                ai_insight = self._fetch_json(detail_url, self._access_token)
+            selected_metadata = validate_detail(selection.selected, ai_insight)
+            detail_cache[detail_url] = ai_insight
+            self._recap_detail_cache = detail_cache
+            diagnostics["selected_insight"] = selected_metadata
         except HTTPError as exc:
             recap_artifact = self._graph_fallback_http_error_artifact(
                 exc,
@@ -1325,9 +1365,12 @@ class GraphMeetingFallbackSummaryClient:
                 ),
             )
 
-        chat_artifact, chat_messages = self._meeting_chat_artifact(
-            online_meeting_id=online_meeting_id,
+        chat_artifact = MeetingArtifact(
+            "Teams meeting chat",
+            "not_attempted",
+            "Occurrence-scoped chat is unavailable; recurring-thread enrichment omitted.",
         )
+        chat_messages: tuple[dict[str, str], ...] = ()
         planned_content = _render_fallback_summary_markdown(
             meeting=meeting,
             ai_insight=ai_insight,
@@ -1341,28 +1384,63 @@ class GraphMeetingFallbackSummaryClient:
                 "Discovered Copilot recap fallback summary; local persistence is planned for explicit bundle write.",
                 matched_paths=(fallback_path,),
                 planned_content=planned_content,
+                recap_provenance=create_recap_provenance(
+                    content=planned_content.encode("utf-8"),
+                    target=target,
+                    context=context,
+                    insight=selected_metadata,
+                    online_meeting_id=online_meeting_id,
+                ),
+                recap_diagnostics=diagnostics,
             ),
             chat_artifact,
         )
 
-    def _latest_ai_insight(self, *, user_id: str, online_meeting_id: str) -> dict[str, object] | None:
-        list_url = (
+    def reset_run_cache(self) -> None:
+        self._recap_cache: dict[str, list[dict[str, object]]] = {}
+        self._recap_detail_cache = {}
+
+    def _recap_list_url(self, user_id: str, online_meeting_id: str) -> str:
+        return (
             f"{self._api_base_url}/copilot/users/{quote(user_id, safe='')}/onlineMeetings/"
             f"{_graph_resource_path_id(online_meeting_id)}/aiInsights"
         )
-        payload = self._fetch_json(list_url, self._access_token)
-        items = _graph_value_items(payload)
-        if not items:
-            return None
-        latest_item = items[-1]
-        insight_id = _optional_string(str(latest_item.get("id") or ""))
-        if insight_id is None:
-            raise ValueError("Graph recap discovery did not return an aiInsight id.")
-        detail_url = f"{list_url}/{_graph_resource_path_id(insight_id)}"
-        detail_payload = self._fetch_json(detail_url, self._access_token)
-        if not isinstance(detail_payload, dict):
-            raise ValueError("Graph recap detail response was not an object.")
-        return detail_payload
+
+    def _recap_records(self, *, user_id: str, online_meeting_id: str) -> list[dict[str, object]]:
+        url = self._recap_list_url(user_id, online_meeting_id)
+        cache = getattr(self, "_recap_cache", {})
+        if url in cache:
+            return cache[url]
+        records: list[dict[str, object]] = []
+        seen: set[str] = set()
+        next_url: str | None = url
+        expected = urlparse(self._api_base_url)
+        while next_url:
+            parsed = urlparse(next_url)
+            if (
+                parsed.scheme != "https"
+                or parsed.username
+                or parsed.password
+                or parsed.fragment
+                or (parsed.hostname, parsed.port or 443) != (expected.hostname, expected.port or 443)
+                or next_url in seen
+            ):
+                raise ValueError("recap_discovery_incomplete: unsafe pagination URL")
+            seen.add(next_url)
+            page = self._fetch_json(next_url, self._access_token)
+            if not isinstance(page, dict):
+                raise ValueError("recap_discovery_incomplete: malformed page")
+            rows = page.get("value")
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError("recap_discovery_incomplete: malformed page")
+            records.extend(rows)
+            link = page.get("@odata.nextLink")
+            if link is not None and (not isinstance(link, str) or not link):
+                raise ValueError("recap_discovery_incomplete: malformed nextLink")
+            next_url = link
+        cache[url] = records
+        self._recap_cache = cache
+        return records
 
     def _meeting_chat_artifact(
         self,
@@ -1541,6 +1619,7 @@ def build_transcript_sync_plan(
     generated_at = now or datetime.now().astimezone()
     snapshot = client.list_recently_ended_meetings(since=since, now=generated_at)
     effective_artifact_discovery_client = artifact_discovery_client or NoopMeetingArtifactDiscoveryClient()
+    _reset_recap_caches(effective_artifact_discovery_client)
     items: list[TranscriptSyncPlanItem] = []
     for meeting in _meetings_with_occurrence_context(snapshot.meetings):
         if _should_prefilter_artifact_discovery(meeting, now=generated_at, intake_root=intake_root):
@@ -1656,6 +1735,9 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
         item_diagnostics = tuple(
             artifact.diagnostics for artifact in item.bundle.artifacts if artifact.diagnostics is not None
         )
+        for artifact in item.bundle.artifacts:
+            if artifact.recap_diagnostics is not None:
+                lines.append("  recap_diagnostics: " + json.dumps(artifact.recap_diagnostics, sort_keys=True))
         selected_diagnostics = next(
             (diagnostics for diagnostics in item_diagnostics if diagnostics.selected_transcripts),
             item_diagnostics[0] if item_diagnostics else None,
@@ -1745,14 +1827,19 @@ def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
             raise ValueError("Rendered meeting identity marker must be a JSON object.")
         owned_bundles_root = _prepare_owned_bundles_root(note.path.parent)
         note.identity_path.parent.mkdir(parents=True, exist_ok=True)
-        _persist_planned_artifact_content(
-            item.bundle,
-            owned_bundles_root=owned_bundles_root,
-        )
         identity_state = (
             read_identity_state(note.identity_path, item.meeting.end_at)
             if identity_marker_entry_exists(note.identity_path)
             else None
+        )
+        if identity_state is not None and "processing_exclusion" in identity_state.payload:
+            skipped_existing_identity_paths.append(note.identity_path)
+            skipped_existing_bundle_note_paths.append(note.path)
+            skipped_existing_metadata_paths.append(note.metadata_path)
+            continue
+        _persist_planned_artifact_content(
+            item.bundle,
+            owned_bundles_root=owned_bundles_root,
         )
         should_refresh_pending = identity_state is not None and identity_state.marker_kind == "pending"
         should_refresh_upgrade = (
@@ -1803,7 +1890,26 @@ def _persist_planned_artifact_content(
             artifact.matched_paths[0],
             owned_bundles_root=owned_bundles_root,
         )
-        atomic_create_bytes(target_path, artifact.planned_content.encode("utf-8"))
+        if artifact.source_name == RECAP_SOURCE:
+            target, context = _recap_occurrences(bundle.meeting)
+            validate_recap_payload(artifact.recap_provenance, artifact.planned_content.encode("utf-8"), target, context)
+            sidecar = _validate_owned_artifact_target(
+                provenance_path(target_path), owned_bundles_root=owned_bundles_root
+            )
+            if target_path.exists() or sidecar.exists():
+                read_recap_provenance(target_path, target, context)
+                if target_path.read_bytes() != artifact.planned_content.encode("utf-8"):
+                    raise ValueError("manual_review_required: competing recap create")
+                continue
+            if not atomic_create_bytes(target_path, artifact.planned_content.encode("utf-8")):
+                read_recap_provenance(target_path, target, context)
+                raise ValueError("manual_review_required: competing recap create")
+            atomic_create_bytes(
+                sidecar, (json.dumps(artifact.recap_provenance, sort_keys=True, indent=2) + "\n").encode()
+            )
+            read_recap_provenance(target_path, target, context)
+        else:
+            atomic_create_bytes(target_path, artifact.planned_content.encode("utf-8"))
 
 
 def _prepare_owned_bundles_root(owned_bundles_root: Path) -> Path:
@@ -1977,6 +2083,7 @@ def _plan_item(
     transcript_grace_minutes: int = 60,
     fallback_processed_poll: bool = False,
 ) -> TranscriptSyncPlanItem:
+    meeting = _validate_managed_recaps(meeting)
     bundle = _build_source_bundle(meeting)
     reasons: list[str] = []
     fallback_deferred = False
@@ -2689,6 +2796,10 @@ def _serialize_artifact(artifact: MeetingArtifact) -> dict[str, object]:
         "detail": artifact.detail,
         "matched_paths": [str(path) for path in artifact.matched_paths],
     }
+    if artifact.recap_provenance is not None:
+        payload["recap_provenance"] = artifact.recap_provenance
+    if artifact.recap_diagnostics is not None:
+        payload["recap_diagnostics"] = artifact.recap_diagnostics
     if artifact.diagnostics is not None:
         payload["transcript_diagnostics"] = _serialize_transcript_diagnostics(artifact.diagnostics)
     if artifact.occurrence_validated_paths:
@@ -3495,3 +3606,53 @@ def _graph_http_error_message(error: HTTPError) -> str | None:
     if code and message:
         return f"{code}: {message}"
     return message or code
+
+
+def _reset_recap_caches(client: MeetingArtifactDiscoveryClient) -> None:
+    if isinstance(client, GraphMeetingFallbackSummaryClient):
+        client.reset_run_cache()
+    elif isinstance(client, ChainedMeetingArtifactDiscoveryClient):
+        for child in client._clients:
+            _reset_recap_caches(child)
+
+
+def _recap_occurrences(meeting: OutlookMeetingCandidate) -> tuple[OccurrenceWindow, tuple[OccurrenceWindow, ...]]:
+    target = OccurrenceWindow(
+        meeting.event_id,
+        meeting.teams_meeting_id() or meeting.series_master_id or meeting.event_id,
+        meeting.start_at,
+        meeting.end_at,
+    )
+    return target, meeting.occurrence_context or (target,)
+
+
+def _validate_managed_recaps(meeting: OutlookMeetingCandidate) -> OutlookMeetingCandidate:
+    artifacts: list[MeetingArtifact] = []
+    target, context = _recap_occurrences(meeting)
+    for artifact in meeting.discovered_artifacts:
+        managed_path = artifact.source_name not in {"Teams .vtt transcript", "Teams transcript text"} and any(
+            "fallbacks" in path.parts for path in artifact.matched_paths
+        )
+        if artifact.status == "available" and (artifact.source_name == RECAP_SOURCE or managed_path):
+            try:
+                if artifact.source_name != RECAP_SOURCE or len(artifact.matched_paths) != 1:
+                    raise ValueError("managed recap cannot be relabeled as another source")
+                if artifact.planned_content is not None:
+                    provenance = validate_recap_payload(
+                        artifact.recap_provenance, artifact.planned_content.encode(), target, context
+                    )
+                else:
+                    provenance = read_recap_provenance(artifact.matched_paths[0], target, context)
+                artifact = replace(artifact, recap_provenance=provenance)
+            except ValueError as exc:
+                artifact = replace(
+                    artifact,
+                    status="not_attempted",
+                    detail=str(exc),
+                    matched_paths=(),
+                    planned_content=None,
+                    recap_provenance=None,
+                    recap_diagnostics={"reason": "unverified_cached_recap"},
+                )
+        artifacts.append(artifact)
+    return replace(meeting, discovered_artifacts=tuple(artifacts))

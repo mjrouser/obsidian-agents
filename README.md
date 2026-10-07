@@ -538,6 +538,16 @@ Default schedule:
 - Web clipper: starts at login and stays alive
 
 Meeting sync uses a rolling seven-day window and processes only ready bundles.
+Copilot recaps require source timestamps that uniquely match the Outlook occurrence.
+The sync reads all recap metadata pages and refuses ambiguous or unverified matches.
+Managed fallback Markdown has a `.provenance.json` sidecar; direct bundle processing
+also checks its occurrence identity and source hash. An existing unverified or edited
+fallback is preserved for manual review. Recurring-thread chat is not added to new
+fallbacks. Calendar acceptance and recap availability do not verify attendance.
+
+See [recap validation and recovery](docs/recap_validation_and_recovery.md) for
+diagnostics, rollout verification, and the separate incident-repair procedure.
+
 Calendar-only and permission-blocked bundles remain staged/blocked until a real
 transcript or fallback artifact is available. If a previous meeting-sync run is
 still active, the next tick logs a skip and exits successfully.
