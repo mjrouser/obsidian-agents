@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..utils.fs import safe_move_file
+from ..utils.vault_reads import read_text_with_retry
 from .meeting_metadata import normalize_meeting_metadata
 
 ALLOWED_EXTENSIONS = {".md", ".docx", ".vtt"}
@@ -48,13 +49,11 @@ class IntakeState:
     def is_processed(self, path: Path) -> bool:
         if not path.exists():
             return False
-        with path.open("r", encoding="utf-8") as handle:
-            for _ in range(3):
-                line = handle.readline()
-                if not line:
-                    return False
-                if line.startswith(STATUS_PROCESSED_PREFIX):
-                    return True
+        for line in read_text_with_retry(path).splitlines()[:3]:
+            if not line:
+                return False
+            if line.startswith(STATUS_PROCESSED_PREFIX):
+                return True
         return False
 
     def is_under_intake(self, path: Path) -> bool:

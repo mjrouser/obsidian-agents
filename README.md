@@ -1,6 +1,6 @@
 # Obsidian Agents
 
-`obsidian_intake_agent` watches or processes files from an Obsidian intake folder, writes canonical meeting notes into `01_Meetings`, appends a weekly actions note in `07_Actions`, saves processed web clips into `10_References`, and can update weekly review notes in `09_Weekly Reviews`.
+`obsidian_intake_agent` watches or processes files from an Obsidian intake folder, writes canonical meeting notes into year/month folders under `01_Meetings`, appends a weekly actions note in `07_Actions`, saves processed web clips into `10_References`, and can update weekly review notes in `09_Weekly Reviews`.
 
 For day-to-day commands, automation checks, troubleshooting, and recovery steps,
 see [`USAGE.md`](USAGE.md).
@@ -35,6 +35,8 @@ This repo is expected to run from the local virtual environment at [`.venv/bin/p
   eligibility, processed-state detection, and archive destination rules.
 - `src/obsidian_intake_agent/processors/meeting_processor.py` owns intake file
   processing and meeting/action output orchestration.
+- `src/obsidian_intake_agent/meetings/organization.py` owns year/month meeting
+  organization and the one-time migration of existing meeting notes.
 - `src/obsidian_intake_agent/processors/vtt_extractor.py` owns VTT transcript
   extraction, heuristic fallback, and extracted data normalization.
 - `src/obsidian_intake_agent/llm/codex_cli.py` owns Codex CLI command
@@ -247,6 +249,24 @@ Download available Teams `.vtt` transcripts into
 obsidian-agent meetings sync-transcripts --since 2026-05-01 --download-transcripts
 ```
 
+Meeting notes are written under `01_Meetings/<year>/<NN_Month>/`, using numeric
+month prefixes (`01_January` through `12_December`) so folders sort
+chronologically. Each note is placed according to the meeting date. To preview
+reorganizing existing root-level notes through July 2026, run:
+
+```bash
+obsidian-agent meetings organize --through 2026-07-31 --dry-run
+```
+
+After reviewing the planned moves, execute the migration:
+
+```bash
+obsidian-agent meetings organize --through 2026-07-31 --execute
+```
+
+The migration skips undated notes, refuses destination collisions, and updates
+exact Markdown meeting links while preserving link aliases and headings.
+
 Transcript sync treats every Outlook occurrence independently, including
 occurrences in daily, weekly, irregular, or long-running recurring series. The
 series cadence is not hardcoded. For each occurrence, it selects only Graph
@@ -380,7 +400,8 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - Unprocessed files are read from `vault_path/00_Intake`.
 - Markdown, `.docx`, and `.vtt` inputs are supported.
 - `INBOX.md`, placeholder/template filenames, and already-processed notes are skipped.
-- A canonical meeting note is written to `vault_path/01_Meetings`.
+- A canonical meeting note is written to `vault_path/01_Meetings/<year>/<NN_Month>/`
+  based on the meeting date.
 - Meeting notes start with YAML front matter for Obsidian properties, including
   participant, attendee, organizer, Outlook event, Teams meeting, transcript,
   and source-file fields when that context is available.

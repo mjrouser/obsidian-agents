@@ -5,12 +5,42 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
+from obsidian_intake_agent.processors.intake_state import STATUS_PROCESSED_PREFIX, IntakeState
+from obsidian_intake_agent.processors.meeting_metadata import meeting_output_path
 from obsidian_intake_agent.processors.meeting_processor import MeetingProcessor
+from obsidian_intake_agent.utils.vault_reads import TransientVaultReadError
 from tests.helpers import config
 
 
 class MeetingProcessorIntakeTests(unittest.TestCase):
+    def test_processed_state_checks_only_the_first_three_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_path = Path(tmp_dir) / "00_Intake"
+            intake_path.mkdir()
+            source = intake_path / "meeting.md"
+            source.write_text(f"one\ntwo\n{STATUS_PROCESSED_PREFIX} — note\nbody\n", encoding="utf-8")
+
+            state = IntakeState(intake_path=intake_path, archive_path=Path(tmp_dir) / "_Archive")
+
+            self.assertTrue(state.is_processed(source))
+
+    def test_processed_state_propagates_exhausted_transient_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intake_path = Path(tmp_dir) / "00_Intake"
+            intake_path.mkdir()
+            source = intake_path / "meeting.md"
+            source.write_text("body\n", encoding="utf-8")
+            state = IntakeState(intake_path=intake_path, archive_path=Path(tmp_dir) / "_Archive")
+
+            with patch(
+                "obsidian_intake_agent.processors.intake_state.read_text_with_retry",
+                side_effect=TransientVaultReadError(source),
+            ):
+                with self.assertRaises(TransientVaultReadError):
+                    state.is_processed(source)
+
     def test_skips_inbox_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
@@ -104,7 +134,13 @@ class MeetingProcessorIntakeTests(unittest.TestCase):
             result = processor.process_file(processed_note, force=True)
 
             self.assertTrue(result.processed)
-            self.assertTrue((vault / "01_Meetings" / "2026-03-12 - Unknown - weekly-sync.md").exists())
+            self.assertTrue(
+                meeting_output_path(
+                    vault / "01_Meetings",
+                    meeting_date="2026-03-12",
+                    basename="2026-03-12 - Unknown - weekly-sync.md",
+                ).exists()
+            )
             actions_text = (vault / "07_Actions" / "2026-03-09.md").read_text(encoding="utf-8")
             self.assertIn(
                 "- [ ] complete Codex setup by Friday. (Owner: Matthew Rouser) — Source: 2026-03-12 "
@@ -133,7 +169,7 @@ class MeetingProcessorIntakeTests(unittest.TestCase):
             updated_text = (vault / "_Archive" / "Intake" / "weekly-sync.md").read_text(encoding="utf-8")
             self.assertEqual(updated_text.count("STATUS: PROCESSED"), 1)
             self.assertIn(
-                "STATUS: PROCESSED — see [[01_Meetings/2026-03-12 - Unknown - weekly-sync.md]]",
+                "STATUS: PROCESSED — see [[01_Meetings/2026/03_March/2026-03-12 - Unknown - weekly-sync.md]]",
                 updated_text,
             )
 

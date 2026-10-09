@@ -29,7 +29,7 @@ from ..utils.text import normalize_whitespace
 from .docx_reader import read_docx
 from .intake_state import IntakeState, strip_leading_status_marker
 from .md_reader import ActionItem, extract_markdown_action_items, read_markdown
-from .meeting_metadata import MeetingMetadata, normalize_meeting_metadata
+from .meeting_metadata import MeetingMetadata, meeting_output_path, normalize_meeting_metadata
 from .vtt_extractor import action_items_from_extracted, extract_vtt_meeting_data, normalize_extracted_meeting_data
 from .vtt_reader import read_vtt
 
@@ -174,8 +174,8 @@ class MeetingProcessor:
         action_items = self._extract_action_items(source_path, body)
         metadata = meeting_metadata or normalize_meeting_metadata(source_path)
         self._print_metadata_warnings(source_path, metadata)
-        meeting_note_path = self.meetings_path / metadata.canonical_basename
-        meeting_link = f"{self._meetings_dir()}/{metadata.canonical_basename}".replace("\\", "/")
+        meeting_note_path = self._meeting_note_path(metadata)
+        meeting_link = self._meeting_link(metadata)
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
 
         meeting_note = self._apply_validation_marker(
@@ -277,8 +277,8 @@ class MeetingProcessor:
         extracted["title"] = metadata.title
         processing_warnings = self._processing_warnings_from_extracted(source_path, extracted)
         processing_warnings.extend(enrichment.processing_warnings)
-        meeting_note_path = self.meetings_path / metadata.canonical_basename
-        canonical_note_name = metadata.canonical_basename
+        meeting_note_path = self._meeting_note_path(metadata)
+        canonical_note_name = self._meeting_link(metadata)
         archived_source_path = self._archive_destination(source_path) if source_in_intake else source_path
         meeting_note = self._apply_validation_marker(
             render_extracted_meeting_note(
@@ -446,6 +446,16 @@ class MeetingProcessor:
         if self.output_mode == "validation":
             return self.config.validation_meetings_dir
         return self.config.meetings_dir
+
+    def _meeting_note_path(self, metadata: MeetingMetadata) -> Path:
+        return meeting_output_path(
+            self.meetings_path,
+            meeting_date=metadata.date,
+            basename=metadata.canonical_basename,
+        )
+
+    def _meeting_link(self, metadata: MeetingMetadata) -> str:
+        return self._vault_relative_path(self._meeting_note_path(metadata)).as_posix()
 
     def _apply_validation_marker(self, rendered_note: str) -> str:
         if self.output_mode != "validation":
