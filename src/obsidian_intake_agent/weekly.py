@@ -88,7 +88,7 @@ def build_weekly_source_bundle(config: Config, *, monday: date, run_date: date, 
     if meetings_path.exists():
         lookback_start = run_date - timedelta(days=WEEKLY_MEETING_LOOKBACK_DAYS)
         recent_meetings: list[tuple[date, Path]] = []
-        for path in sorted(meetings_path.glob("*.md")):
+        for path in sorted(meetings_path.rglob("*.md")):
             meeting_date = _date_from_filename(path)
             if meeting_date is None:
                 continue

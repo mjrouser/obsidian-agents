@@ -7,6 +7,38 @@ from pathlib import Path
 
 from ..utils.text import normalize_whitespace
 
+MEETING_MONTH_NAMES = (
+    "",
+    "01_January",
+    "02_February",
+    "03_March",
+    "04_April",
+    "05_May",
+    "06_June",
+    "07_July",
+    "08_August",
+    "09_September",
+    "10_October",
+    "11_November",
+    "12_December",
+)
+
+LEGACY_MEETING_MONTH_NAMES = (
+    "",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
 LEADING_DATE_PATTERN = re.compile(r"^(?P<year>\d{4})[-=](?P<month>\d{2})[-=](?P<day>\d{2})(?:\s*-\s*)?(?P<rest>.*)$")
 SOURCE_PATTERN = re.compile(r"^(?P<source>Teams|Copilot)\s*-\s*(?P<title>.+)$")
 
@@ -18,6 +50,13 @@ class MeetingMetadata:
     title: str
     canonical_basename: str
     date_from_filename: bool = True
+
+
+def meeting_output_path(meetings_root: Path, *, meeting_date: str, basename: str) -> Path:
+    parsed_date = date.fromisoformat(meeting_date)
+    if not basename or Path(basename).name != basename:
+        raise ValueError("meeting basename must be a non-empty filename")
+    return meetings_root / str(parsed_date.year) / MEETING_MONTH_NAMES[parsed_date.month] / basename
 
 
 def normalize_meeting_metadata(intake_path: Path) -> MeetingMetadata:
