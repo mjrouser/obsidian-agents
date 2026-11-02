@@ -118,6 +118,24 @@ class WeeklySnapshotTests(unittest.TestCase):
             self.assertNotIn("## Source\n", bundle)
             self.assertNotIn("## Verbatim Excerpt", bundle)
 
+    def test_build_source_bundle_skips_meeting_note_with_invalid_leading_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            vault = Path(tmp_dir) / "vault"
+            meetings = vault / "01_Meetings"
+            meetings.mkdir(parents=True)
+            (meetings / "2026-02-30 - Teams - Misnamed.md").write_text("misnamed", encoding="utf-8")
+            (meetings / "2026-08-27 - Teams - Valid.md").write_text("valid", encoding="utf-8")
+
+            bundle = build_weekly_source_bundle(
+                _config(vault),
+                monday=date(2026, 8, 24),
+                run_date=date(2026, 8, 28),
+                mode="briefing",
+            )
+
+            self.assertIn("2026-08-27 - Teams - Valid.md", bundle)
+            self.assertNotIn("Misnamed", bundle)
+
     def test_build_source_bundle_keeps_all_meetings_in_lookback_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"

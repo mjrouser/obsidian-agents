@@ -263,7 +263,7 @@ class WebClipCaptureServerTests(unittest.TestCase):
                     vault_path=vault,
                 )
 
-    def test_capture_server_allows_private_network_preflight(self) -> None:
+    def test_capture_server_refuses_cross_origin_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             vault = Path(tmp_dir) / "vault"
             intake_dir = vault / "00_Intake" / "Web Clips"
@@ -283,10 +283,11 @@ class WebClipCaptureServerTests(unittest.TestCase):
                 thread.join(timeout=5)
                 server.server_close()
 
+            # No CORS grant: the local /clip page posts same-origin, so other sites must not.
             self.assertEqual(status, 204)
-            self.assertEqual(headers.get("Access-Control-Allow-Origin"), "https://example.com")
-            self.assertEqual(headers.get("Vary"), "Origin")
-            self.assertEqual(headers.get("Access-Control-Allow-Private-Network"), "true")
+            self.assertNotIn("Access-Control-Allow-Origin", headers)
+            self.assertNotIn("Access-Control-Allow-Headers", headers)
+            self.assertNotIn("Access-Control-Allow-Private-Network", headers)
 
     def test_capture_server_processes_written_raw_clip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
