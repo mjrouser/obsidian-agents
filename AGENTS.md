@@ -144,6 +144,26 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   `src/obsidian_intake_agent/watcher.py`, and
   `src/obsidian_intake_agent/automation_failures.py`: file watching, locking,
   automation execution, and failure note reporting.
+- `src/obsidian_intake_agent/graph_auth.py`: Microsoft Graph sign-in (MSAL
+  device-code flow), token cache, and access-token retrieval.
+- `src/obsidian_intake_agent/meetings/sync.py`: meeting transcript sync
+  orchestration: discovery clients, transcript download and VTT merging, sync
+  planning, bundle rendering, and bundle writes. It re-exports names from the
+  split-out modules below so existing `meetings.sync` imports keep working.
+- `src/obsidian_intake_agent/meetings/sync_models.py`: meeting sync data models
+  (Outlook meeting candidates, artifacts, plans, write results) and discovery
+  client protocols.
+- `src/obsidian_intake_agent/meetings/graph_http.py`: Microsoft Graph HTTP
+  transport, timeout retries, online-meeting and `/me` lookups, and Graph
+  error and permission warning messages. Patch `urlopen` here in tests.
+- `src/obsidian_intake_agent/meetings/graph_parsing.py`: side-effect-free
+  parsing of Graph calendar, chat, AI insight, and transcript payloads, plus
+  selection of transcript records for a meeting occurrence.
+- `src/obsidian_intake_agent/meetings/` (other modules): occurrence assignment,
+  identity state, transcript and recap provenance, recap selection, bundle
+  processing, late-transcript upgrades, and meeting-folder organization.
+- `src/obsidian_intake_agent/web_clips/`: web clip capture server, bookmarklet,
+  clip models, vault path validation, and retrieval of relevant clips.
 - `src/obsidian_intake_agent/utils/`: small cross-cutting utilities only. Do not
   place domain behavior here when a more specific module exists.
 - `scripts/`: thin local wrappers and operational scripts. Keep reusable
