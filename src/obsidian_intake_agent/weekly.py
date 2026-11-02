@@ -195,7 +195,11 @@ def _date_from_filename(path: Path) -> date | None:
     match = LEADING_DATE.match(path.name)
     if match is None:
         return None
-    return date.fromisoformat(match.group("date"))
+    try:
+        return date.fromisoformat(match.group("date"))
+    except ValueError:
+        # A misnamed note (for example 2026-02-30) must not stop weekly generation.
+        return None
 
 
 def _normalize_review_text(text: str) -> str:

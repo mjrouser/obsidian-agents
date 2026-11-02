@@ -11,13 +11,19 @@ class CodexCliTests(unittest.TestCase):
     def test_build_codex_command_uses_default_exec_and_model(self) -> None:
         self.assertEqual(
             build_codex_command("prompt", model="gpt-5"),
-            ["codex", "exec", "--model", "gpt-5", "--skip-git-repo-check", "prompt"],
+            ["codex", "exec", "--model", "gpt-5", "--sandbox", "read-only", "--skip-git-repo-check", "prompt"],
         )
 
     def test_build_codex_command_uses_configured_exec_command(self) -> None:
         self.assertEqual(
             build_codex_command("prompt", model=None, exec_cmd=["custom-codex", "exec"]),
-            ["custom-codex", "exec", "--skip-git-repo-check", "prompt"],
+            ["custom-codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "prompt"],
+        )
+
+    def test_build_codex_command_keeps_operator_sandbox_choice(self) -> None:
+        self.assertEqual(
+            build_codex_command("prompt", model=None, exec_cmd=["codex", "exec", "-s", "workspace-write"]),
+            ["codex", "exec", "-s", "workspace-write", "--skip-git-repo-check", "prompt"],
         )
 
     def test_run_codex_stdout_returns_stdout(self) -> None:
@@ -38,7 +44,7 @@ class CodexCliTests(unittest.TestCase):
 
         self.assertEqual(result, "generated output")
         run_mock.assert_called_once_with(
-            ["codex", "exec", "--model", "gpt-5", "--skip-git-repo-check", "prompt"],
+            ["codex", "exec", "--model", "gpt-5", "--sandbox", "read-only", "--skip-git-repo-check", "prompt"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=None,

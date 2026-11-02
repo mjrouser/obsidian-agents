@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import re
 from datetime import datetime
@@ -156,7 +157,10 @@ def capture_payload_to_note(payload: dict[str, Any], *, intake_dir: Path, vault_
 
 def is_valid_capture_token(headers: Any, token: str) -> bool:
     _validate_token(token)
-    return headers.get(TOKEN_HEADER) == token
+    supplied = headers.get(TOKEN_HEADER)
+    if not isinstance(supplied, str):
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8"), token.encode("utf-8"))
 
 
 def parse_content_length(value: str | None) -> int:
@@ -191,6 +195,8 @@ def create_capture_server(
 
     class CaptureRequestHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
+            # Deliberately no CORS headers: /clip posts same-origin, so browsers
+            # refuse cross-origin preflights from other websites.
             self._send_empty(204)
 
         def do_GET(self) -> None:
@@ -264,13 +270,11 @@ def create_capture_server(
 
         def _send_empty(self, status: int) -> None:
             self.send_response(status)
-            self._send_common_headers()
             self.end_headers()
 
         def _send_json(self, status: int, body: dict[str, Any]) -> None:
             encoded = json.dumps(body).encode("utf-8")
             self.send_response(status)
-            self._send_common_headers()
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
@@ -283,17 +287,6 @@ def create_capture_server(
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
-
-        def _send_common_headers(self) -> None:
-            origin = self.headers.get("Origin")
-            if origin:
-                self.send_header("Access-Control-Allow-Origin", origin)
-                self.send_header("Vary", "Origin")
-            else:
-                self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", f"Content-Type, {TOKEN_HEADER}")
-            self.send_header("Access-Control-Allow-Private-Network", "true")
 
     return HTTPServer((host, port), CaptureRequestHandler)
 

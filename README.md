@@ -420,6 +420,7 @@ PYTHONPATH=src ./.venv/bin/python -m obsidian_intake_agent.main run --once
 - If Codex CLI times out during VTT extraction, the processor writes a heuristic note with an explicit source limitation instead of failing the watcher.
 - Timeout fallback events are also reported as `vtt_extraction_fallback` warnings in `logs/intake-watcher.log` and as `processing_warning:` lines during manual `process` runs.
 - Codex CLI calls use `codex_timeout_seconds` so long-running weekly automation fails clearly instead of hanging indefinitely.
+- Codex CLI calls run with `--sandbox read-only` because prompts include untrusted transcript and web-clip text. Add your own `-s`/`--sandbox` to `codex_exec_cmd` only if you deliberately need a different policy.
 - For `launchd` jobs, prefer an absolute `codex_exec_cmd` path in `config.yaml` because `launchd` does not reliably inherit your interactive shell `PATH`.
 - The Monday actions note is created or updated in `vault_path/07_Actions`.
 - Weekly action notes include a top Tasks query for open tasks in the current file, then use `## This Week`, `## Carry Over Items`, and `## Longer-Term / In Progress`; new weekly notes seed `Carry Over Items` from the previous week's unfinished items, and automated inserts always go under `This Week`.
