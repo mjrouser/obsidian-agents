@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Callable
 from datetime import UTC, datetime
 
 from ..utils.text import normalize_whitespace
@@ -185,30 +184,6 @@ def _graph_transcript_records(payload: dict[str, object]) -> tuple[GraphTranscri
                     created_at_missing=created_at_missing,
                 )
             )
-    return tuple(records)
-
-
-def _fetch_all_graph_transcript_records(
-    url: str,
-    access_token: str,
-    fetch_json: Callable[[str, str], dict[str, object]],
-) -> tuple[GraphTranscriptRecord, ...]:
-    records: list[GraphTranscriptRecord] = []
-    next_url: str | None = url
-    visited_urls: set[str] = set()
-    while next_url is not None:
-        if next_url in visited_urls:
-            raise ValueError("Graph transcript response contained a repeated pagination URL.")
-        visited_urls.add(next_url)
-        payload = fetch_json(next_url, access_token)
-        records.extend(_graph_transcript_records(payload))
-        raw_next_url = payload.get("@odata.nextLink")
-        if raw_next_url is None:
-            next_url = None
-        elif isinstance(raw_next_url, str) and raw_next_url.strip():
-            next_url = raw_next_url.strip()
-        else:
-            raise ValueError("Graph transcript response contained an invalid pagination URL.")
     return tuple(records)
 
 

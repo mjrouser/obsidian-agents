@@ -16,6 +16,7 @@ from .graph_http import (
     GRAPH_REQUEST_TIMEOUT_SECONDS,  # noqa: F401 - re-exported from meetings.sync
     GraphOnlineMeetingNotFoundError,
     MeetingSyncGraphTimeoutError,  # noqa: F401 - re-exported from meetings.sync
+    _fetch_all_graph_transcript_records,
     _fetch_graph_bytes,
     _fetch_graph_json,
     _graph_calendar_scope_warning,
@@ -26,7 +27,6 @@ from .graph_http import (
     _resolve_graph_online_meeting_id,
 )
 from .graph_parsing import (
-    _fetch_all_graph_transcript_records,
     _graph_ai_action_items,
     _graph_ai_mentions,
     _graph_chat_messages,

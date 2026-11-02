@@ -154,8 +154,9 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   (Outlook meeting candidates, artifacts, plans, write results) and discovery
   client protocols.
 - `src/obsidian_intake_agent/meetings/graph_http.py`: Microsoft Graph HTTP
-  transport, timeout retries, online-meeting and `/me` lookups, and Graph
-  error and permission warning messages. Patch `urlopen` here in tests.
+  transport, timeout retries, online-meeting and `/me` lookups, transcript
+  list pagination, and Graph error and permission warning messages. Patch
+  `urlopen` here in tests.
 - `src/obsidian_intake_agent/meetings/graph_parsing.py`: side-effect-free
   parsing of Graph calendar, chat, AI insight, and transcript payloads, plus
   selection of transcript records for a meeting occurrence.
