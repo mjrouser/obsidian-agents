@@ -368,7 +368,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             captured["timeout"] = timeout
             return _FakeResponse()
 
-        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+        with patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen):
             payload = meeting_sync_module._fetch_graph_json(
                 "https://graph.microsoft.com/v1.0/me/onlineMeetings",
                 "token",
@@ -396,7 +396,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             captured["timeout"] = timeout
             return _FakeResponse()
 
-        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+        with patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen):
             payload = meeting_sync_module._fetch_graph_json(
                 "https://graph.microsoft.com/v1.0/me/calendarView",
                 "token",
@@ -413,7 +413,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             raise TimeoutError("The read operation timed out")
 
         with (
-            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen),
             self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError) as exc,
         ):
             meeting_sync_module._fetch_graph_json(
@@ -431,7 +431,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             raise URLError(TimeoutError("timed out"))
 
         with (
-            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen),
             self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError),
         ):
             meeting_sync_module._fetch_graph_json(
@@ -460,7 +460,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 raise TimeoutError("The read operation timed out")
             return _FakeResponse()
 
-        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+        with patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen):
             payload = meeting_sync_module._fetch_graph_json(
                 "https://graph.microsoft.com/v1.0/me/calendarView",
                 "token",
@@ -475,7 +475,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             raise URLError("temporary DNS failure")
 
         with (
-            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen),
             self.assertRaises(URLError),
         ):
             meeting_sync_module._fetch_graph_json(
@@ -501,7 +501,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             captured["timeout"] = timeout
             return _FakeResponse()
 
-        with patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen):
+        with patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen):
             content = meeting_sync_module._fetch_graph_bytes(
                 "https://graph.microsoft.com/v1.0/me/onlineMeetings/transcripts/content",
                 "token",
@@ -517,7 +517,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             raise TimeoutError("The read operation timed out")
 
         with (
-            patch("obsidian_intake_agent.meetings.sync.urlopen", side_effect=_fake_urlopen),
+            patch("obsidian_intake_agent.meetings.graph_http.urlopen", side_effect=_fake_urlopen),
             self.assertRaises(meeting_sync_module.MeetingSyncGraphTimeoutError) as exc,
         ):
             meeting_sync_module._fetch_graph_bytes(

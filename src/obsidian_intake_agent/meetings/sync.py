@@ -1,33 +1,70 @@
 from __future__ import annotations
 
-import binascii
 import hashlib
-import html
 import json
 import os
 import re
-import socket
-from base64 import urlsafe_b64decode
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, unquote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlparse
 
 from ..utils.text import normalize_whitespace
+from .graph_http import (
+    GRAPH_REQUEST_TIMEOUT_SECONDS,  # noqa: F401 - re-exported from meetings.sync
+    GraphOnlineMeetingNotFoundError,
+    MeetingSyncGraphTimeoutError,  # noqa: F401 - re-exported from meetings.sync
+    _fetch_all_graph_transcript_records,
+    _fetch_graph_bytes,
+    _fetch_graph_json,
+    _graph_calendar_scope_warning,
+    _graph_http_error_detail,
+    _graph_http_warning,
+    _graph_resource_path_id,
+    _resolve_graph_me_user_id,
+    _resolve_graph_online_meeting_id,
+)
+from .graph_parsing import (
+    _graph_ai_action_items,
+    _graph_ai_mentions,
+    _graph_chat_messages,
+    _graph_chat_thread_id,
+    _graph_meeting_notes,
+    _graph_value_items,
+    _parse_graph_event,
+    _select_transcripts_for_occurrence,
+    _transcript_diagnostics,
+)
 from .identity_state import identity_marker_entry_exists, read_identity_state, write_identity_marker
 from .occurrence_assignment import (
-    AssignmentConflict,
+    AssignmentConflict,  # noqa: F401 - re-exported from meetings.sync
     OccurrenceWindow,
-    TranscriptCandidate,
-    assign_transcripts,
     selection_bounds,
 )
 from .recap_provenance import RECAP_SOURCE, create_recap_provenance, read_recap_provenance, validate_recap_payload
 from .recap_selection import select_recap, validate_detail
+from .sync_models import (
+    ArtifactStatus,
+    BundleWriteResult,
+    GraphTranscriptRecord,
+    LocalTranscriptAction,
+    MeetingArtifact,
+    MeetingArtifactDiscoveryClient,
+    MeetingAttendee,  # noqa: F401 - re-exported from meetings.sync
+    MeetingDiscoveryClient,
+    MeetingDiscoverySnapshot,
+    MeetingSourceBundle,
+    OutlookMeetingCandidate,
+    PlannedIntakeBundleNote,
+    SelectedTranscriptDiagnostic,
+    TranscriptDiagnostics,
+    TranscriptSyncPlan,
+    TranscriptSyncPlanItem,
+    _occurrence_conflict_key,
+    _optional_string,
+)
 from .transcript_provenance import (
     TranscriptProvenancePayload,
     archive_stale_transcript,
@@ -46,39 +83,8 @@ ARTIFACT_SOURCE_PRIORITY = (
     "Outlook calendar metadata",
     "Manual / semi-manual intake",
 )
-GRAPH_REQUEST_TIMEOUT_SECONDS = 30
-GRAPH_REQUEST_TIMEOUT_ATTEMPTS = 2
 PENDING_MARKER_SOURCE_TYPE = "meeting_sync_pending"
 PENDING_ARTIFACT_RETRY_HOURS = 24
-
-
-class MeetingSyncGraphTimeoutError(RuntimeError):
-    def __init__(self, *, operation: str, timeout_seconds: int) -> None:
-        self.operation = operation
-        self.timeout_seconds = timeout_seconds
-        super().__init__(f"Microsoft Graph did not respond within {timeout_seconds} seconds while {operation}.")
-
-
-def _is_timeout_error(exc: BaseException) -> bool:
-    if isinstance(exc, TimeoutError | socket.timeout):
-        return True
-    if isinstance(exc, URLError):
-        reason = exc.reason
-        if isinstance(reason, TimeoutError | socket.timeout):
-            return True
-        return "timed out" in str(reason).lower()
-    return "timed out" in str(exc).lower()
-
-
-ArtifactStatus = Literal["available", "missing", "permission_blocked", "not_attempted"]
-LocalTranscriptAction = Literal[
-    "downloaded",
-    "validated",
-    "provenance_backfilled",
-    "stale_preserved_and_replaced",
-    "none",
-]
-PlanDecision = Literal["process", "skip"]
 SYNC_SOURCE_SUMMARY_FIELDS = (
     ("Teams .vtt transcript", "vtt"),
     ("Teams transcript text", "transcript_text"),
@@ -101,273 +107,6 @@ V1_INELIGIBLE_RESPONSE_STATUSES = frozenset({"declined", "none", "notresponded"}
 LOW_SIGNAL_SUBJECT_PATTERNS = (re.compile(r"\boffice\W*hours\b", re.IGNORECASE),)
 SUMMARY_DERIVED_SOURCE_NAMES = frozenset({"Copilot recap / AI summary", "Manual / semi-manual summary"})
 SUMMARY_DERIVED_LIMITATION = "Processor input is summary-derived and not a verbatim transcript."
-
-
-class GraphOnlineMeetingNotFoundError(ValueError):
-    pass
-
-
-@dataclass(slots=True, frozen=True)
-class SelectedTranscriptDiagnostic:
-    transcript_id: str
-    created_at: datetime | None
-
-
-@dataclass(slots=True, frozen=True)
-class TranscriptDiagnostics:
-    candidate_count: int | None
-    selected_transcripts: tuple[SelectedTranscriptDiagnostic, ...]
-    occurrence_start_at: datetime
-    occurrence_end_at: datetime
-    local_action: LocalTranscriptAction
-    assignment_conflicts: tuple[AssignmentConflict, ...] = ()
-
-
-@dataclass(slots=True, frozen=True)
-class MeetingArtifact:
-    source_name: str
-    status: ArtifactStatus
-    detail: str | None = None
-    matched_paths: tuple[Path, ...] = ()
-    diagnostics: TranscriptDiagnostics | None = None
-    planned_content: str | None = None
-    recap_provenance: dict[str, object] | None = None
-    recap_diagnostics: dict[str, object] | None = None
-    occurrence_validated_paths: tuple[Path, ...] = ()
-
-
-@dataclass(slots=True, frozen=True)
-class GraphTranscriptRecord:
-    transcript_id: str
-    created_at: datetime | None
-    created_at_missing: bool
-
-
-@dataclass(slots=True, frozen=True)
-class MeetingAttendee:
-    name: str
-    email: str | None = None
-    role: str | None = None
-    response_status: str | None = None
-
-    def display_label(self) -> str:
-        label = self.name
-        if self.email:
-            label = f"{label} <{self.email}>"
-        details = [detail for detail in (self.role, self.response_status) if detail]
-        if details:
-            return f"{label} ({', '.join(details)})"
-        return label
-
-
-@dataclass(slots=True, frozen=True)
-class OutlookMeetingCandidate:
-    event_id: str
-    subject: str
-    start_at: datetime
-    end_at: datetime
-    organizer: str | None = None
-    attendees: tuple[MeetingAttendee, ...] = ()
-    response_status: str | None = None
-    is_cancelled: bool = False
-    is_all_day: bool = False
-    event_type: str | None = None
-    online_meeting_provider: str | None = None
-    join_url: str | None = None
-    body_text: str | None = None
-    categories: tuple[str, ...] = ()
-    show_as: str | None = None
-    discovered_artifacts: tuple[MeetingArtifact, ...] = ()
-    series_master_id: str | None = None
-    occurrence_context: tuple[OccurrenceWindow, ...] = ()
-
-    def detected_join_url(self) -> str | None:
-        explicit = _optional_string(self.join_url)
-        if explicit is not None:
-            return explicit
-        body = _optional_string(self.body_text)
-        if body is None:
-            return None
-        return _extract_teams_join_url(body)
-
-    def teams_meeting_id(self) -> str | None:
-        join_url = self.detected_join_url()
-        if join_url is None:
-            return None
-        return _extract_teams_meeting_id(join_url)
-
-    def has_meeting_content(self) -> bool:
-        return self.is_teams_meeting()
-
-    def is_teams_meeting(self) -> bool:
-        provider = (self.online_meeting_provider or "").strip().lower()
-        if provider in {"teamsforbusiness", "microsoftteams", "teams"}:
-            return True
-        join_url = self.detected_join_url()
-        if join_url is None:
-            return False
-        normalized = join_url.lower()
-        return "teams.microsoft.com/l/meetup-join/" in normalized or "teams.live.com/meet/" in normalized
-
-    def is_focus_block(self) -> bool:
-        show_as = (self.show_as or "").strip().lower()
-        if show_as == "workingelsewhere":
-            return True
-        event_type = (self.event_type or "").strip().lower()
-        if event_type == "focus":
-            return True
-        subject = self.subject.strip().lower()
-        if "focus time" in subject:
-            return True
-        return any("focus time" in category.strip().lower() for category in self.categories)
-
-
-@dataclass(slots=True, frozen=True)
-class MeetingSourceBundle:
-    meeting: OutlookMeetingCandidate
-    artifacts: tuple[MeetingArtifact, ...]
-    teams_meeting_id: str | None
-
-    def available_sources(self) -> list[str]:
-        return [artifact.source_name for artifact in self.artifacts if artifact.status == "available"]
-
-    def pending_sources(self) -> list[str]:
-        return [artifact.source_name for artifact in self.artifacts if artifact.status != "available"]
-
-    def source_status(self, source_name: str) -> ArtifactStatus | None:
-        for artifact in self.artifacts:
-            if artifact.source_name == source_name:
-                return artifact.status
-        return None
-
-    def artifact(self, source_name: str) -> MeetingArtifact | None:
-        for artifact in self.artifacts:
-            if artifact.source_name == source_name:
-                return artifact
-        return None
-
-    def artifact_paths(self, source_name: str) -> tuple[Path, ...]:
-        artifact = self.artifact(source_name)
-        if artifact is None:
-            return ()
-        return artifact.matched_paths
-
-
-@dataclass(slots=True, frozen=True)
-class PlannedIntakeBundleNote:
-    path: Path
-    metadata_path: Path
-    identity_path: Path
-    processor_input_path: Path | None
-    processor_input_source_name: str | None
-    attendance_confidence: str
-    sources_used: tuple[str, ...]
-    source_limitations: tuple[str, ...]
-    content: str
-    metadata_content: str
-    identity_content: str
-
-
-@dataclass(slots=True, frozen=True)
-class TranscriptSyncPlanItem:
-    decision: PlanDecision
-    meeting: OutlookMeetingCandidate
-    bundle: MeetingSourceBundle
-    reasons: tuple[str, ...]
-    intake_bundle_note: PlannedIntakeBundleNote | None
-    fallback_deferred: bool = False
-    fallback_awaiting_transcript: bool = False
-    late_transcript_upgrade: bool = False
-
-
-@dataclass(slots=True, frozen=True)
-class MeetingDiscoverySnapshot:
-    meetings: tuple[OutlookMeetingCandidate, ...]
-    provider_label: str
-    warning: str | None = None
-
-
-@dataclass(slots=True, frozen=True)
-class TranscriptSyncPlan:
-    since: date
-    generated_at: datetime
-    provider_label: str
-    warning: str | None
-    items: tuple[TranscriptSyncPlanItem, ...]
-
-    @property
-    def candidate_count(self) -> int:
-        return len(self.items)
-
-    @property
-    def process_count(self) -> int:
-        return sum(1 for item in self.items if item.decision == "process")
-
-    @property
-    def skip_count(self) -> int:
-        return sum(1 for item in self.items if item.decision == "skip")
-
-    def process_items(self) -> tuple[TranscriptSyncPlanItem, ...]:
-        return tuple(item for item in self.items if item.decision == "process")
-
-    @property
-    def occurrence_errors(self) -> tuple[AssignmentConflict, ...]:
-        return _unique_occurrence_assignment_conflicts(self.items)
-
-    @property
-    def occurrence_error_count(self) -> int:
-        return len(self.occurrence_errors)
-
-    @property
-    def has_ambiguous_transcript_assignments(self) -> bool:
-        return bool(self.occurrence_errors)
-
-    @property
-    def fallback_deferred_count(self) -> int:
-        return sum(1 for item in self.items if item.fallback_deferred)
-
-    @property
-    def fallback_awaiting_transcript_count(self) -> int:
-        return sum(1 for item in self.items if item.fallback_awaiting_transcript)
-
-    @property
-    def late_transcript_upgrade_count(self) -> int:
-        return sum(1 for item in self.items if item.late_transcript_upgrade)
-
-
-@dataclass(slots=True, frozen=True)
-class BundleWriteResult:
-    written_bundle_note_paths: tuple[Path, ...]
-    written_metadata_paths: tuple[Path, ...]
-    written_identity_paths: tuple[Path, ...]
-    skipped_existing_bundle_note_paths: tuple[Path, ...]
-    skipped_existing_metadata_paths: tuple[Path, ...]
-    skipped_existing_identity_paths: tuple[Path, ...]
-
-    @property
-    def written_count(self) -> int:
-        return len(self.written_bundle_note_paths)
-
-    @property
-    def skipped_existing_count(self) -> int:
-        return len(self.skipped_existing_bundle_note_paths)
-
-
-class MeetingDiscoveryClient(Protocol):
-    def list_recently_ended_meetings(
-        self,
-        *,
-        since: date,
-        now: datetime,
-    ) -> MeetingDiscoverySnapshot: ...
-
-
-class MeetingArtifactDiscoveryClient(Protocol):
-    def discover_artifacts(
-        self,
-        *,
-        meeting: OutlookMeetingCandidate,
-    ) -> tuple[MeetingArtifact, ...]: ...
 
 
 class NoopMeetingArtifactDiscoveryClient:
@@ -1785,27 +1524,6 @@ def render_transcript_sync_plan(plan: TranscriptSyncPlan, *, mode: str = "dry-ru
     return "\n".join(lines)
 
 
-def _occurrence_conflict_key(conflict: AssignmentConflict) -> tuple[str, str, tuple[str, ...]]:
-    return (
-        conflict.transcript_id,
-        conflict.created_at.isoformat(),
-        conflict.occurrence_ids,
-    )
-
-
-def _unique_occurrence_assignment_conflicts(
-    items: tuple[TranscriptSyncPlanItem, ...],
-) -> tuple[AssignmentConflict, ...]:
-    conflicts: dict[tuple[str, str, tuple[str, ...]], AssignmentConflict] = {}
-    for item in items:
-        for artifact in item.bundle.artifacts:
-            if artifact.diagnostics is None:
-                continue
-            for conflict in artifact.diagnostics.assignment_conflicts:
-                conflicts.setdefault(_occurrence_conflict_key(conflict), conflict)
-    return tuple(conflicts.values())
-
-
 def write_planned_bundle_notes(plan: TranscriptSyncPlan) -> BundleWriteResult:
     written_bundle_note_paths: list[Path] = []
     written_metadata_paths: list[Path] = []
@@ -1991,15 +1709,6 @@ def _count_process_items_with_source_status(
 
 def _count_process_items_with_only_calendar_metadata(items: tuple[TranscriptSyncPlanItem, ...]) -> int:
     return sum(1 for item in items if item.bundle.available_sources() == ["Outlook calendar metadata"])
-
-
-def _artifact_status_rank(status: ArtifactStatus) -> int:
-    return {
-        "not_attempted": 0,
-        "missing": 1,
-        "permission_blocked": 2,
-        "available": 3,
-    }[status]
 
 
 def _should_replace_artifact(*, existing: MeetingArtifact, candidate: MeetingArtifact) -> bool:
@@ -2807,136 +2516,6 @@ def _serialize_artifact(artifact: MeetingArtifact) -> dict[str, object]:
     return payload
 
 
-def _optional_string(value: str | None) -> str | None:
-    if value is None:
-        return None
-    text = value.strip()
-    return text or None
-
-
-def _extract_teams_join_url(text: str) -> str | None:
-    for token in text.split():
-        candidate = token.strip("()<>,[]")
-        lowered = candidate.lower()
-        if "teams.microsoft.com/l/meetup-join/" in lowered or "teams.live.com/meet/" in lowered:
-            return candidate
-    return None
-
-
-def _extract_teams_meeting_id(join_url: str) -> str | None:
-    path = urlparse(join_url).path
-    marker = "/l/meetup-join/"
-    if marker not in path:
-        return None
-    encoded_segment = path.split(marker, 1)[1].split("/", 1)[0]
-    meeting_id = _optional_string(unquote(encoded_segment))
-    if meeting_id is None:
-        return None
-    if meeting_id.startswith("19:meeting_") and "@thread.v2" in meeting_id:
-        return meeting_id
-    return None
-
-
-def _resolve_graph_online_meeting_id(
-    *,
-    api_base_url: str,
-    user_path: str,
-    access_token: str,
-    join_url: str,
-    fetch_json: Callable[[str, str], dict[str, object]],
-) -> str:
-    lookup_url = f"{api_base_url}{user_path}/onlineMeetings?" + urlencode(
-        {
-            "$filter": f"JoinWebUrl eq '{_escape_graph_odata_literal(join_url)}'",
-        }
-    )
-    payload = fetch_json(lookup_url, access_token)
-    try:
-        items = _graph_value_items(payload)
-    except ValueError as exc:
-        raise ValueError("Graph online meeting lookup response did not contain a value list.") from exc
-    if not items:
-        raise GraphOnlineMeetingNotFoundError("Graph did not find an online meeting record for this Outlook event.")
-    raw_id = items[0].get("id")
-    meeting_id = _optional_string(raw_id if isinstance(raw_id, str) else None)
-    if meeting_id is None:
-        raise ValueError("Graph online meeting lookup did not return an id.")
-    return meeting_id
-
-
-def _resolve_graph_me_user_id(
-    *,
-    api_base_url: str,
-    access_token: str,
-    fetch_json: Callable[[str, str], dict[str, object]],
-) -> str:
-    payload = fetch_json(f"{api_base_url}/me?$select=id", access_token)
-    raw_id = payload.get("id") if isinstance(payload, dict) else None
-    user_id = _optional_string(str(raw_id or ""))
-    if user_id is None:
-        raise ValueError("Graph /me lookup did not return a user id.")
-    return user_id
-
-
-def _escape_graph_odata_literal(value: str) -> str:
-    return value.replace("'", "''")
-
-
-def _graph_resource_path_id(value: str) -> str:
-    return quote(value, safe=":@*")
-
-
-def _is_graph_online_meeting_lookup_url(url: str) -> bool:
-    return "/onlineMeetings?" in url and ("$filter=JoinWebUrl" in url or "%24filter=JoinWebUrl" in url)
-
-
-def _fetch_graph_json(
-    url: str,
-    access_token: str,
-    *,
-    prefer_outlook_timezone: bool = False,
-) -> dict[str, object]:
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json",
-    }
-    if prefer_outlook_timezone:
-        headers["Prefer"] = 'outlook.timezone="UTC"'
-    request = Request(
-        url,
-        headers=headers,
-    )
-    response_bytes = _read_graph_response_bytes(request, operation="Microsoft Graph JSON request")
-    return json.loads(response_bytes.decode("utf-8"))
-
-
-def _fetch_graph_bytes(url: str, access_token: str) -> bytes:
-    request = Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "text/vtt",
-        },
-    )
-    return _read_graph_response_bytes(request, operation="Microsoft Graph content request")
-
-
-def _read_graph_response_bytes(request: Request, *, operation: str) -> bytes:
-    last_timeout: BaseException | None = None
-    for _attempt in range(GRAPH_REQUEST_TIMEOUT_ATTEMPTS):
-        try:
-            with urlopen(request, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS) as response:
-                return response.read()
-        except (TimeoutError, socket.timeout, URLError) as exc:
-            if not _is_timeout_error(exc):
-                raise
-            last_timeout = exc
-    raise MeetingSyncGraphTimeoutError(
-        operation=operation,
-        timeout_seconds=GRAPH_REQUEST_TIMEOUT_SECONDS,
-    ) from last_timeout
-
-
 def _normalized_vtt_bytes(content: bytes) -> bytes:
     return content if content.endswith(b"\n") else content + b"\n"
 
@@ -3001,53 +2580,6 @@ def _vtt_voice_line_parts(line: str) -> tuple[str | None, str | None]:
     return None, _optional_string(line)
 
 
-def _graph_chat_thread_id(payload: dict[str, object]) -> str | None:
-    raw_chat_info = payload.get("chatInfo")
-    if not isinstance(raw_chat_info, dict):
-        return None
-    return _optional_string(str(raw_chat_info.get("threadId") or ""))
-
-
-def _graph_chat_messages(payload: dict[str, object]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-    for item in reversed(_graph_value_items(payload)):
-        body = item.get("body")
-        if not isinstance(body, dict):
-            continue
-        content = _chat_message_text(body.get("content"))
-        if content is None:
-            continue
-        sender = _graph_chat_message_sender(item.get("from"))
-        messages.append(
-            {
-                "sender": sender or "Unknown",
-                "text": content,
-            }
-        )
-    return messages
-
-
-def _graph_chat_message_sender(raw_value: object) -> str | None:
-    if not isinstance(raw_value, dict):
-        return None
-    for key in ("user", "application", "device"):
-        payload = raw_value.get(key)
-        if not isinstance(payload, dict):
-            continue
-        display_name = _optional_string(str(payload.get("displayName") or ""))
-        if display_name is not None:
-            return display_name
-    return None
-
-
-def _chat_message_text(raw_value: object) -> str | None:
-    if raw_value is None:
-        return None
-    text = re.sub(r"<[^>]+>", " ", html.unescape(str(raw_value)))
-    normalized = normalize_whitespace(text)
-    return normalized or None
-
-
 def _meeting_has_processor_ready_transcript_source(meeting: OutlookMeetingCandidate) -> bool:
     for artifact in meeting.discovered_artifacts:
         if (
@@ -3057,60 +2589,6 @@ def _meeting_has_processor_ready_transcript_source(meeting: OutlookMeetingCandid
         ):
             return True
     return False
-
-
-def _chat_artifact_from_existing_fallback_summary(fallback_path: Path) -> MeetingArtifact:
-    try:
-        content = fallback_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return MeetingArtifact(
-            "Teams meeting chat",
-            "not_attempted",
-            f"Could not inspect existing fallback summary file for chat provenance: {exc}",
-        )
-
-    meeting_chat_section = _markdown_section(content, "Meeting Chat")
-    if meeting_chat_section:
-        first_bullet = next(
-            (line.strip() for line in meeting_chat_section.splitlines() if line.strip().startswith("- ")), None
-        )
-        if first_bullet is not None:
-            lowered = first_bullet.lower()
-            for status in ARTIFACT_STATUS_SUMMARY_SEQUENCE:
-                prefix = f"- {status}:"
-                if lowered.startswith(prefix):
-                    detail = first_bullet[len(prefix) :].strip() or None
-                    return MeetingArtifact(
-                        "Teams meeting chat",
-                        status,
-                        f"Recovered from existing fallback summary file: {detail}"
-                        if detail
-                        else "Recovered from existing fallback summary file.",
-                    )
-
-    source_section = _markdown_section(content, "Source")
-    if source_section and "- Source Used: Teams meeting chat" in source_section:
-        return MeetingArtifact(
-            "Teams meeting chat",
-            "available",
-            f"Recovered from existing fallback summary file: {fallback_path}",
-        )
-    return MeetingArtifact(
-        "Teams meeting chat",
-        "not_attempted",
-        f"Existing fallback summary file did not record Teams meeting chat provenance: {fallback_path}",
-    )
-
-
-def _markdown_section(content: str, heading: str) -> str | None:
-    pattern = re.compile(
-        rf"^## {re.escape(heading)}\n(?P<body>.*?)(?=^## |\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    match = pattern.search(content)
-    if match is None:
-        return None
-    return match.group("body")
 
 
 def _render_fallback_summary_markdown(
@@ -3177,435 +2655,6 @@ def _render_fallback_summary_markdown(
         "- Source Limitation: Fallback artifact synthesized from summary-oriented meeting sources, not a verbatim transcript."
     )
     return "\n".join(lines) + "\n"
-
-
-def _graph_meeting_notes(ai_insight: dict[str, object]) -> list[str]:
-    raw_notes = ai_insight.get("meetingNotes")
-    if not isinstance(raw_notes, list):
-        return []
-    lines: list[str] = []
-    for note in raw_notes:
-        if not isinstance(note, dict):
-            continue
-        title = _optional_string(str(note.get("title") or ""))
-        text = _optional_string(str(note.get("text") or ""))
-        if title and text:
-            lines.append(f"- {title}: {text}")
-        elif title:
-            lines.append(f"- {title}")
-        elif text:
-            lines.append(f"- {text}")
-        subpoints = note.get("subpoints")
-        if isinstance(subpoints, list):
-            for subpoint in subpoints:
-                if not isinstance(subpoint, dict):
-                    continue
-                sub_title = _optional_string(str(subpoint.get("title") or ""))
-                sub_text = _optional_string(str(subpoint.get("text") or ""))
-                if sub_title and sub_text:
-                    lines.append(f"- {sub_title}: {sub_text}")
-                elif sub_title:
-                    lines.append(f"- {sub_title}")
-                elif sub_text:
-                    lines.append(f"- {sub_text}")
-    return lines
-
-
-def _graph_ai_action_items(ai_insight: dict[str, object]) -> list[str]:
-    raw_items = ai_insight.get("actionItems")
-    if not isinstance(raw_items, list):
-        return []
-    lines: list[str] = []
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        owner = _optional_string(str(item.get("ownerDisplayName") or ""))
-        title = _optional_string(str(item.get("title") or ""))
-        text = _optional_string(str(item.get("text") or ""))
-        if owner and text:
-            lines.append(f"- {owner} to {text}")
-        elif owner and title:
-            lines.append(f"- {owner} to {title}")
-        elif text:
-            lines.append(f"- [ ] {text}")
-        elif title:
-            lines.append(f"- [ ] {title}")
-    return lines
-
-
-def _graph_ai_mentions(ai_insight: dict[str, object]) -> list[str]:
-    raw_viewpoint = ai_insight.get("viewpoint")
-    if not isinstance(raw_viewpoint, dict):
-        return []
-    raw_mentions = raw_viewpoint.get("mentionEvents")
-    if not isinstance(raw_mentions, list):
-        return []
-    lines: list[str] = []
-    for mention in raw_mentions:
-        if not isinstance(mention, dict):
-            continue
-        utterance = _optional_string(str(mention.get("transcriptUtterance") or ""))
-        if utterance is None:
-            continue
-        lines.append(f"- {utterance}")
-    return lines
-
-
-def _graph_value_items(payload: dict[str, object]) -> list[dict[str, object]]:
-    raw_items = payload.get("value")
-    if not isinstance(raw_items, list):
-        raise ValueError("Graph calendar response did not contain a value list.")
-    items: list[dict[str, object]] = []
-    for item in raw_items:
-        if isinstance(item, dict):
-            items.append(item)
-    return items
-
-
-def _graph_transcript_ids(payload: dict[str, object]) -> tuple[str, ...]:
-    return tuple(record.transcript_id for record in _graph_transcript_records(payload))
-
-
-def _graph_transcript_records(payload: dict[str, object]) -> tuple[GraphTranscriptRecord, ...]:
-    raw_items = payload.get("value")
-    if not isinstance(raw_items, list):
-        raise ValueError("Graph transcript response did not contain a value list.")
-    records: list[GraphTranscriptRecord] = []
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        transcript_id = _optional_string(str(item.get("id") or ""))
-        if transcript_id is not None:
-            created_at = None
-            raw_created_at = item.get("createdDateTime")
-            created_at_text = _optional_string(raw_created_at) if isinstance(raw_created_at, str) else None
-            created_at_missing = "createdDateTime" not in item or (
-                isinstance(raw_created_at, str) and created_at_text is None
-            )
-            if created_at_text is not None:
-                try:
-                    parsed_created_at = datetime.fromisoformat(created_at_text.replace("Z", "+00:00"))
-                    if parsed_created_at.tzinfo is not None:
-                        created_at = parsed_created_at
-                except ValueError:
-                    pass
-            records.append(
-                GraphTranscriptRecord(
-                    transcript_id=transcript_id,
-                    created_at=created_at,
-                    created_at_missing=created_at_missing,
-                )
-            )
-    return tuple(records)
-
-
-def _fetch_all_graph_transcript_records(
-    url: str,
-    access_token: str,
-    fetch_json: Callable[[str, str], dict[str, object]],
-) -> tuple[GraphTranscriptRecord, ...]:
-    records: list[GraphTranscriptRecord] = []
-    next_url: str | None = url
-    visited_urls: set[str] = set()
-    while next_url is not None:
-        if next_url in visited_urls:
-            raise ValueError("Graph transcript response contained a repeated pagination URL.")
-        visited_urls.add(next_url)
-        payload = fetch_json(next_url, access_token)
-        records.extend(_graph_transcript_records(payload))
-        raw_next_url = payload.get("@odata.nextLink")
-        if raw_next_url is None:
-            next_url = None
-        elif isinstance(raw_next_url, str) and raw_next_url.strip():
-            next_url = raw_next_url.strip()
-        else:
-            raise ValueError("Graph transcript response contained an invalid pagination URL.")
-    return tuple(records)
-
-
-def _transcript_diagnostics(
-    meeting: OutlookMeetingCandidate,
-    candidates: tuple[GraphTranscriptRecord, ...],
-    selected: tuple[GraphTranscriptRecord, ...],
-    *,
-    local_action: LocalTranscriptAction,
-    assignment_conflicts: tuple[AssignmentConflict, ...] = (),
-) -> TranscriptDiagnostics:
-    return TranscriptDiagnostics(
-        candidate_count=len(candidates),
-        selected_transcripts=tuple(
-            SelectedTranscriptDiagnostic(record.transcript_id, record.created_at) for record in selected
-        ),
-        occurrence_start_at=meeting.start_at,
-        occurrence_end_at=meeting.end_at,
-        local_action=local_action,
-        assignment_conflicts=assignment_conflicts,
-    )
-
-
-def _canonical_graph_transcript_records(
-    records: tuple[GraphTranscriptRecord, ...],
-) -> tuple[GraphTranscriptRecord, ...]:
-    records_by_id: dict[str, GraphTranscriptRecord] = {}
-    ordered_transcript_ids: list[str] = []
-    conflicting_transcript_ids: set[str] = set()
-    for record in records:
-        existing = records_by_id.get(record.transcript_id)
-        if existing is None:
-            records_by_id[record.transcript_id] = record
-            ordered_transcript_ids.append(record.transcript_id)
-        elif existing != record:
-            conflicting_transcript_ids.add(record.transcript_id)
-    return tuple(
-        records_by_id[transcript_id]
-        for transcript_id in ordered_transcript_ids
-        if transcript_id not in conflicting_transcript_ids
-    )
-
-
-def _select_transcripts_for_occurrence(
-    records: tuple[GraphTranscriptRecord, ...],
-    meeting: OutlookMeetingCandidate,
-) -> tuple[tuple[GraphTranscriptRecord, ...], tuple[AssignmentConflict, ...]]:
-    canonical_records = _canonical_graph_transcript_records(records)
-    occurrence_context = meeting.occurrence_context
-    current_occurrence = next(
-        (occurrence for occurrence in occurrence_context if occurrence.occurrence_id == meeting.event_id),
-        None,
-    )
-    if current_occurrence is None:
-        current_occurrence = OccurrenceWindow(
-            occurrence_id=meeting.event_id,
-            series_id=meeting.teams_meeting_id() or meeting.series_master_id or meeting.event_id,
-            scheduled_start=meeting.start_at,
-            scheduled_end=meeting.end_at,
-        )
-        occurrence_context = occurrence_context + (current_occurrence,)
-    assignment = assign_transcripts(
-        occurrences=occurrence_context,
-        candidates=tuple(
-            TranscriptCandidate(
-                transcript_id=record.transcript_id,
-                series_id=current_occurrence.series_id,
-                created_at=record.created_at,
-            )
-            for record in canonical_records
-        ),
-    )
-    if any(meeting.event_id in conflict.occurrence_ids for conflict in assignment.conflicts):
-        return (), assignment.conflicts
-    assigned_ids = assignment.transcript_ids_for(meeting.event_id)
-    records_by_id = {record.transcript_id: record for record in canonical_records}
-    selected_records = tuple(
-        records_by_id[transcript_id] for transcript_id in dict.fromkeys(assigned_ids) if transcript_id in records_by_id
-    )
-    return selected_records, assignment.conflicts
-
-
-def _parse_graph_event(payload: dict[str, object]) -> OutlookMeetingCandidate:
-    online_meeting = payload.get("onlineMeeting")
-    online_meeting_provider = _optional_string(str(payload.get("onlineMeetingProvider") or "")) or None
-    join_url = None
-    if isinstance(online_meeting, dict):
-        join_url = _optional_string(str(online_meeting.get("joinUrl") or ""))
-    response_status = None
-    raw_response_status = payload.get("responseStatus")
-    if isinstance(raw_response_status, dict):
-        response_status = _optional_string(str(raw_response_status.get("response") or ""))
-    organizer = None
-    raw_organizer = payload.get("organizer")
-    if isinstance(raw_organizer, dict):
-        raw_email = raw_organizer.get("emailAddress")
-        if isinstance(raw_email, dict):
-            organizer = _optional_string(str(raw_email.get("name") or raw_email.get("address") or ""))
-    categories = payload.get("categories")
-    category_values: tuple[str, ...] = ()
-    if isinstance(categories, list):
-        category_values = tuple(str(item) for item in categories)
-    attendee_values = _parse_graph_attendees(payload.get("attendees"))
-    body_text = _graph_event_body_text(payload.get("body")) or _optional_string(str(payload.get("bodyPreview") or ""))
-    return OutlookMeetingCandidate(
-        event_id=str(payload["id"]),
-        subject=str(payload.get("subject") or "(untitled meeting)"),
-        start_at=_parse_graph_datetime(payload["start"]),
-        end_at=_parse_graph_datetime(payload["end"]),
-        organizer=organizer,
-        attendees=attendee_values,
-        response_status=response_status,
-        is_cancelled=bool(payload.get("isCancelled", False)),
-        is_all_day=bool(payload.get("isAllDay", False)),
-        event_type=_optional_string(str(payload.get("type") or "")),
-        online_meeting_provider=online_meeting_provider,
-        join_url=join_url,
-        body_text=body_text,
-        categories=category_values,
-        show_as=_optional_string(str(payload.get("showAs") or "")),
-        series_master_id=_optional_string(str(payload.get("seriesMasterId") or "")),
-    )
-
-
-def _graph_event_body_text(raw_value: object) -> str | None:
-    if not isinstance(raw_value, dict):
-        return None
-    return _optional_string(str(raw_value.get("content") or ""))
-
-
-def _parse_graph_attendees(raw_value: object) -> tuple[MeetingAttendee, ...]:
-    if not isinstance(raw_value, list):
-        return ()
-    attendees: list[MeetingAttendee] = []
-    for raw_attendee in raw_value:
-        if not isinstance(raw_attendee, dict):
-            continue
-        email_payload = raw_attendee.get("emailAddress")
-        name = None
-        email = None
-        if isinstance(email_payload, dict):
-            name = _optional_string(str(email_payload.get("name") or ""))
-            email = _optional_string(str(email_payload.get("address") or ""))
-        attendee_name = name or email
-        if attendee_name is None:
-            continue
-        attendee_response = None
-        raw_response_status = raw_attendee.get("status")
-        if isinstance(raw_response_status, dict):
-            attendee_response = _optional_string(str(raw_response_status.get("response") or ""))
-        attendees.append(
-            MeetingAttendee(
-                name=attendee_name,
-                email=email,
-                role=_optional_string(str(raw_attendee.get("type") or "")),
-                response_status=attendee_response,
-            )
-        )
-    return tuple(attendees)
-
-
-def _parse_graph_datetime(raw_value: object) -> datetime:
-    if not isinstance(raw_value, dict):
-        raise ValueError("Graph event datetime payload was not a mapping.")
-    date_text = str(raw_value.get("dateTime") or "").strip()
-    if not date_text:
-        raise ValueError("Graph event datetime payload was missing dateTime.")
-    if date_text.endswith("Z"):
-        return datetime.fromisoformat(date_text.replace("Z", "+00:00"))
-    timezone_name = str(raw_value.get("timeZone") or "").strip()
-    parsed = datetime.fromisoformat(date_text)
-    if parsed.tzinfo is not None:
-        return parsed
-    if timezone_name.upper() == "UTC":
-        return parsed.replace(tzinfo=UTC)
-    raise ValueError(f"Unsupported Graph event timezone: {timezone_name or 'unknown'}")
-
-
-def _graph_http_warning(error: HTTPError) -> str:
-    if error.code in {401, 403}:
-        return _graph_http_error_detail(
-            error,
-            default=(
-                f"Graph calendar discovery failed with HTTP {error.code}. "
-                "Check delegated calendar/transcript permissions and refresh Graph auth with `obsidian-agent graph login`."
-            ),
-        )
-    return _graph_http_error_detail(
-        error,
-        default=f"Graph calendar discovery failed with HTTP {error.code}.",
-    )
-
-
-def _graph_calendar_scope_warning(access_token: str) -> str | None:
-    claims = _decode_jwt_claims(access_token)
-    if claims is None:
-        return None
-
-    grants = _claim_grants(claims.get("scp")) | _claim_grants(claims.get("roles"))
-    if not grants:
-        return None
-
-    calendar_grants = {
-        "Calendars.ReadBasic",
-        "Calendars.Read",
-        "Calendars.Read.Shared",
-        "Calendars.ReadWrite",
-        "Calendars.ReadWrite.Shared",
-    }
-    if grants & calendar_grants:
-        return None
-
-    grant_summary = _format_graph_grants(grants)
-    return (
-        "Graph token is missing delegated Microsoft Graph calendar permission. "
-        "Calendar discovery needs Calendars.Read for full meeting context; "
-        "Calendars.ReadBasic may only support limited metadata. "
-        "Request a token with https://graph.microsoft.com/Calendars.Read. "
-        f"Current token grants: {grant_summary}."
-    )
-
-
-def _decode_jwt_claims(access_token: str) -> dict[str, object] | None:
-    parts = access_token.split(".")
-    if len(parts) < 2:
-        return None
-
-    payload = parts[1] + ("=" * (-len(parts[1]) % 4))
-    try:
-        decoded = urlsafe_b64decode(payload.encode()).decode()
-        claims = json.loads(decoded)
-    except (binascii.Error, json.JSONDecodeError, UnicodeDecodeError, ValueError):
-        return None
-    return claims if isinstance(claims, dict) else None
-
-
-def _claim_grants(raw_value: object) -> set[str]:
-    if isinstance(raw_value, str):
-        return {part for part in raw_value.split() if part}
-    if isinstance(raw_value, list):
-        return {str(part) for part in raw_value if str(part).strip()}
-    return set()
-
-
-def _format_graph_grants(grants: set[str]) -> str:
-    sorted_grants = sorted(grants)
-    if len(sorted_grants) <= 8:
-        return ", ".join(sorted_grants)
-    shown = ", ".join(sorted_grants[:8])
-    return f"{shown}, ... ({len(sorted_grants)} total)"
-
-
-def _graph_http_error_detail(error: HTTPError, *, default: str) -> str:
-    message = _graph_http_error_message(error)
-    if message is None:
-        return default
-    return f"{default} Graph said: {message}"
-
-
-def _graph_http_error_message(error: HTTPError) -> str | None:
-    if error.fp is None:
-        return None
-    try:
-        body = error.fp.read()
-    except OSError:
-        return None
-    if not body:
-        return None
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        text = body.decode("utf-8", errors="ignore").strip()
-        return text or None
-    if not isinstance(payload, dict):
-        return None
-    top_level_message = _optional_string(payload.get("message") if isinstance(payload.get("message"), str) else None)
-    if top_level_message is not None:
-        return top_level_message
-    raw_error = payload.get("error")
-    if not isinstance(raw_error, dict):
-        return None
-    code = _optional_string(raw_error.get("code") if isinstance(raw_error.get("code"), str) else None)
-    message = _optional_string(raw_error.get("message") if isinstance(raw_error.get("message"), str) else None)
-    if code and message:
-        return f"{code}: {message}"
-    return message or code
 
 
 def _reset_recap_caches(client: MeetingArtifactDiscoveryClient) -> None:
