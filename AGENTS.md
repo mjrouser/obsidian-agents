@@ -164,11 +164,14 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   and path rules (bundle note, raw transcript, fallback summary, Outlook
   metadata and meeting identity marker paths) and the `bundles/` directory
   constants.
+- `src/obsidian_intake_agent/meetings/source_bundles.py`: builds meeting
+  source bundles from discovered artifacts, picks the preferred processor
+  input, explains missing sources, and renders the planned intake bundle
+  note plus its Outlook metadata and meeting identity sidecars.
 - `src/obsidian_intake_agent/meetings/sync_rendering.py`: side-effect-free
   text rendering of the transcript-sync plan and bundle write results, plus
   the artifact serializers and timestamp formatter shared with sidecar
-  rendering. Intake bundle note and sidecar renderers still live in
-  `meetings/sync.py` because they depend on identity and planning helpers.
+  rendering.
 - `src/obsidian_intake_agent/meetings/vtt_merge.py`: pure WebVTT normalization
   and merging, and Graph metadata-content to transcript-text conversion, used
   by transcript download.
