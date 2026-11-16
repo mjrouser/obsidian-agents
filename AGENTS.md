@@ -160,6 +160,11 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - `src/obsidian_intake_agent/meetings/graph_parsing.py`: side-effect-free
   parsing of Graph calendar, chat, AI insight, and transcript payloads, plus
   selection of transcript records for a meeting occurrence.
+- `src/obsidian_intake_agent/meetings/sync_rendering.py`: side-effect-free
+  text rendering of the transcript-sync plan and bundle write results, plus
+  the artifact serializers and timestamp formatter shared with sidecar
+  rendering. Intake bundle note and sidecar renderers still live in
+  `meetings/sync.py` because they depend on identity and planning helpers.
 - `src/obsidian_intake_agent/meetings/vtt_merge.py`: pure WebVTT normalization
   and merging, and Graph metadata-content to transcript-text conversion, used
   by transcript download.
