@@ -160,6 +160,9 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - `src/obsidian_intake_agent/meetings/graph_parsing.py`: side-effect-free
   parsing of Graph calendar, chat, AI insight, and transcript payloads, plus
   selection of transcript records for a meeting occurrence.
+- `src/obsidian_intake_agent/meetings/vtt_merge.py`: pure WebVTT normalization
+  and merging, and Graph metadata-content to transcript-text conversion, used
+  by transcript download.
 - `src/obsidian_intake_agent/meetings/` (other modules): occurrence assignment,
   identity state, transcript and recap provenance, recap selection, bundle
   processing, late-transcript upgrades, and meeting-folder organization.
