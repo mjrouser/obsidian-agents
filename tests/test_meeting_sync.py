@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tempfile
@@ -2316,7 +2317,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
             artifacts = client.discover_artifacts(meeting=meeting)
 
-            old_hash = meeting_sync_module.hashlib.sha256(old_content).hexdigest()
+            old_hash = hashlib.sha256(old_content).hexdigest()
             archive_path = (
                 intake_root
                 / "bundles"
@@ -2350,7 +2351,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             self.assertEqual(provenance["transcripts"], [{"id": "july-17", "created_at": "2026-07-17T17:25:00+00:00"}])
             self.assertEqual(
                 provenance["content_sha256"],
-                meeting_sync_module.hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
+                hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
             )
             self.assertIsInstance(provenance["downloaded_at"], str)
             self.assertEqual(artifacts[0].status, "available")
@@ -2768,7 +2769,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
             artifacts = client.discover_artifacts(meeting=meeting)
 
-            tampered_hash = meeting_sync_module.hashlib.sha256(tampered_content).hexdigest()[:8]
+            tampered_hash = hashlib.sha256(tampered_content).hexdigest()[:8]
             archive_path = (
                 intake_root
                 / "bundles"

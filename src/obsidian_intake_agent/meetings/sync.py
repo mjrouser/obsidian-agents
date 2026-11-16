@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -11,7 +10,19 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 
-from ..utils.text import normalize_whitespace
+from .bundle_paths import (
+    BUNDLE_FALLBACKS_DIR,
+    BUNDLES_DIR,
+    _bundle_note_basename,
+    _fallback_summary_relative_path,
+    _meeting_identity_key,
+    _meeting_identity_path,
+    _meeting_identity_relative_path,
+    _normalized_bundle_title,
+    _outlook_metadata_basename,
+    _transcript_relative_path,
+    _transcript_text_relative_path,
+)
 from .graph_http import (
     GRAPH_REQUEST_TIMEOUT_SECONDS,  # noqa: F401 - re-exported from meetings.sync
     GraphOnlineMeetingNotFoundError,
@@ -96,10 +107,6 @@ PENDING_MARKER_SOURCE_TYPE = "meeting_sync_pending"
 PENDING_ARTIFACT_RETRY_HOURS = 24
 RAW_TRANSCRIPTS_DIR = "Raw Transcripts"
 FALLBACKS_DIR = "Fallbacks"
-BUNDLES_DIR = "bundles"
-BUNDLE_IDENTITIES_DIR = Path(BUNDLES_DIR) / "_meeting_sync" / "identities"
-BUNDLE_RAW_TRANSCRIPTS_DIR = Path(BUNDLES_DIR) / "raw_transcripts"
-BUNDLE_FALLBACKS_DIR = Path(BUNDLES_DIR) / "fallbacks"
 V1_INELIGIBLE_RESPONSE_STATUSES = frozenset({"declined", "none", "notresponded"})
 LOW_SIGNAL_SUBJECT_PATTERNS = (re.compile(r"\boffice\W*hours\b", re.IGNORECASE),)
 SUMMARY_DERIVED_SOURCE_NAMES = frozenset({"Copilot recap / AI summary", "Manual / semi-manual summary"})
@@ -1922,11 +1929,6 @@ def render_intake_bundle_note(
     return "\n".join(lines)
 
 
-def _bundle_note_basename(meeting: OutlookMeetingCandidate) -> str:
-    title = _normalized_bundle_title(meeting.subject)
-    return f"{meeting.start_at.date().isoformat()} - Teams - {title} (bundle).md"
-
-
 def _should_skip_for_v1_response_status(meeting: OutlookMeetingCandidate) -> bool:
     response_status = (meeting.response_status or "none").strip().lower()
     return response_status in V1_INELIGIBLE_RESPONSE_STATUSES
@@ -1935,42 +1937,6 @@ def _should_skip_for_v1_response_status(meeting: OutlookMeetingCandidate) -> boo
 def _has_low_signal_subject(meeting: OutlookMeetingCandidate) -> bool:
     subject = meeting.subject.strip()
     return any(pattern.search(subject) for pattern in LOW_SIGNAL_SUBJECT_PATTERNS)
-
-
-def _transcript_basename(meeting: OutlookMeetingCandidate) -> str:
-    title = _normalized_bundle_title(meeting.subject)
-    return f"{meeting.start_at.date().isoformat()} - Teams - {title}.vtt"
-
-
-def _transcript_relative_path(meeting: OutlookMeetingCandidate) -> Path:
-    return BUNDLE_RAW_TRANSCRIPTS_DIR / _transcript_basename(meeting)
-
-
-def _transcript_text_relative_path(meeting: OutlookMeetingCandidate) -> Path:
-    title = _normalized_bundle_title(meeting.subject)
-    return BUNDLE_RAW_TRANSCRIPTS_DIR / f"{meeting.start_at.date().isoformat()} - Teams - {title}.md"
-
-
-def _fallback_summary_relative_path(meeting: OutlookMeetingCandidate) -> Path:
-    title = _normalized_bundle_title(meeting.subject)
-    return BUNDLE_FALLBACKS_DIR / f"{meeting.start_at.date().isoformat()} - Teams - {title} (fallback).md"
-
-
-def _outlook_metadata_basename(meeting: OutlookMeetingCandidate) -> str:
-    title = _normalized_bundle_title(meeting.subject)
-    return f"{meeting.start_at.date().isoformat()} - Teams - {title} (outlook).json"
-
-
-def _meeting_identity_relative_path(meeting: OutlookMeetingCandidate) -> Path:
-    identity_key = _meeting_identity_key(meeting)
-    digest = hashlib.sha1(identity_key.encode("utf-8")).hexdigest()[:16]
-    return BUNDLE_IDENTITIES_DIR / f"{meeting.start_at.date().isoformat()}-{digest}.json"
-
-
-def _meeting_identity_path(meeting: OutlookMeetingCandidate, *, intake_root: Path | None) -> Path | None:
-    if intake_root is None:
-        return None
-    return intake_root / _meeting_identity_relative_path(meeting)
 
 
 def _meeting_has_terminal_identity(
@@ -2097,17 +2063,6 @@ def _pending_retry_expired(
 ) -> bool:
     comparable_now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
     return comparable_now > _pending_retry_until(meeting, marker_path)
-
-
-def _meeting_identity_key(meeting: OutlookMeetingCandidate) -> str:
-    teams_meeting_id = meeting.teams_meeting_id() or "no-teams-id"
-    return f"{meeting.event_id}|{teams_meeting_id}"
-
-
-def _normalized_bundle_title(value: str) -> str:
-    title = normalize_whitespace(value)
-    title = title.replace("/", "-").replace(":", "-").replace("\\", "-")
-    return title or "Meeting"
 
 
 def _bundle_transparency(bundle: MeetingSourceBundle) -> tuple[str, tuple[str, ...]]:

@@ -160,6 +160,10 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - `src/obsidian_intake_agent/meetings/graph_parsing.py`: side-effect-free
   parsing of Graph calendar, chat, AI insight, and transcript payloads, plus
   selection of transcript records for a meeting occurrence.
+- `src/obsidian_intake_agent/meetings/bundle_paths.py`: pure bundle naming
+  and path rules (bundle note, raw transcript, fallback summary, Outlook
+  metadata and meeting identity marker paths) and the `bundles/` directory
+  constants.
 - `src/obsidian_intake_agent/meetings/sync_rendering.py`: side-effect-free
   text rendering of the transcript-sync plan and bundle write results, plus
   the artifact serializers and timestamp formatter shared with sidecar
