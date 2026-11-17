@@ -43,6 +43,7 @@ from obsidian_intake_agent.meetings import (
     transcript_provenance,
     write_planned_bundle_notes,
 )
+from obsidian_intake_agent.meetings import bundle_writes as bundle_writes_module
 from obsidian_intake_agent.meetings import process_bundles as process_bundles_module
 from obsidian_intake_agent.meetings import sync as meeting_sync_module
 from obsidian_intake_agent.processors.meeting_processor import ProcessResult
@@ -3822,7 +3823,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 "processing_source_kind": "manual",
                 "upgrade_state": "terminal",
             }
-            real_write_identity_marker = meeting_sync_module.write_identity_marker
+            real_write_identity_marker = bundle_writes_module.write_identity_marker
 
             def processed_write_wins_before_refresh(
                 path: Path,
@@ -3833,7 +3834,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
 
             with (
                 patch.object(
-                    meeting_sync_module,
+                    bundle_writes_module,
                     "write_identity_marker",
                     side_effect=processed_write_wins_before_refresh,
                 ),
@@ -3877,7 +3878,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 real_atomic_write(path, content)
 
             with (
-                patch.object(meeting_sync_module, "atomic_write_bytes", side_effect=fail_bundle_write),
+                patch.object(bundle_writes_module, "atomic_write_bytes", side_effect=fail_bundle_write),
                 self.assertRaisesRegex(OSError, "bundle atomic write failed"),
             ):
                 write_planned_bundle_notes(refresh_plan)
@@ -3916,7 +3917,7 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
                 real_atomic_write(path, content)
 
             with (
-                patch.object(meeting_sync_module, "atomic_write_bytes", side_effect=fail_metadata_write),
+                patch.object(bundle_writes_module, "atomic_write_bytes", side_effect=fail_metadata_write),
                 self.assertRaisesRegex(OSError, "metadata atomic write failed"),
             ):
                 write_planned_bundle_notes(refresh_plan)
@@ -4607,7 +4608,7 @@ class BundleProcessingPlanTests(unittest.TestCase):
                 return real_atomic_create(path, content)
 
             with patch.object(
-                meeting_sync_module,
+                bundle_writes_module,
                 "atomic_create_bytes",
                 side_effect=competing_create,
             ):
