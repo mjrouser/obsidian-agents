@@ -164,6 +164,11 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   and path rules (bundle note, raw transcript, fallback summary, Outlook
   metadata and meeting identity marker paths) and the `bundles/` directory
   constants.
+- `src/obsidian_intake_agent/meetings/bundle_writes.py`: disk writes for
+  planned sync bundles (bundle notes, Outlook metadata sidecars, identity
+  markers, planned recap content) under the owned `bundles/` root. Patch
+  `atomic_write_bytes`, `atomic_create_bytes` and `write_identity_marker`
+  here in tests that exercise `write_planned_bundle_notes`.
 - `src/obsidian_intake_agent/meetings/source_bundles.py`: builds meeting
   source bundles from discovered artifacts, picks the preferred processor
   input, explains missing sources, and renders the planned intake bundle
