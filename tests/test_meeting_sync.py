@@ -3236,6 +3236,92 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             "Graph transcript discovery failed with HTTP 400. Graph said: BadRequest: The requested online meeting identifier is invalid.",
         )
 
+    def _discover_with_metadata_content_error(self, metadata_error: Exception) -> tuple[MeetingArtifact, ...]:
+        """Single selected record: .vtt content returns 404, then metadataContent raises ``metadata_error``.
+
+        Also asserts that nothing was written under the intake root.
+        """
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        intake_root = Path(tmp_dir.name) / "00_Intake"
+
+        def fetch_bytes(url: str, token: str) -> bytes:
+            if url.endswith("/metadataContent"):
+                raise metadata_error
+            raise _SyntheticHTTPError(url, 404, "Not Found")
+
+        client = GraphTranscriptDownloadClient(
+            access_token="token",
+            intake_root=intake_root,
+            fetch_json=lambda url, token: {
+                "value": [
+                    {
+                        "id": "transcript-1",
+                        "createdDateTime": "2026-05-04T13:05:00Z",
+                    }
+                ]
+            },
+            fetch_bytes=fetch_bytes,
+        )
+
+        artifacts = client.discover_artifacts(
+            meeting=_meeting(
+                event_id="evt-1",
+                subject="Platform Sync",
+                join_url="https://teams.microsoft.com/l/meetup-join/19%3Ameeting_graph123%40thread.v2/0?context=%7B%7D",
+                online_meeting_provider="teamsForBusiness",
+            )
+        )
+
+        self.assertEqual(
+            [artifact.source_name for artifact in artifacts],
+            ["Teams .vtt transcript", "Teams transcript text"],
+        )
+        self.assertFalse(intake_root.exists() and any(intake_root.rglob("*")))
+        return artifacts
+
+    def test_graph_transcript_download_reports_missing_when_metadata_content_is_404(self) -> None:
+        vtt_artifact, text_artifact = self._discover_with_metadata_content_error(
+            _SyntheticHTTPError("metadataContent", 404, "Not Found")
+        )
+
+        self.assertEqual(vtt_artifact.status, "missing")
+        self.assertEqual(vtt_artifact.detail, "Graph did not find transcript content for this Teams meeting.")
+        assert vtt_artifact.diagnostics is not None
+        self.assertEqual(vtt_artifact.diagnostics.selected_transcripts[0].transcript_id, "transcript-1")
+        self.assertEqual(text_artifact.status, "missing")
+        self.assertEqual(
+            text_artifact.detail,
+            "Graph did not find transcript metadata content for this Teams meeting.",
+        )
+        self.assertEqual(text_artifact.matched_paths, ())
+
+    def test_graph_transcript_download_marks_metadata_content_permission_blocked(self) -> None:
+        vtt_artifact, text_artifact = self._discover_with_metadata_content_error(
+            _SyntheticHTTPError("metadataContent", 403, "Forbidden")
+        )
+
+        expected_detail = "Graph transcript metadata content download failed with HTTP 403."
+        self.assertEqual(vtt_artifact.status, "permission_blocked")
+        self.assertEqual(vtt_artifact.detail, expected_detail)
+        assert vtt_artifact.diagnostics is not None
+        self.assertEqual(vtt_artifact.diagnostics.selected_transcripts[0].transcript_id, "transcript-1")
+        self.assertEqual(text_artifact.status, "permission_blocked")
+        self.assertEqual(text_artifact.detail, expected_detail)
+
+    def test_graph_transcript_download_reports_metadata_content_network_failure(self) -> None:
+        vtt_artifact, text_artifact = self._discover_with_metadata_content_error(URLError("temporary DNS failure"))
+
+        self.assertEqual(vtt_artifact.status, "missing")
+        self.assertEqual(vtt_artifact.detail, "Graph did not find transcript content for this Teams meeting.")
+        assert vtt_artifact.diagnostics is not None
+        self.assertEqual(vtt_artifact.diagnostics.selected_transcripts[0].transcript_id, "transcript-1")
+        self.assertEqual(text_artifact.status, "not_attempted")
+        self.assertEqual(
+            text_artifact.detail,
+            "Graph transcript metadata content download failed: <urlopen error temporary DNS failure>",
+        )
+
     def test_graph_meeting_fallback_summary_plans_recap_without_writing_until_bundle_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             intake_root = Path(tmp_dir) / "00_Intake"
