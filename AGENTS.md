@@ -168,6 +168,16 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
   source bundles from discovered artifacts, picks the preferred processor
   input, explains missing sources, and renders the planned intake bundle
   note plus its Outlook metadata and meeting identity sidecars.
+- `src/obsidian_intake_agent/meetings/sync_planning.py`: per-meeting sync
+  planning: occurrence context, artifact discovery and prefiltering, and the
+  process-or-skip plan item for each meeting.
+- `src/obsidian_intake_agent/meetings/sync_eligibility.py`: whether and when
+  a meeting is synced: response-status and low-signal filters, terminal
+  identity, fallback polling, pending-retry windows, and occurrence-valid
+  transcript provenance.
+- `src/obsidian_intake_agent/meetings/recap_validation.py`: occurrence
+  checks that downgrade managed Copilot recap artifacts whose provenance does
+  not match the meeting.
 - `src/obsidian_intake_agent/meetings/sync_rendering.py`: side-effect-free
   text rendering of the transcript-sync plan and bundle write results, plus
   the artifact serializers and timestamp formatter shared with sidecar
