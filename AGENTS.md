@@ -255,3 +255,17 @@ need live plugin validation because they mirror production behavior:
 If a needed plugin is disabled, pause and say which plugin is needed, what
 behavior it validates, whether to switch to a fresh plugin-enabled chat, and
 what mock-only fallback is available.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `mjrouser/obsidian-agents` (use the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
