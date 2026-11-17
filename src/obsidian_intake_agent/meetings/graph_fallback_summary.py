@@ -1,8 +1,9 @@
 """Microsoft Graph fallback meeting summary client.
 
-Builds a fallback recap from Teams meeting chat and Copilot AI insights when no
-processor-ready transcript is available, and renders it as Markdown with recap
-provenance. ``meetings.sync`` re-exports these names.
+Builds a fallback recap from Copilot AI insights when no processor-ready
+transcript is available, and renders it as Markdown with recap provenance.
+Occurrence-scoped Teams meeting chat is not fetched, so the rendered recap omits
+chat enrichment. ``meetings.sync`` re-exports these names.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlparse
 
 from .bundle_paths import (
     _fallback_summary_relative_path,
@@ -27,8 +28,6 @@ from .graph_http import (
 from .graph_parsing import (
     _graph_ai_action_items,
     _graph_ai_mentions,
-    _graph_chat_messages,
-    _graph_chat_thread_id,
     _graph_meeting_notes,
 )
 from .occurrence_assignment import (
@@ -307,92 +306,6 @@ class GraphMeetingFallbackSummaryClient:
         cache[url] = records
         self._recap_cache = cache
         return records
-
-    def _meeting_chat_artifact(
-        self,
-        *,
-        online_meeting_id: str,
-    ) -> tuple[MeetingArtifact, tuple[dict[str, str], ...]]:
-        try:
-            payload = self._fetch_json(
-                f"{self._api_base_url}{self._graph_user_path}/onlineMeetings/{_graph_resource_path_id(online_meeting_id)}"
-                "?$select=chatInfo",
-                self._access_token,
-            )
-            thread_id = _graph_chat_thread_id(payload)
-        except HTTPError as exc:
-            return (
-                self._graph_fallback_http_error_artifact(
-                    exc,
-                    source_name="Teams meeting chat",
-                    action="chat discovery",
-                ),
-                (),
-            )
-        except (URLError, ValueError) as exc:
-            return (
-                MeetingArtifact(
-                    "Teams meeting chat",
-                    "not_attempted",
-                    f"Graph chat discovery failed: {exc}",
-                ),
-                (),
-            )
-
-        if thread_id is None:
-            return (
-                MeetingArtifact(
-                    "Teams meeting chat",
-                    "missing",
-                    "Graph online meeting metadata did not include chatInfo.threadId.",
-                ),
-                (),
-            )
-
-        try:
-            payload = self._fetch_json(
-                f"{self._api_base_url}/chats/{_graph_resource_path_id(thread_id)}/messages?"
-                + urlencode({"$top": "50", "$orderby": "createdDateTime desc"}),
-                self._access_token,
-            )
-            messages = _graph_chat_messages(payload)
-        except HTTPError as exc:
-            return (
-                self._graph_fallback_http_error_artifact(
-                    exc,
-                    source_name="Teams meeting chat",
-                    action="chat message retrieval",
-                ),
-                (),
-            )
-        except (URLError, ValueError) as exc:
-            return (
-                MeetingArtifact(
-                    "Teams meeting chat",
-                    "not_attempted",
-                    f"Graph chat message retrieval failed: {exc}",
-                ),
-                (),
-            )
-
-        if not messages:
-            return (
-                MeetingArtifact(
-                    "Teams meeting chat",
-                    "missing",
-                    "Graph meeting chat retrieval returned no readable messages.",
-                ),
-                (),
-            )
-
-        return (
-            MeetingArtifact(
-                "Teams meeting chat",
-                "available",
-                f"Fetched {len(messages)} Teams meeting chat message(s) to enrich the fallback summary.",
-            ),
-            tuple(messages),
-        )
 
     def _graph_fallback_http_error_artifact(
         self,
