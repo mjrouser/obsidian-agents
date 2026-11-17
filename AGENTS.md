@@ -147,9 +147,22 @@ If one of these commands is unavailable in the repo, fall back to the nearest pr
 - `src/obsidian_intake_agent/graph_auth.py`: Microsoft Graph sign-in (MSAL
   device-code flow), token cache, and access-token retrieval.
 - `src/obsidian_intake_agent/meetings/sync.py`: meeting transcript sync
-  orchestration: discovery clients, transcript download and VTT merging, sync
-  planning, bundle rendering, and bundle writes. It re-exports names from the
-  split-out modules below so existing `meetings.sync` imports keep working.
+  entry point: `build_transcript_sync_plan` and the helpers that narrow an
+  artifact discovery client (no network, no summary fallback) or reset recap
+  caches. It re-exports names from the split-out modules below so existing
+  `meetings.sync` imports keep working.
+- `src/obsidian_intake_agent/meetings/local_discovery.py`: artifact discovery
+  clients that never touch the network (no-op, chained, local intake
+  transcripts, unconfigured Outlook placeholder) and the provenance assignment
+  check shared with the Graph transcript download client.
+- `src/obsidian_intake_agent/meetings/graph_clients.py`: Microsoft Graph
+  Outlook calendar discovery, Teams transcript discovery, and the transcript
+  download client that writes raw transcripts and provenance. Patch
+  `archive_stale_transcript`, `atomic_write_bytes` and `write_provenance` here
+  in tests that exercise the download client.
+- `src/obsidian_intake_agent/meetings/graph_fallback_summary.py`: Microsoft
+  Graph fallback summary client (meeting chat and AI insights) and its recap
+  Markdown rendering.
 - `src/obsidian_intake_agent/meetings/sync_models.py`: meeting sync data models
   (Outlook meeting candidates, artifacts, plans, write results) and discovery
   client protocols.
