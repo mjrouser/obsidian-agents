@@ -81,9 +81,6 @@ from .vtt_merge import (
     _merged_vtt_bytes,  # noqa: F401 - re-exported from meetings.sync
 )
 
-RAW_TRANSCRIPTS_DIR = "Raw Transcripts"
-FALLBACKS_DIR = "Fallbacks"
-
 
 def build_transcript_sync_plan(
     *,

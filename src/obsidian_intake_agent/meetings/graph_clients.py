@@ -285,81 +285,14 @@ class GraphTranscriptDownloadClient:
         meeting: OutlookMeetingCandidate,
     ) -> tuple[MeetingArtifact, ...]:
         vtt_target_path = self._intake_root / _transcript_relative_path(meeting)
-        if vtt_target_path.exists():
-            provenance = matching_provenance(
-                vtt_target_path,
-                event_id=meeting.event_id,
-                occurrence_start_at=meeting.start_at,
-                occurrence_end_at=meeting.end_at,
-            )
-            if provenance is not None:
-                transcript_ids = ", ".join(item["id"] for item in provenance["transcripts"])
-                diagnostics, exact_unique_match = _validate_provenance_assignment(meeting, provenance)
-                if not exact_unique_match:
-                    return (
-                        MeetingArtifact(
-                            "Teams .vtt transcript",
-                            "missing",
-                            "Stored Graph transcript provenance no longer uniquely matches this meeting occurrence.",
-                            diagnostics=diagnostics,
-                        ),
-                    )
-                return (
-                    MeetingArtifact(
-                        "Teams .vtt transcript",
-                        "available",
-                        f"Validated Graph transcript provenance for transcript ID(s): {transcript_ids}.",
-                        matched_paths=(vtt_target_path,),
-                        diagnostics=diagnostics,
-                        occurrence_validated_paths=(vtt_target_path,),
-                    ),
-                )
         transcript_text_target_path = self._intake_root / _transcript_text_relative_path(meeting)
-        if not vtt_target_path.exists() and transcript_text_target_path.exists():
-            text_provenance = matching_provenance(
-                transcript_text_target_path,
-                event_id=meeting.event_id,
-                occurrence_start_at=meeting.start_at,
-                occurrence_end_at=meeting.end_at,
-            )
-            if text_provenance is not None:
-                text_diagnostics, exact_unique_match = _validate_provenance_assignment(
-                    meeting,
-                    text_provenance,
-                )
-            else:
-                text_diagnostics = None
-                exact_unique_match = False
-            transcript_text_artifact = (
-                MeetingArtifact(
-                    "Teams transcript text",
-                    "available",
-                    f"Validated Graph transcript provenance: {transcript_text_target_path}",
-                    matched_paths=(transcript_text_target_path,),
-                    diagnostics=text_diagnostics,
-                    occurrence_validated_paths=(transcript_text_target_path,),
-                )
-                if exact_unique_match
-                else MeetingArtifact(
-                    "Teams transcript text",
-                    "missing" if text_provenance is not None else "available",
-                    (
-                        "Stored Graph transcript provenance no longer uniquely matches this meeting occurrence."
-                        if text_provenance is not None
-                        else f"Transcript text file already exists: {transcript_text_target_path}"
-                    ),
-                    matched_paths=(() if text_provenance is not None else (transcript_text_target_path,)),
-                    diagnostics=text_diagnostics,
-                )
-            )
-            return (
-                MeetingArtifact(
-                    "Teams .vtt transcript",
-                    "missing",
-                    "Graph .vtt transcript has not been downloaded for this meeting.",
-                ),
-                transcript_text_artifact,
-            )
+        cached_artifacts = self._cached_transcript_artifacts(
+            meeting,
+            vtt_target_path=vtt_target_path,
+            transcript_text_target_path=transcript_text_target_path,
+        )
+        if cached_artifacts is not None:
+            return cached_artifacts
 
         join_url = meeting.detected_join_url()
         if join_url is None:
@@ -480,72 +413,13 @@ class GraphTranscriptDownloadClient:
                         action="content download",
                         diagnostics=diagnostics,
                     )
-                metadata_content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
-                try:
-                    metadata_content = self._fetch_bytes(metadata_content_url, self._access_token)
-                except HTTPError as metadata_exc:
-                    if metadata_exc.code == 404:
-                        return (
-                            MeetingArtifact(
-                                "Teams .vtt transcript",
-                                "missing",
-                                "Graph did not find transcript content for this Teams meeting.",
-                                diagnostics=diagnostics,
-                            ),
-                            MeetingArtifact(
-                                "Teams transcript text",
-                                "missing",
-                                "Graph did not find transcript metadata content for this Teams meeting.",
-                            ),
-                        )
-                    return self._paired_artifacts_from_http_error(
-                        metadata_exc,
-                        action="metadata content download",
-                        diagnostics=diagnostics,
-                    )
-                except URLError as metadata_exc:
-                    return (
-                        MeetingArtifact(
-                            "Teams .vtt transcript",
-                            "missing",
-                            "Graph did not find transcript content for this Teams meeting.",
-                            diagnostics=diagnostics,
-                        ),
-                        MeetingArtifact(
-                            "Teams transcript text",
-                            "not_attempted",
-                            f"Graph transcript metadata content download failed: {metadata_exc}",
-                        ),
-                    )
-
-                rendered_metadata_content = _transcript_markdown_from_metadata_content(metadata_content).encode("utf-8")
-                atomic_write_bytes(
-                    transcript_text_target_path,
-                    rendered_metadata_content,
-                )
-                write_provenance(
-                    transcript_text_target_path,
-                    event_id=meeting.event_id,
-                    occurrence_start_at=meeting.start_at,
-                    occurrence_end_at=meeting.end_at,
-                    transcripts=selected_transcripts,
-                    content=rendered_metadata_content,
-                )
-                return (
-                    MeetingArtifact(
-                        "Teams .vtt transcript",
-                        "missing",
-                        "Graph did not find transcript content for this Teams meeting.",
-                        diagnostics=diagnostics,
-                    ),
-                    MeetingArtifact(
-                        "Teams transcript text",
-                        "available",
-                        f"Downloaded Graph transcript metadata content for transcript ID {transcript_id}.",
-                        matched_paths=(transcript_text_target_path,),
-                        diagnostics=diagnostics,
-                        occurrence_validated_paths=(transcript_text_target_path,),
-                    ),
+                return self._metadata_content_fallback_artifacts(
+                    meeting,
+                    transcripts_url=transcripts_url,
+                    transcript_id=transcript_id,
+                    transcript_text_target_path=transcript_text_target_path,
+                    selected_transcripts=selected_transcripts,
+                    diagnostics=diagnostics,
                 )
             except URLError as exc:
                 return (
@@ -565,6 +439,206 @@ class GraphTranscriptDownloadClient:
         content = downloaded_contents[0] if len(downloaded_contents) == 1 else _merged_vtt_bytes(downloaded_contents)
         normalized_content = _normalized_vtt_bytes(content)
         transcript_ids = ", ".join(record.transcript_id for record in selected_records)
+        action, local_action = self._store_vtt_transcript(
+            meeting,
+            vtt_target_path=vtt_target_path,
+            normalized_content=normalized_content,
+            selected_transcripts=selected_transcripts,
+        )
+        detail = f"{action} for transcript ID(s): {transcript_ids}."
+        return (
+            MeetingArtifact(
+                "Teams .vtt transcript",
+                "available",
+                detail,
+                matched_paths=(vtt_target_path,),
+                diagnostics=_transcript_diagnostics(
+                    meeting,
+                    transcript_records,
+                    selected_records,
+                    local_action=local_action,
+                    assignment_conflicts=conflicts,
+                ),
+                occurrence_validated_paths=(vtt_target_path,),
+            ),
+        )
+
+    def _cached_transcript_artifacts(
+        self,
+        meeting: OutlookMeetingCandidate,
+        *,
+        vtt_target_path: Path,
+        transcript_text_target_path: Path,
+    ) -> tuple[MeetingArtifact, ...] | None:
+        """Return artifacts for transcripts already on disk, or None to query Graph."""
+        if vtt_target_path.exists():
+            provenance = matching_provenance(
+                vtt_target_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+            )
+            if provenance is not None:
+                transcript_ids = ", ".join(item["id"] for item in provenance["transcripts"])
+                diagnostics, exact_unique_match = _validate_provenance_assignment(meeting, provenance)
+                if not exact_unique_match:
+                    return (
+                        MeetingArtifact(
+                            "Teams .vtt transcript",
+                            "missing",
+                            "Stored Graph transcript provenance no longer uniquely matches this meeting occurrence.",
+                            diagnostics=diagnostics,
+                        ),
+                    )
+                return (
+                    MeetingArtifact(
+                        "Teams .vtt transcript",
+                        "available",
+                        f"Validated Graph transcript provenance for transcript ID(s): {transcript_ids}.",
+                        matched_paths=(vtt_target_path,),
+                        diagnostics=diagnostics,
+                        occurrence_validated_paths=(vtt_target_path,),
+                    ),
+                )
+        if not vtt_target_path.exists() and transcript_text_target_path.exists():
+            text_provenance = matching_provenance(
+                transcript_text_target_path,
+                event_id=meeting.event_id,
+                occurrence_start_at=meeting.start_at,
+                occurrence_end_at=meeting.end_at,
+            )
+            if text_provenance is not None:
+                text_diagnostics, exact_unique_match = _validate_provenance_assignment(
+                    meeting,
+                    text_provenance,
+                )
+            else:
+                text_diagnostics = None
+                exact_unique_match = False
+            transcript_text_artifact = (
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "available",
+                    f"Validated Graph transcript provenance: {transcript_text_target_path}",
+                    matched_paths=(transcript_text_target_path,),
+                    diagnostics=text_diagnostics,
+                    occurrence_validated_paths=(transcript_text_target_path,),
+                )
+                if exact_unique_match
+                else MeetingArtifact(
+                    "Teams transcript text",
+                    "missing" if text_provenance is not None else "available",
+                    (
+                        "Stored Graph transcript provenance no longer uniquely matches this meeting occurrence."
+                        if text_provenance is not None
+                        else f"Transcript text file already exists: {transcript_text_target_path}"
+                    ),
+                    matched_paths=(() if text_provenance is not None else (transcript_text_target_path,)),
+                    diagnostics=text_diagnostics,
+                )
+            )
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph .vtt transcript has not been downloaded for this meeting.",
+                ),
+                transcript_text_artifact,
+            )
+
+        return None
+
+    def _metadata_content_fallback_artifacts(
+        self,
+        meeting: OutlookMeetingCandidate,
+        *,
+        transcripts_url: str,
+        transcript_id: str,
+        transcript_text_target_path: Path,
+        selected_transcripts: list[dict[str, str | None]],
+        diagnostics: TranscriptDiagnostics,
+    ) -> tuple[MeetingArtifact, ...]:
+        """Fetch metadataContent after the single selected transcript's .vtt content returned 404."""
+        metadata_content_url = f"{transcripts_url}/{_graph_resource_path_id(transcript_id)}/metadataContent"
+        try:
+            metadata_content = self._fetch_bytes(metadata_content_url, self._access_token)
+        except HTTPError as metadata_exc:
+            if metadata_exc.code == 404:
+                return (
+                    MeetingArtifact(
+                        "Teams .vtt transcript",
+                        "missing",
+                        "Graph did not find transcript content for this Teams meeting.",
+                        diagnostics=diagnostics,
+                    ),
+                    MeetingArtifact(
+                        "Teams transcript text",
+                        "missing",
+                        "Graph did not find transcript metadata content for this Teams meeting.",
+                    ),
+                )
+            return self._paired_artifacts_from_http_error(
+                metadata_exc,
+                action="metadata content download",
+                diagnostics=diagnostics,
+            )
+        except URLError as metadata_exc:
+            return (
+                MeetingArtifact(
+                    "Teams .vtt transcript",
+                    "missing",
+                    "Graph did not find transcript content for this Teams meeting.",
+                    diagnostics=diagnostics,
+                ),
+                MeetingArtifact(
+                    "Teams transcript text",
+                    "not_attempted",
+                    f"Graph transcript metadata content download failed: {metadata_exc}",
+                ),
+            )
+
+        rendered_metadata_content = _transcript_markdown_from_metadata_content(metadata_content).encode("utf-8")
+        atomic_write_bytes(
+            transcript_text_target_path,
+            rendered_metadata_content,
+        )
+        write_provenance(
+            transcript_text_target_path,
+            event_id=meeting.event_id,
+            occurrence_start_at=meeting.start_at,
+            occurrence_end_at=meeting.end_at,
+            transcripts=selected_transcripts,
+            content=rendered_metadata_content,
+        )
+        return (
+            MeetingArtifact(
+                "Teams .vtt transcript",
+                "missing",
+                "Graph did not find transcript content for this Teams meeting.",
+                diagnostics=diagnostics,
+            ),
+            MeetingArtifact(
+                "Teams transcript text",
+                "available",
+                f"Downloaded Graph transcript metadata content for transcript ID {transcript_id}.",
+                matched_paths=(transcript_text_target_path,),
+                diagnostics=diagnostics,
+                occurrence_validated_paths=(transcript_text_target_path,),
+            ),
+        )
+
+    def _store_vtt_transcript(
+        self,
+        meeting: OutlookMeetingCandidate,
+        *,
+        vtt_target_path: Path,
+        normalized_content: bytes,
+        selected_transcripts: list[dict[str, str | None]],
+    ) -> tuple[str, LocalTranscriptAction]:
+        """Archive a stale VTT if needed, write the new one and its provenance.
+
+        Returns the action label used in the artifact detail and the local action.
+        """
         if vtt_target_path.exists():
             existing_content = vtt_target_path.read_bytes()
             if existing_content == normalized_content:
@@ -591,23 +665,7 @@ class GraphTranscriptDownloadClient:
             transcripts=selected_transcripts,
             content=normalized_content,
         )
-        detail = f"{action} for transcript ID(s): {transcript_ids}."
-        return (
-            MeetingArtifact(
-                "Teams .vtt transcript",
-                "available",
-                detail,
-                matched_paths=(vtt_target_path,),
-                diagnostics=_transcript_diagnostics(
-                    meeting,
-                    transcript_records,
-                    selected_records,
-                    local_action=local_action,
-                    assignment_conflicts=conflicts,
-                ),
-                occurrence_validated_paths=(vtt_target_path,),
-            ),
-        )
+        return action, local_action
 
     def _http_error_artifact(self, error: HTTPError, *, action: str) -> MeetingArtifact:
         if error.code in {401, 403}:
