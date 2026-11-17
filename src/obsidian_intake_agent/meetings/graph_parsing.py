@@ -1,17 +1,14 @@
 """Side-effect-free parsing of Microsoft Graph payloads for meeting sync.
 
-Covers calendar events, attendees, chat messages, Copilot AI insights, and transcript
-records, plus selecting which transcript records belong to a meeting occurrence.
+Covers calendar events, attendees, Copilot AI insights, and transcript records,
+plus selecting which transcript records belong to a meeting occurrence.
 Split out of ``meetings/sync.py``; ``sync`` re-exports these names for existing callers.
 """
 
 from __future__ import annotations
 
-import html
-import re
 from datetime import UTC, datetime
 
-from ..utils.text import normalize_whitespace
 from .occurrence_assignment import AssignmentConflict, OccurrenceWindow, TranscriptCandidate, assign_transcripts
 from .sync_models import (
     GraphTranscriptRecord,
@@ -22,53 +19,6 @@ from .sync_models import (
     TranscriptDiagnostics,
     _optional_string,
 )
-
-
-def _graph_chat_thread_id(payload: dict[str, object]) -> str | None:
-    raw_chat_info = payload.get("chatInfo")
-    if not isinstance(raw_chat_info, dict):
-        return None
-    return _optional_string(str(raw_chat_info.get("threadId") or ""))
-
-
-def _graph_chat_messages(payload: dict[str, object]) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-    for item in reversed(_graph_value_items(payload)):
-        body = item.get("body")
-        if not isinstance(body, dict):
-            continue
-        content = _chat_message_text(body.get("content"))
-        if content is None:
-            continue
-        sender = _graph_chat_message_sender(item.get("from"))
-        messages.append(
-            {
-                "sender": sender or "Unknown",
-                "text": content,
-            }
-        )
-    return messages
-
-
-def _graph_chat_message_sender(raw_value: object) -> str | None:
-    if not isinstance(raw_value, dict):
-        return None
-    for key in ("user", "application", "device"):
-        payload = raw_value.get(key)
-        if not isinstance(payload, dict):
-            continue
-        display_name = _optional_string(str(payload.get("displayName") or ""))
-        if display_name is not None:
-            return display_name
-    return None
-
-
-def _chat_message_text(raw_value: object) -> str | None:
-    if raw_value is None:
-        return None
-    text = re.sub(r"<[^>]+>", " ", html.unescape(str(raw_value)))
-    normalized = normalize_whitespace(text)
-    return normalized or None
 
 
 def _graph_meeting_notes(ai_insight: dict[str, object]) -> list[str]:
