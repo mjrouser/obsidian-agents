@@ -34,3 +34,6 @@ __pycache__/
 .cache/
 .tmp/
 tmp/
+
+# Written by handoff-sync (~/repos/handoff-sync); machine-local, never commit
+/HANDOFF.md
