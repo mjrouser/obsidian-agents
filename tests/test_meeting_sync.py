@@ -44,6 +44,7 @@ from obsidian_intake_agent.meetings import (
     write_planned_bundle_notes,
 )
 from obsidian_intake_agent.meetings import bundle_writes as bundle_writes_module
+from obsidian_intake_agent.meetings import graph_clients as graph_clients_module
 from obsidian_intake_agent.meetings import process_bundles as process_bundles_module
 from obsidian_intake_agent.meetings import sync as meeting_sync_module
 from obsidian_intake_agent.processors.meeting_processor import ProcessResult
@@ -2659,9 +2660,9 @@ class TranscriptSyncPlannerTests(unittest.TestCase):
             )
 
             with (
-                patch.object(meeting_sync_module, "archive_stale_transcript", side_effect=archive),
-                patch.object(meeting_sync_module, "atomic_write_bytes", side_effect=atomic_write),
-                patch.object(meeting_sync_module, "write_provenance", side_effect=write_provenance),
+                patch.object(graph_clients_module, "archive_stale_transcript", side_effect=archive),
+                patch.object(graph_clients_module, "atomic_write_bytes", side_effect=atomic_write),
+                patch.object(graph_clients_module, "write_provenance", side_effect=write_provenance),
             ):
                 client.discover_artifacts(meeting=meeting)
 
